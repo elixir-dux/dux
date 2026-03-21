@@ -1,0 +1,89 @@
+name: Build precompiled NIFs
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    name: NIF ${{ matrix.nif }} - ${{ matrix.target }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        nif: ["2.16"]
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - x86_64-pc-windows-msvc
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-15
+          - target: x86_64-apple-darwin
+            os: macos-15
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            cross: "true"
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-22.04
+            cross: "true"
+          - target: x86_64-pc-windows-msvc
+            os: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/.*@version "\(.*\)"/\1/p' mix.exs | head -1)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+        if: ${{ !matrix.cross }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native/dux
+          key: precomp-${{ matrix.target }}
+
+      - name: Build
+        id: build
+        uses: philss/rustler-precompiled-action@v1.1.4
+        with:
+          project-name: dux
+          project-version: ${{ env.VERSION }}
+          target: ${{ matrix.target }}
+          nif-version: ${{ matrix.nif }}
+          use-cross: ${{ matrix.cross || 'false' }}
+          project-dir: native/dux
+
+      - name: Artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ steps.build.outputs.file-path }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.build.outputs.file-name }}
+          path: ${{ steps.build.outputs.file-path }}
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ steps.build.outputs.file-path }}

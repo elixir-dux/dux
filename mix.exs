@@ -1,7 +1,11 @@
 defmodule Dux.MixProject do
   use Mix.Project
 
-  @version "0.1.0-dev"
+  @version "0.1.0"
+  @source_url "https://github.com/elixir-dux/dux"
+
+  @force_build? System.get_env("DUX_BUILD") in ["1", "true"]
+  @dev? Mix.env() in [:dev, :test]
 
   def project do
     [
@@ -9,11 +13,15 @@ defmodule Dux.MixProject do
       name: "Dux",
       description: "DuckDB-native dataframe library for Elixir",
       version: @version,
-      elixir: "~> 1.17",
+      elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+      package: package(),
+      docs: docs(),
+      source_url: @source_url,
+      homepage_url: @source_url
     ]
   end
 
@@ -29,12 +37,63 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.37.3", runtime: false},
+      {:rustler_precompiled, "~> 0.8"},
+      {:rustler, "~> 0.37.3", optional: not (@dev? or @force_build?)},
       {:nx, "~> 0.9", optional: true},
       {:benchee, "~> 1.3", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.36", only: :dev, runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test]}
+    ]
+  end
+
+  defp package do
+    [
+      files: [
+        "lib",
+        "native/dux/src",
+        "native/dux/Cargo.toml",
+        "native/dux/Cargo.lock",
+        "checksum-*.exs",
+        "mix.exs",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
+      licenses: ["Apache-2.0", "MIT"],
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/v#{@version}/CHANGELOG.md"
+      },
+      maintainers: ["Christopher Grainger"]
+    ]
+  end
+
+  defp docs do
+    [
+      main: "Dux",
+      source_ref: "v#{@version}",
+      extras: [
+        "guides/getting-started.md",
+        "guides/distributed-queries.md",
+        "guides/graph-analytics.md",
+        "CHANGELOG.md"
+      ],
+      groups_for_modules: [
+        Core: [Dux],
+        Query: [Dux.Query, Dux.Query.Compiler],
+        Graph: [Dux.Graph],
+        Distributed: [
+          Dux.Remote,
+          Dux.Remote.Coordinator,
+          Dux.Remote.Worker,
+          Dux.Remote.Broadcast
+        ]
+      ],
+      groups_for_extras: [
+        Guides: ~r/guides\/.*/
+      ]
     ]
   end
 

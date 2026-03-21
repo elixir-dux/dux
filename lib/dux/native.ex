@@ -1,10 +1,23 @@
 defmodule Dux.Native do
   @moduledoc false
 
-  use Rustler,
+  version = Mix.Project.config()[:version]
+
+  use RustlerPrecompiled,
     otp_app: :dux,
     crate: "dux",
-    mode: :release
+    base_url: "https://github.com/elixir-dux/dux/releases/download/v#{version}",
+    version: version,
+    targets: ~w(
+      aarch64-apple-darwin
+      x86_64-apple-darwin
+      aarch64-unknown-linux-gnu
+      x86_64-unknown-linux-gnu
+      x86_64-unknown-linux-musl
+      x86_64-pc-windows-msvc
+    ),
+    nif_versions: ["2.16"],
+    force_build: System.get_env("DUX_BUILD") in ["1", "true"]
 
   # Database lifecycle
   def db_open, do: :erlang.nif_error(:nif_not_loaded)
