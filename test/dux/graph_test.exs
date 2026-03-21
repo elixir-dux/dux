@@ -183,7 +183,7 @@ defmodule Dux.GraphTest do
         triangle_graph()
         |> Dux.Graph.pagerank(iterations: 10)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       ranks = Enum.map(result, & &1["rank"])
 
@@ -215,7 +215,7 @@ defmodule Dux.GraphTest do
         graph
         |> Dux.Graph.pagerank(iterations: 10)
         |> Dux.sort_by(desc: :rank)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Center vertex should have highest rank
       assert hd(result)["id"] == 1
@@ -225,7 +225,7 @@ defmodule Dux.GraphTest do
       result =
         triangle_graph()
         |> Dux.Graph.pagerank(iterations: 5)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       total = Enum.sum(Enum.map(result, & &1["rank"]))
       assert_in_delta total, 1.0, 0.01
@@ -235,7 +235,7 @@ defmodule Dux.GraphTest do
       result =
         triangle_graph()
         |> Dux.Graph.pagerank(damping: 0.5, iterations: 20)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
       assert Enum.all?(result, fn row -> row["rank"] > 0 end)
@@ -355,7 +355,7 @@ defmodule Dux.GraphTest do
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
 
       # Should not crash — vertices with no incoming edges get base rank
-      result = Dux.Graph.pagerank(graph, iterations: 5) |> Dux.collect()
+      result = Dux.Graph.pagerank(graph, iterations: 5) |> Dux.to_rows()
       assert length(result) == 2
     end
 
@@ -382,7 +382,7 @@ defmodule Dux.GraphTest do
 
       # Should work without infinite loops
       assert Dux.Graph.out_degree(graph) |> Dux.n_rows() >= 1
-      result = Dux.Graph.pagerank(graph, iterations: 10) |> Dux.collect()
+      result = Dux.Graph.pagerank(graph, iterations: 10) |> Dux.to_rows()
       assert length(result) == 2
     end
 
@@ -397,7 +397,7 @@ defmodule Dux.GraphTest do
         ])
 
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
-      out_deg = Dux.Graph.out_degree(graph) |> Dux.collect()
+      out_deg = Dux.Graph.out_degree(graph) |> Dux.to_rows()
       # Duplicate edges count as separate edges
       assert hd(out_deg)["out_degree"] == 3
     end
@@ -421,7 +421,7 @@ defmodule Dux.GraphTest do
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
 
       # PageRank should converge
-      result = Dux.Graph.pagerank(graph, iterations: 10) |> Dux.collect()
+      result = Dux.Graph.pagerank(graph, iterations: 10) |> Dux.to_rows()
       assert length(result) == 100
 
       total_rank = Enum.sum(Enum.map(result, & &1["rank"]))
@@ -441,7 +441,7 @@ defmodule Dux.GraphTest do
         |> Dux.Graph.pagerank(iterations: 10)
         |> Dux.filter_with("rank > 0.1")
         |> Dux.sort_by(desc: :rank)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
     end

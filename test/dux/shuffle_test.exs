@@ -124,7 +124,7 @@ defmodule Dux.ShuffleTest do
       result =
         Shuffle.execute(left, right, on: :id, workers: workers)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert result != []
       ids = Enum.map(result, & &1["id"]) |> Enum.uniq() |> Enum.sort()
@@ -225,13 +225,13 @@ defmodule Dux.ShuffleTest do
         left
         |> Dux.join(right, on: :id)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Shuffle join
       shuffle_result =
         Shuffle.execute(left, right, on: :id, workers: workers)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Same number of rows
       assert length(shuffle_result) == length(local_result)

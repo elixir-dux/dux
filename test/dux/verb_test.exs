@@ -29,7 +29,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT 1 AS a, 2 AS b, 3 AS c")
         |> Dux.select([:c, :a])
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert Map.keys(row) |> Enum.sort() == ["a", "c"]
@@ -236,7 +236,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT 1 AS old_name")
         |> Dux.rename(old_name: :new_name)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"new_name" => 1}] = result
     end
@@ -245,7 +245,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT 1 AS a, 2 AS b")
         |> Dux.rename(a: :x, b: :y)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"x" => 1, "y" => 2}] = result
     end
@@ -310,7 +310,7 @@ defmodule Dux.VerbTest do
         ])
         |> Dux.group_by(:g)
         |> Dux.summarise_with(total: "SUM(v)", avg: "AVG(v)", n: "COUNT(*)")
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert row["total"] == 6
@@ -329,7 +329,7 @@ defmodule Dux.VerbTest do
         |> Dux.group_by([:a, :b])
         |> Dux.summarise_with(total: "SUM(v)")
         |> Dux.sort_by([:a, :b])
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
       assert hd(result)["total"] == 30
@@ -339,7 +339,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(total: "SUM(x)", n: "COUNT(*)")
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert row["total"] == 55
@@ -355,7 +355,7 @@ defmodule Dux.VerbTest do
       result =
         left
         |> Dux.join(right, on: :id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 1
       assert hd(result)["name"] == "a"
@@ -370,7 +370,7 @@ defmodule Dux.VerbTest do
         left
         |> Dux.join(right, on: :id, how: :left)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 2
       assert Enum.at(result, 0)["val"] == 10
@@ -408,7 +408,7 @@ defmodule Dux.VerbTest do
     test "creates from list of maps" do
       result =
         Dux.from_list([%{"a" => 1, "b" => "hello"}])
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"a" => 1, "b" => "hello"}] = result
     end
@@ -494,7 +494,7 @@ defmodule Dux.VerbTest do
         |> Dux.group_by(:region)
         |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
         |> Dux.sort_by(:region)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 2
       assert Enum.at(result, 0)["region"] == "EU"
@@ -538,7 +538,7 @@ defmodule Dux.VerbTest do
         |> Dux.group_by(:name)
         |> Dux.summarise_with(total_qty: "SUM(qty)")
         |> Dux.sort_by(:name)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"name" => "Gadget", "total_qty" => 10}, %{"name" => "Widget", "total_qty" => 8}] =
                result
@@ -581,7 +581,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 4) t(x)")
         |> Dux.summarise_with(total: "SUM(x)")
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"total" => 6}] = result
     end
@@ -596,7 +596,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query(~s{SELECT 1 AS "col with spaces"})
         |> Dux.select(["col with spaces"])
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"col with spaces" => 1}] = result
     end
@@ -653,7 +653,7 @@ defmodule Dux.VerbTest do
         Dux.from_query("SELECT * FROM range(100) t(x)")
         |> Dux.filter_with("x > 1000")
         |> Dux.summarise_with(n: "COUNT(*)")
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"n" => 0}] = result
     end

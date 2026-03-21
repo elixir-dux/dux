@@ -115,7 +115,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_query("SELECT 10 AS x")
         |> Dux.mutate(scaled: x * ^factor)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"scaled" => 50}] = result
     end
@@ -162,7 +162,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_query("SELECT 10 AS price, 5 AS qty")
         |> Dux.mutate(revenue: price * qty)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"revenue" => 50}] = result
     end
@@ -180,7 +180,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_query("SELECT 1 AS x, 2 AS y")
         |> Dux.mutate(z: x + y, w: x * 10)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"w" => 10, "x" => 1, "y" => 2, "z" => 3}] = result
     end
@@ -207,7 +207,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise(total: sum(x), average: avg(x), n: count(x))
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert row["total"] == 55
@@ -219,7 +219,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 4) t(x)")
         |> Dux.summarise(total: sum(x))
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [%{"total" => 6}] = result
     end
@@ -276,7 +276,7 @@ defmodule Dux.QueryTest do
       result =
         Dux.from_list([%{"price" => 100, "name" => "widget"}])
         |> Dux.mutate(with_tax: price * (1 + ^tax), label: upper(name))
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert_in_delta row["with_tax"], 108.0, 0.01
@@ -297,7 +297,7 @@ defmodule Dux.QueryTest do
         |> Dux.group_by(:region)
         |> Dux.summarise(total: sum(amount), n: count(amount))
         |> Dux.sort_by(:region)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [
                %{"region" => "EU", "total" => 150, "n" => 1},

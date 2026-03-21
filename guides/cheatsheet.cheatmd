@@ -150,8 +150,9 @@ Dux.to_ndjson(df, "out.ndjson")
 
 ```elixir
 Dux.compute(df)                    # → %Dux{} with table ref
-Dux.collect(df)                    # → [%{"col" => val}, ...]
-Dux.collect(df, atom_keys: true)   # → [%{col: val}, ...]
+Dux.collect(df)                    # → local %Dux{} (from distributed)
+Dux.to_rows(df)                    # → [%{"col" => val}, ...]
+Dux.to_rows(df, atom_keys: true)   # → [%{col: val}, ...]
 Dux.to_columns(df)                 # → %{"col" => [vals]}
 Dux.n_rows(df)                     # → integer
 Dux.peek(df)                       # print formatted table
@@ -162,17 +163,18 @@ Dux.sql_preview(df, pretty: true)  # → formatted SQL
 ## Distributed
 
 ```elixir
-# Start workers (one per node in production)
-{:ok, _} = Dux.Remote.Worker.start_link()
+# Mark for distributed execution
+workers = Dux.Remote.Worker.list()
 
-# Coordinate across cluster
-Dux.Remote.Coordinator.execute(pipeline)
+Dux.from_parquet("data/**/*.parquet")
+|> Dux.distribute(workers)
+|> Dux.filter(amount > 100)
+|> Dux.group_by(:region)
+|> Dux.summarise(total: sum(amount))
+|> Dux.to_rows()
 
-# Broadcast join (star-schema, small right table)
-Dux.Remote.Broadcast.execute(fact, dim, on: :id)
-
-# Shuffle join (large-large)
-Dux.Remote.Shuffle.execute(left, right, on: :key)
+# Collect back to local %Dux{}
+df |> Dux.distribute(workers) |> Dux.collect()
 ```
 
 ## Graph
@@ -187,11 +189,14 @@ Dux.Graph.connected_components(graph)
 Dux.Graph.triangle_count(graph)
 Dux.Graph.out_degree(graph)
 
-# Distributed (add workers: option)
-Dux.Graph.pagerank(graph, workers: workers)
-Dux.Graph.connected_components(graph, workers: workers)
-Dux.Graph.shortest_paths(graph, start_node, workers: workers)
-Dux.Graph.triangle_count(graph, workers: workers)
+# Distributed
+graph = Dux.Graph.new(vertices: v, edges: e)
+        |> Dux.Graph.distribute(workers)
+
+Dux.Graph.pagerank(graph)
+Dux.Graph.connected_components(graph)
+Dux.Graph.shortest_paths(graph, start_node)
+Dux.Graph.triangle_count(graph)
 ```
 
 ## Nx Interop

@@ -36,7 +36,7 @@ defmodule Dux.DistributedGraphTest do
 
   describe "distributed degree" do
     test "out_degree computed then distributed further" do
-      workers = start_workers(2)
+      _workers = start_workers(2)
       graph = triangle_graph()
 
       # Degree functions return lazy pipelines with rename ops.
@@ -46,7 +46,7 @@ defmodule Dux.DistributedGraphTest do
         graph
         |> Dux.Graph.out_degree()
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
       assert Enum.all?(result, &Map.has_key?(&1, "out_degree"))
@@ -64,10 +64,10 @@ defmodule Dux.DistributedGraphTest do
 
       result =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.pagerank(iterations: 5)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
       assert Enum.all?(result, fn row -> row["rank"] > 0 end)
@@ -92,14 +92,14 @@ defmodule Dux.DistributedGraphTest do
       local =
         Dux.Graph.pagerank(graph, iterations: 10)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       distributed =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.pagerank(iterations: 10)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Both should have same number of vertices
       assert length(distributed) == length(local)
@@ -131,7 +131,7 @@ defmodule Dux.DistributedGraphTest do
 
       result =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.connected_components()
         |> Dux.sort_by(:id)
         |> Dux.to_columns()
@@ -166,7 +166,7 @@ defmodule Dux.DistributedGraphTest do
 
       dist =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.connected_components()
         |> Dux.sort_by(:id)
         |> Dux.to_columns()
@@ -201,7 +201,7 @@ defmodule Dux.DistributedGraphTest do
 
       result =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.shortest_paths(1)
         |> Dux.sort_by(:node)
         |> Dux.to_columns()
@@ -231,7 +231,7 @@ defmodule Dux.DistributedGraphTest do
 
       dist =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.shortest_paths(1)
         |> Dux.sort_by(:node)
         |> Dux.to_columns()
@@ -254,7 +254,7 @@ defmodule Dux.DistributedGraphTest do
 
       result =
         graph
-        |> Dux.Graph.distributed(workers)
+        |> Dux.Graph.distribute(workers)
         |> Dux.Graph.shortest_paths(1)
         |> Dux.to_columns()
 
@@ -285,7 +285,7 @@ defmodule Dux.DistributedGraphTest do
 
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
 
-      assert graph |> Dux.Graph.distributed(workers) |> Dux.Graph.triangle_count() == 1
+      assert graph |> Dux.Graph.distribute(workers) |> Dux.Graph.triangle_count() == 1
     end
 
     test "distributed matches local" do
@@ -307,7 +307,7 @@ defmodule Dux.DistributedGraphTest do
 
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
 
-      assert graph |> Dux.Graph.distributed(workers) |> Dux.Graph.triangle_count() ==
+      assert graph |> Dux.Graph.distribute(workers) |> Dux.Graph.triangle_count() ==
                Dux.Graph.triangle_count(graph)
     end
 
@@ -319,12 +319,13 @@ defmodule Dux.DistributedGraphTest do
       edges = Dux.from_list([%{src: 1, dst: 2}, %{src: 2, dst: 3}])
       graph = Dux.Graph.new(vertices: vertices, edges: edges)
 
-      assert graph |> Dux.Graph.distributed(workers) |> Dux.Graph.triangle_count() == 0
+      assert graph |> Dux.Graph.distribute(workers) |> Dux.Graph.triangle_count() == 0
     end
   end
 
-  @tag :distributed
   describe "graph on peer nodes" do
+    @describetag :distributed
+
     defp start_peer(name) do
       unless Node.alive?() do
         raise "distributed tests require a named node"
@@ -368,10 +369,10 @@ defmodule Dux.DistributedGraphTest do
 
         result =
           graph
-          |> Dux.Graph.distributed([w1, w2])
+          |> Dux.Graph.distribute([w1, w2])
           |> Dux.Graph.pagerank(iterations: 5)
           |> Dux.sort_by(:id)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         assert length(result) == 3
         assert Enum.all?(result, &(&1["rank"] > 0))

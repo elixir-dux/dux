@@ -192,7 +192,7 @@ defmodule Dux.SecurityTest do
       result =
         Dux.from_list([%{"x" => 1}])
         |> Dux.mutate(y: ^bad_val)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert row["y"] == "1; DROP TABLE users; --"

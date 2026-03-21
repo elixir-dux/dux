@@ -36,7 +36,7 @@ defmodule Dux.E2ETest do
           order_count: count(id)
         )
         |> Dux.sort_by(desc: :total_revenue)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert result != []
       assert Enum.all?(result, &Map.has_key?(&1, "total_revenue"))
@@ -66,7 +66,7 @@ defmodule Dux.E2ETest do
         )
         |> Dux.filter_with("rn <= 2")
         |> Dux.sort_by([:dept, :salary])
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # 3 departments × 2 top earners = 6 rows
       assert length(result) == 6
@@ -144,7 +144,7 @@ defmodule Dux.E2ETest do
         result =
           Dux.from_parquet(parquet_path)
           |> Dux.sort_by(:name)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         assert length(result) == 2
         assert Enum.at(result, 0)["name"] == "Alice"
@@ -178,7 +178,7 @@ defmodule Dux.E2ETest do
           |> Dux.group_by(:month)
           |> Dux.summarise(total: sum(sales), n: count(sales))
           |> Dux.sort_by(:month)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         assert length(result) == 3
         assert Enum.at(result, 0)["n"] == 10
@@ -221,7 +221,7 @@ defmodule Dux.E2ETest do
           |> Dux.Graph.pagerank(iterations: 10)
           |> Dux.join(vertices, on: :id)
           |> Dux.sort_by(desc: :rank)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         assert length(result) == 3
         assert Enum.all?(result, &Map.has_key?(&1, "name"))
@@ -253,7 +253,7 @@ defmodule Dux.E2ETest do
         |> Dux.Graph.out_degree()
         |> Dux.join(vertices, on: :id)
         |> Dux.filter(out_degree > 3)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 1
       assert hd(result)["label"] == "node_1"
@@ -298,7 +298,7 @@ defmodule Dux.E2ETest do
           upper_name: upper(name),
           rounded: round(price * tax_rate, 2)
         )
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       assert_in_delta row["total"], 108.0, 0.01
@@ -320,7 +320,7 @@ defmodule Dux.E2ETest do
           n: count(x)
         )
         |> Dux.sort_by(:g)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 5
       assert Enum.all?(result, &(&1["n"] == 20))
@@ -360,7 +360,7 @@ defmodule Dux.E2ETest do
         |> Dux.group_by(:name)
         |> Dux.summarise(spend: sum(total), orders: count(order_id))
         |> Dux.sort_by(:name)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert [
                %{"name" => "Alice", "orders" => 2},
@@ -388,7 +388,7 @@ defmodule Dux.E2ETest do
         all_users
         |> Dux.join(recent_orders, on: [{:id, :user_id}], how: :left)
         |> Dux.sort_by(:id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 3
       assert Enum.at(result, 0)["amount"] == 100
@@ -412,7 +412,7 @@ defmodule Dux.E2ETest do
         |> Dux.group_by(:g)
         |> Dux.summarise(total: sum(doubled), n: count(x))
         |> Dux.sort_by(:g)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 10
       total_n = Enum.sum(Enum.map(result, & &1["n"]))
@@ -435,7 +435,7 @@ defmodule Dux.E2ETest do
         |> Dux.discard([:tripled])
         |> Dux.rename(final: :result)
         |> Dux.sort_by(:x)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) <= 3
       assert Enum.all?(result, &Map.has_key?(&1, "result"))

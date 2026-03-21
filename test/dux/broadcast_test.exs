@@ -47,7 +47,7 @@ defmodule Dux.BroadcastTest do
       result =
         Broadcast.execute(fact, dim, on: :region_id, workers: workers)
         |> Dux.sort_by(:region_id)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # 2 workers × 3 fact rows = 6 joined rows
       assert length(result) == 6
@@ -76,7 +76,7 @@ defmodule Dux.BroadcastTest do
       # Collect immediately — chaining more verbs after distributed execute
       # can hit GC race on the merged result's temp table
       result = Broadcast.execute(orders, products, on: :product_id, workers: workers)
-      rows = Dux.collect(result)
+      rows = Dux.to_rows(result)
 
       # 2 workers replicate the data, so rows are doubled
       assert length(rows) == 6
@@ -108,7 +108,7 @@ defmodule Dux.BroadcastTest do
         ])
 
       joined = Broadcast.execute(fact, dim, on: :id, how: :left, workers: workers)
-      result = Dux.collect(joined)
+      result = Dux.to_rows(joined)
 
       assert length(result) == 3
       matched = Enum.filter(result, &(&1["label"] != nil))
@@ -264,7 +264,7 @@ defmodule Dux.BroadcastTest do
           |> Dux.group_by(:category)
           |> Dux.summarise_with(total: "SUM(revenue)")
           |> Dux.sort_by(:category)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Only products 1, 2, 3 match the dim table
         # 2 workers replicate, so totals are 2x

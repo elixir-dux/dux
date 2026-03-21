@@ -45,7 +45,7 @@ defmodule Dux.IOTest do
 
         result =
           Dux.from_csv(path, delimiter: "\t")
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         assert [%{"a" => 1, "b" => 2}] = result
       after
@@ -144,7 +144,7 @@ defmodule Dux.IOTest do
         """)
         |> Dux.to_parquet(path)
 
-        result = Dux.from_parquet(path) |> Dux.collect()
+        result = Dux.from_parquet(path) |> Dux.to_rows()
         row = hd(result)
         assert row["i"] == 42
         assert_in_delta row["f"], 3.14, 0.001

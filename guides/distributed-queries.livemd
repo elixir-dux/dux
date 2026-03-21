@@ -46,10 +46,11 @@ The coordinator handles everything — partition the source, fan out, merge:
 
 ```elixir
 Dux.from_parquet("data/**/*.parquet")
+|> Dux.distribute(workers)
 |> Dux.filter(amount > 100)
 |> Dux.group_by(:region)
 |> Dux.summarise(total: sum(amount), n: count(amount))
-|> Dux.Remote.Coordinator.execute()
+|> Dux.to_rows()
 ```
 
 > #### No function serialization
@@ -71,10 +72,12 @@ Dux.from_parquet("data/**/*.parquet")
 Star-schema analytics: broadcast a small dimension table to all workers, then each worker joins its partition of the fact table locally.
 
 ```elixir
-fact = Dux.from_parquet("data/orders/**/*.parquet")
+fact = Dux.from_parquet("data/orders/**/*.parquet") |> Dux.distribute(workers)
 dim = Dux.from_csv("data/regions.csv")
 
-Dux.Remote.Broadcast.execute(fact, dim, on: :region_id)
+# Small table is broadcast to all workers automatically
+Dux.join(fact, dim, on: :region_id)
+|> Dux.to_rows()
 ```
 
 The broadcast flow:
@@ -122,6 +125,7 @@ workers = Dux.Remote.Worker.list()
 # Each worker processes its partition independently
 result =
   Dux.from_parquet("s3://datalake/events/**/*.parquet")
+  |> Dux.distribute(workers)
   |> Dux.filter(event_type == "purchase")
   |> Dux.group_by(:product_category)
   |> Dux.summarise(
@@ -129,7 +133,6 @@ result =
     orders: count(id),
     avg_order: avg(amount)
   )
-  |> Dux.Remote.Coordinator.execute(workers: workers)
   |> Dux.sort_by(desc: :revenue)
-  |> Dux.collect()
+  |> Dux.to_rows()
 ```

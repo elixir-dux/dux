@@ -29,7 +29,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 101) t(x)")
         |> Dux.summarise_with(minimum: "MIN(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Correct: MIN across all rows = 1
       # Bug (SUM): each worker's MIN might be 1, SUM would be 2
@@ -43,7 +43,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 101) t(x)")
         |> Dux.summarise_with(maximum: "MAX(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert hd(result)["maximum"] == 100
     end
@@ -57,7 +57,7 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.summarise_with(min_x: "MIN(x)", max_x: "MAX(x)")
         |> Coordinator.execute(workers: workers)
         |> Dux.sort_by(:grp)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # grp=0: x in {3,6,9,...,30} → min=3, max=30
       # grp=1: x in {1,4,7,...,28} → min=1, max=28
@@ -75,7 +75,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(average: "AVG(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # AVG of 1..10 = 5.5
       assert_in_delta hd(result)["average"], 5.5, 0.01
@@ -90,7 +90,7 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.summarise_with(avg_x: "AVG(x)")
         |> Coordinator.execute(workers: workers)
         |> Dux.sort_by(:grp)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # grp=0 (evens 2,4,6,8,10): avg=6.0
       # grp=1 (odds 1,3,5,7,9): avg=5.0
@@ -111,7 +111,7 @@ defmodule Dux.DistributedCorrectnessTest do
           maximum: "MAX(x)"
         )
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       row = hd(result)
       # Replicated: SUM and COUNT are 2x
@@ -139,7 +139,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Should produce a positive number (not nil, not negative)
       assert is_number(hd(result)["sd"])
@@ -154,11 +154,11 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       local =
         Dux.from_query("SELECT STDDEV_SAMP(x) AS sd FROM range(1, 11) t(x)")
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert_in_delta hd(result)["sd"], hd(local)["sd"], 0.01
     end
@@ -170,7 +170,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(v: "VARIANCE(x)")
         |> Coordinator.execute(workers: workers)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert is_number(hd(result)["v"])
       assert hd(result)["v"] > 0
@@ -185,7 +185,7 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
         |> Coordinator.execute(workers: workers)
         |> Dux.sort_by(:grp)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       # Each group has 10 values — STDDEV should be positive and finite
       assert length(result) == 2
@@ -247,7 +247,7 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.pivot_wider(:product, :sales)
         |> Coordinator.execute(workers: workers)
         |> Dux.sort_by(:region)
-        |> Dux.collect()
+        |> Dux.to_rows()
 
       assert length(result) == 2
 
@@ -333,8 +333,8 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.filter_with("x > 50")
         |> Dux.summarise_with(total: "SUM(x)", n: "COUNT(*)")
 
-      local = pipeline |> Dux.collect()
-      dist = Coordinator.execute(pipeline, workers: workers) |> Dux.collect()
+      local = pipeline |> Dux.to_rows()
+      dist = Coordinator.execute(pipeline, workers: workers) |> Dux.to_rows()
 
       # Replicated source: 2 workers each process all data → 2x totals
       assert hd(dist)["total"] == hd(local)["total"] * 2

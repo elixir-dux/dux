@@ -10,7 +10,7 @@ Mix.install([{:dux, "~> 0.1.0"}])
 require Dux
 ```
 
-Dux is a DuckDB-native dataframe library for Elixir. Pipelines are lazy — operations accumulate until you call `collect/1`.
+Dux is a DuckDB-native dataframe library for Elixir. Pipelines are lazy — operations accumulate until you call `to_rows/1`.
 
 ```elixir
 Dux.from_list([
@@ -21,7 +21,7 @@ Dux.from_list([
 ])
 |> Dux.filter(salary > 100_000)
 |> Dux.sort_by(desc: :salary)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ## Everything is lazy
@@ -38,7 +38,7 @@ df.ops
 ```
 
 ```elixir
-Dux.collect(df)
+Dux.to_rows(df)
 ```
 
 ## Expressions compile to SQL
@@ -55,7 +55,7 @@ Dux.from_list([
 ])
 |> Dux.filter(price > ^min_price)
 |> Dux.mutate(with_tax: price * 1.08)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 The `_with` variants accept raw SQL strings for programmatic use:
@@ -64,7 +64,7 @@ The `_with` variants accept raw SQL strings for programmatic use:
 Dux.from_query("SELECT * FROM range(1, 11) t(x)")
 |> Dux.filter_with("x > 5")
 |> Dux.mutate_with(squared: "x * x")
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ## Reading and writing data
@@ -81,7 +81,7 @@ Dux.from_list([
 
 Dux.from_csv(path)
 |> Dux.filter(score > 80)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ```elixir
@@ -93,7 +93,7 @@ Dux.from_query("SELECT x AS id, x * 10 AS value FROM range(1000) t(x)")
 Dux.from_parquet(parquet_path)
 |> Dux.filter(value > 5000)
 |> Dux.summarise(total: sum(value), n: count(id))
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ## Aggregation
@@ -113,7 +113,7 @@ Dux.from_list([
   avg_order: avg(amount)
 )
 |> Dux.sort_by(desc: :total)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ## Joins
@@ -145,7 +145,7 @@ orders
 |> Dux.group_by(:name)
 |> Dux.summarise(spend: sum(total), orders: count(order_id))
 |> Dux.sort_by(:name)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ## See the generated SQL

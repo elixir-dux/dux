@@ -23,7 +23,7 @@ defmodule Dux.Graph do
       |> Dux.Graph.pagerank()
       |> Dux.sort_by(desc: :rank)
       |> Dux.head(10)
-      |> Dux.collect()
+      |> Dux.to_rows()
   """
 
   defstruct [:vertices, :edges, :vertex_id, :edge_src, :edge_dst, :workers]
@@ -96,11 +96,11 @@ defmodule Dux.Graph do
   All subsequent algorithms will automatically use the distributed path.
 
       graph = Dux.Graph.new(vertices: v, edges: e)
-              |> Dux.Graph.distributed(workers)
+              |> Dux.Graph.distribute(workers)
 
       graph |> Dux.Graph.pagerank()  # automatically distributed
   """
-  def distributed(%__MODULE__{} = graph, workers) when is_list(workers) do
+  def distribute(%__MODULE__{} = graph, workers) when is_list(workers) do
     %{graph | workers: workers}
   end
 
@@ -200,7 +200,7 @@ defmodule Dux.Graph do
       ...> ])
       iex> vertices = Dux.from_list([%{"id" => 1}, %{"id" => 2}, %{"id" => 3}])
       iex> graph = Dux.Graph.new(vertices: vertices, edges: edges)
-      iex> result = Dux.Graph.pagerank(graph) |> Dux.sort_by(:id) |> Dux.collect()
+      iex> result = Dux.Graph.pagerank(graph) |> Dux.sort_by(:id) |> Dux.to_rows()
       iex> length(result) == 3
       true
       iex> Enum.all?(result, fn row -> row["rank"] > 0 end)
@@ -226,7 +226,7 @@ defmodule Dux.Graph do
     n =
       graph.vertices
       |> Dux.summarise_with(n: "COUNT(*)")
-      |> Dux.collect()
+      |> Dux.to_rows()
       |> hd()
       |> Map.get("n")
 
@@ -293,7 +293,7 @@ defmodule Dux.Graph do
     n =
       graph.vertices
       |> Dux.summarise_with(n: "COUNT(*)")
-      |> Dux.collect()
+      |> Dux.to_rows()
       |> hd()
       |> Map.get("n")
 
@@ -787,7 +787,7 @@ defmodule Dux.Graph do
     ) triangles
     """
 
-    result = Dux.from_query(sql) |> Dux.collect()
+    result = Dux.from_query(sql) |> Dux.to_rows()
     hd(result)["cnt"]
   end
 

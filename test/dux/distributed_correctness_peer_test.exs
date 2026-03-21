@@ -56,7 +56,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           Dux.from_query("SELECT * FROM range(1, 101) t(x)")
           |> Dux.summarise_with(minimum: "MIN(x)", maximum: "MAX(x)")
           |> Coordinator.execute(workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         row = hd(result)
         assert row["minimum"] == 1
@@ -80,7 +80,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           Dux.from_query("SELECT * FROM range(1, 11) t(x)")
           |> Dux.summarise_with(average: "AVG(x)")
           |> Coordinator.execute(workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # AVG(1..10) = 5.5 regardless of replication
         assert_in_delta hd(result)["average"], 5.5, 0.01
@@ -109,7 +109,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           )
           |> Coordinator.execute(workers: [w1, w2])
           |> Dux.sort_by(:grp)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         evens = Enum.find(result, &(&1["grp"] == 0))
         odds = Enum.find(result, &(&1["grp"] == 1))
@@ -148,7 +148,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           Dux.from_query("SELECT * FROM range(1, 101) t(x)")
           |> Dux.summarise_with(sd: "STDDEV_SAMP(x)", v: "VARIANCE(x)")
           |> Coordinator.execute(workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         row = hd(result)
         # Should produce positive numbers
@@ -217,7 +217,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           |> Dux.pivot_wider(:product, :sales)
           |> Coordinator.execute(workers: [w1, w2])
           |> Dux.sort_by(:region)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Both workers see both products → schema is consistent
         assert length(result) == 2
@@ -284,7 +284,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           |> Dux.sort_by(desc: :total)
           |> Dux.head(3)
           |> Coordinator.execute(workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Should get top 3 groups by total
         assert length(result) == 3
@@ -329,7 +329,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
             max_v: "MAX(value)"
           )
           |> Coordinator.execute(workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         row = hd(result)
         # 100 values: 1..100, sum=5050
@@ -364,7 +364,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
 
         result =
           Broadcast.execute(fact, dim, on: :id, workers: [w1, w2])
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Only ids 1,2,3 match → 3 rows per worker × 2 workers = 6
         assert length(result) == 6

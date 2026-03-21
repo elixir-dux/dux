@@ -57,7 +57,7 @@ graph
 |> Dux.Graph.pagerank(iterations: 20, damping: 0.85)
 |> Dux.sort_by(desc: :rank)
 |> Dux.head(10)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 Returns a `%Dux{}` with columns `[vertex_id, rank]`.
@@ -74,7 +74,7 @@ Uses DuckDB recursive CTEs for efficient BFS from a source vertex:
 ```elixir
 Dux.Graph.shortest_paths(graph, 1)
 |> Dux.sort_by(:dist)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ### Connected components
@@ -86,7 +86,7 @@ Dux.Graph.connected_components(graph)
 |> Dux.group_by(:component)
 |> Dux.summarise_with(size: "COUNT(*)")
 |> Dux.sort_by(desc: :size)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
 ### Triangle counting

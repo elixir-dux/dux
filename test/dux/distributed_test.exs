@@ -281,7 +281,7 @@ defmodule Dux.DistributedTest do
         result =
           Coordinator.execute(pipeline, workers: [w1, w2])
           |> Dux.sort_by(:region)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Verify the result makes sense
         # Both workers process the same data (replicated source), so
@@ -304,7 +304,7 @@ defmodule Dux.DistributedTest do
           |> Dux.group_by(:region)
           |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
           |> Dux.sort_by(:region)
-          |> Dux.collect()
+          |> Dux.to_rows()
 
         # Distributed totals should be 2x local (replicated source)
         for {local, dist} <- Enum.zip(local_result, result) do
@@ -358,7 +358,7 @@ defmodule Dux.DistributedTest do
           |> Dux.summarise_with(total: "SUM(amount)")
 
         result = Coordinator.execute(pipeline, workers: [w1, w2])
-        rows = Dux.sort_by(result, :region_name) |> Dux.collect()
+        rows = Dux.sort_by(result, :region_name) |> Dux.to_rows()
 
         assert length(rows) == 3
 

@@ -60,7 +60,7 @@ result =
   |> Dux.group_by(:region)
   |> Dux.summarise(total: sum(amount), avg_tax: avg(tax))
   |> Dux.sort_by(desc: :total)
-  |> Dux.collect()
+  |> Dux.to_rows()
 
 # result is a list of maps:
 # [%{"region" => "US", "total" => 15000, "avg_tax" => 120.0}, ...]
@@ -89,7 +89,7 @@ All operations are verbs on `%Dux{}` structs:
 | `pivot_longer/3` | Wide → long (DuckDB UNPIVOT) |
 | `concat_rows/1` | UNION ALL |
 | `compute/1` | Execute the pipeline |
-| `collect/1` | Execute and return list of maps (`atom_keys: true` option) |
+| `to_rows/1` | Execute and return list of maps (`atom_keys: true` option) |
 | `to_columns/1` | Execute and return column map |
 | `peek/2` | Print formatted table preview |
 | `n_rows/1` | Count rows |
@@ -122,17 +122,15 @@ Dux distributes analytical workloads across a BEAM cluster:
 
 ```elixir
 # Workers auto-register via :pg
-{:ok, _} = Dux.Remote.Worker.start_link()
+workers = Dux.Remote.Worker.list()
 
-# Coordinator partitions, fans out, merges
+# Mark for distributed, then use the same verbs
 Dux.from_parquet("data/**/*.parquet")
+|> Dux.distribute(workers)
 |> Dux.filter(amount > 100)
 |> Dux.group_by(:region)
 |> Dux.summarise(total: sum(amount))
-|> Dux.Remote.Coordinator.execute()
-
-# Broadcast joins for star-schema
-Dux.Remote.Broadcast.execute(fact_table, dim_table, on: :region_id)
+|> Dux.to_rows()
 ```
 
 No function serialization — `%Dux{}` is plain data. Ship it anywhere, compile to SQL there. No cluster manager — just `libcluster` + `:pg`. No heavyweight RPC — just `:erpc.multicall`.
@@ -147,6 +145,9 @@ graph |> Dux.Graph.pagerank() |> Dux.sort_by(desc: :rank) |> Dux.head(10)
 graph |> Dux.Graph.shortest_paths(start_node)
 graph |> Dux.Graph.connected_components()
 graph |> Dux.Graph.triangle_count()
+
+# Distribute graph across workers
+graph |> Dux.Graph.distribute(workers) |> Dux.Graph.pagerank()
 ```
 
 ## Nx interop

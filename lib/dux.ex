@@ -13,7 +13,7 @@ defmodule Dux do
   ## Creating data
 
       iex> df = Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
-      iex> Dux.collect(df)
+      iex> Dux.to_rows(df)
       [%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}]
 
   ## Piping through verbs
@@ -46,7 +46,7 @@ defmodule Dux do
   ## Lazy by default
 
   Operations accumulate — nothing hits DuckDB until you call `compute/1`,
-  `collect/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
+  `to_rows/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
   """
 
   defstruct [:source, :remote, :workers, ops: [], names: [], dtypes: %{}, groups: []]
@@ -76,7 +76,7 @@ defmodule Dux do
   This is the most flexible constructor — anything DuckDB can query, you can use.
 
       iex> df = Dux.from_query("SELECT 1 AS x, 2 AS y")
-      iex> Dux.collect(df)
+      iex> Dux.to_rows(df)
       [%{"x" => 1, "y" => 2}]
 
       iex> df = Dux.from_query("SELECT * FROM range(3) t(n)")
@@ -107,22 +107,22 @@ defmodule Dux do
   @doc """
   Mark a Dux for distributed execution across the given workers.
 
-  All subsequent operations (`compute/1`, `collect/1`, etc.) will automatically
-  use the Coordinator to fan out work across the workers. `collect/1` and
-  `to_columns/1` always bring results back to the calling node.
+  All subsequent operations will automatically use the Coordinator to fan out
+  work across the workers. Use `collect/1` to bring distributed results back
+  to a local `%Dux{}`, or `to_rows/1` / `to_columns/1` to materialize directly.
 
   ## Examples
 
       workers = Dux.Remote.Worker.list()
 
       Dux.from_parquet("data/**/*.parquet")
-      |> Dux.distributed(workers)
+      |> Dux.distribute(workers)
       |> Dux.filter(amount > 100)
       |> Dux.group_by(:region)
       |> Dux.summarise(total: sum(amount))
-      |> Dux.collect()
+      |> Dux.to_rows()
   """
-  def distributed(%Dux{} = dux, workers) when is_list(workers) do
+  def distribute(%Dux{} = dux, workers) when is_list(workers) do
     %{dux | workers: workers}
   end
 
@@ -250,7 +250,7 @@ defmodule Dux do
 
       iex> Dux.from_query("SELECT 1 AS a, 2 AS b, 3 AS c")
       ...> |> Dux.select([:a, :b])
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"a" => 1, "b" => 2}]
   """
   def select(%Dux{ops: ops} = dux, columns) when is_list(columns) do
@@ -263,7 +263,7 @@ defmodule Dux do
 
       iex> Dux.from_query("SELECT 1 AS a, 2 AS b, 3 AS c")
       ...> |> Dux.discard([:c])
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"a" => 1, "b" => 2}]
   """
   def discard(%Dux{ops: ops} = dux, columns) when is_list(columns) do
@@ -410,14 +410,14 @@ defmodule Dux do
       iex> require Dux
       iex> Dux.from_query("SELECT 1 AS x, 2 AS y")
       ...> |> Dux.mutate(z: x + y, w: x * 10)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"w" => 10, "x" => 1, "y" => 2, "z" => 3}]
 
       iex> require Dux
       iex> factor = 5
       iex> Dux.from_query("SELECT 10 AS x")
       ...> |> Dux.mutate(scaled: x * ^factor)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"scaled" => 50, "x" => 10}]
 
   For raw SQL strings, use `mutate_with/2`.
@@ -435,7 +435,7 @@ defmodule Dux do
 
       iex> Dux.from_query("SELECT 1 AS x, 2 AS y")
       ...> |> Dux.mutate_with(z: "x + y", w: "x * 10")
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"w" => 10, "x" => 1, "y" => 2, "z" => 3}]
   """
   def mutate_with(%Dux{ops: ops} = dux, exprs) when is_list(exprs) do
@@ -454,7 +454,7 @@ defmodule Dux do
 
       iex> Dux.from_query("SELECT 1 AS x, 2 AS y")
       ...> |> Dux.rename(x: :a, y: :b)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"a" => 1, "b" => 2}]
   """
   def rename(%Dux{ops: ops} = dux, mapping) when is_list(mapping) or is_map(mapping) do
@@ -502,7 +502,7 @@ defmodule Dux do
       ...> |> Dux.group_by(:g)
       ...> |> Dux.summarise(total: sum(v))
       ...> |> Dux.sort_by(:g)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"g" => "a", "total" => 3}, %{"g" => "b", "total" => 3}]
   """
   def group_by(%Dux{ops: ops} = dux, columns) do
@@ -536,7 +536,7 @@ defmodule Dux do
       ...> |> Dux.group_by(:region)
       ...> |> Dux.summarise(total: sum(sales), n: count(sales))
       ...> |> Dux.sort_by(:region)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"n" => 1, "region" => "EU", "total" => 150}, %{"n" => 2, "region" => "US", "total" => 300}]
 
   For raw SQL strings, use `summarise_with/2`.
@@ -556,7 +556,7 @@ defmodule Dux do
       ...> |> Dux.group_by(:g)
       ...> |> Dux.summarise_with(total: "SUM(v)")
       ...> |> Dux.sort_by(:g)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"g" => "a", "total" => 3}, %{"g" => "b", "total" => 3}]
   """
   def summarise_with(%Dux{ops: ops} = dux, aggs) when is_list(aggs) do
@@ -585,7 +585,7 @@ defmodule Dux do
       iex> left
       ...> |> Dux.join(right, on: :id)
       ...> |> Dux.sort_by(:id)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"id" => 1, "name" => "Alice", "score" => 95}, %{"id" => 2, "name" => "Bob", "score" => 87}]
   """
   def join(%Dux{ops: ops} = left, %Dux{} = right, opts \\ []) do
@@ -634,7 +634,7 @@ defmodule Dux do
       ...> ])
       ...> |> Dux.pivot_wider(:product, :sales)
       ...> |> Dux.sort_by(:region)
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"Gadget" => nil, "Widget" => 150, "region" => "EU"}, %{"Gadget" => 200, "Widget" => 100, "region" => "US"}]
   """
   def pivot_wider(%Dux{ops: ops} = dux, names_from, values_from, opts \\ []) do
@@ -658,7 +658,7 @@ defmodule Dux do
       ...> ])
       ...> |> Dux.pivot_longer([:q1, :q2], names_to: "quarter", values_to: "sales")
       ...> |> Dux.sort_by([:region, :quarter])
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"quarter" => "q1", "region" => "EU", "sales" => 150}, %{"quarter" => "q2", "region" => "EU", "sales" => 250}, %{"quarter" => "q1", "region" => "US", "sales" => 100}, %{"quarter" => "q2", "region" => "US", "sales" => 200}]
   """
   def pivot_longer(%Dux{ops: ops} = dux, columns, opts \\ []) do
@@ -739,7 +739,30 @@ defmodule Dux do
   end
 
   @doc """
+  Collect distributed results back to a local `%Dux{}`.
+
+  For distributed pipelines, this brings results back to the calling node.
+  For local pipelines, this is equivalent to `compute/1`.
+
+  ## Examples
+
+      workers = Dux.Remote.Worker.list()
+
+      Dux.from_parquet("data/**/*.parquet")
+      |> Dux.distribute(workers)
+      |> Dux.filter(amount > 100)
+      |> Dux.collect()
+      # => local %Dux{} with no workers
+  """
+  def collect(%Dux{} = dux) do
+    computed = compute(dux)
+    %{computed | workers: nil}
+  end
+
+  @doc """
   Compute and return results as a list of maps.
+
+  Automatically collects from distributed if needed.
 
   ## Options
 
@@ -748,14 +771,14 @@ defmodule Dux do
   ## Examples
 
       iex> Dux.from_query("SELECT 1 AS x, 'hello' AS y")
-      ...> |> Dux.collect()
+      ...> |> Dux.to_rows()
       [%{"x" => 1, "y" => "hello"}]
 
       iex> Dux.from_query("SELECT 1 AS x, 'hello' AS y")
-      ...> |> Dux.collect(atom_keys: true)
+      ...> |> Dux.to_rows(atom_keys: true)
       [%{x: 1, y: "hello"}]
   """
-  def collect(%Dux{} = dux, opts \\ []) do
+  def to_rows(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
     {:table, ref} = computed.source
     rows = Dux.Native.table_to_rows(ref)
@@ -769,6 +792,8 @@ defmodule Dux do
 
   @doc """
   Compute and return results as a map of column_name => [values].
+
+  Automatically collects from distributed if needed.
 
   ## Options
 
