@@ -63,7 +63,7 @@ defmodule Dux.DistributedTest do
       {peer, node} = start_peer(:dist_disc1)
 
       try do
-        {:ok, remote_worker} =
+        {:ok, _remote_worker} =
           start_worker_on(node)
 
         # Give pg time to propagate
