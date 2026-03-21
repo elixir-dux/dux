@@ -268,11 +268,14 @@ defmodule Dux.QueryBuilder do
   defp row_to_select(row) do
     cols =
       row
+      |> Enum.map(fn {k, v} -> {to_string(k), v} end)
       |> Enum.sort_by(fn {k, _v} -> k end)
       |> Enum.map_join(", ", fn {k, v} -> "#{encode_value(v)} AS #{quote_ident(k)}" end)
 
     "SELECT #{cols}"
   end
+
+  defp quote_ident(name) when is_atom(name), do: quote_ident(to_string(name))
 
   defp quote_ident(name) do
     escaped = String.replace(name, ~s("), ~s(""))

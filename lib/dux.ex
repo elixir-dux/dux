@@ -12,7 +12,7 @@ defmodule Dux do
 
   ## Creating data
 
-      iex> df = Dux.from_list([%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}])
+      iex> df = Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
       iex> Dux.collect(df)
       [%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}]
 
@@ -90,9 +90,9 @@ defmodule Dux do
   @doc """
   Create a Dux from a list of maps.
 
-  Each map is a row. Keys become column names.
+  Each map is a row. Keys become column names. Both atom and string keys are supported.
 
-      iex> df = Dux.from_list([%{"name" => "Alice", "age" => 30}, %{"name" => "Bob", "age" => 25}])
+      iex> df = Dux.from_list([%{name: "Alice", age: 30}, %{name: "Bob", age: 25}])
       iex> Dux.to_columns(df)
       %{"age" => [30, 25], "name" => ["Alice", "Bob"]}
   """
@@ -333,14 +333,14 @@ defmodule Dux do
   if you need deterministic output order. When called with columns,
   which row is kept for each distinct group is also non-deterministic.
 
-      iex> result = Dux.from_list([%{"x" => 1, "y" => "a"}, %{"x" => 1, "y" => "b"}, %{"x" => 2, "y" => "c"}])
+      iex> result = Dux.from_list([%{x: 1, y: "a"}, %{x: 1, y: "b"}, %{x: 2, y: "c"}])
       ...> |> Dux.distinct([:x])
       ...> |> Dux.sort_by(:x)
       ...> |> Dux.to_columns()
       iex> result["x"]
       [1, 2]
 
-      iex> Dux.from_list([%{"x" => 1}, %{"x" => 1}, %{"x" => 2}])
+      iex> Dux.from_list([%{x: 1}, %{x: 1}, %{x: 2}])
       ...> |> Dux.distinct()
       ...> |> Dux.sort_by(:x)
       ...> |> Dux.to_columns()
@@ -442,12 +442,12 @@ defmodule Dux do
 
   Accepts a column name (ascending) or keyword list with `:asc`/`:desc`.
 
-      iex> Dux.from_list([%{"x" => 3}, %{"x" => 1}, %{"x" => 2}])
+      iex> Dux.from_list([%{x: 3}, %{x: 1}, %{x: 2}])
       ...> |> Dux.sort_by(:x)
       ...> |> Dux.to_columns()
       %{"x" => [1, 2, 3]}
 
-      iex> Dux.from_list([%{"x" => 3}, %{"x" => 1}, %{"x" => 2}])
+      iex> Dux.from_list([%{x: 3}, %{x: 1}, %{x: 2}])
       ...> |> Dux.sort_by(desc: :x)
       ...> |> Dux.to_columns()
       %{"x" => [3, 2, 1]}
@@ -465,7 +465,7 @@ defmodule Dux do
   Group by columns for subsequent aggregation.
 
       iex> require Dux
-      iex> Dux.from_list([%{"g" => "a", "v" => 1}, %{"g" => "a", "v" => 2}, %{"g" => "b", "v" => 3}])
+      iex> Dux.from_list([%{g: "a", v: 1}, %{g: "a", v: 2}, %{g: "b", v: 3}])
       ...> |> Dux.group_by(:g)
       ...> |> Dux.summarise(total: sum(v))
       ...> |> Dux.sort_by(:g)
@@ -496,9 +496,9 @@ defmodule Dux do
 
       iex> require Dux
       iex> Dux.from_list([
-      ...>   %{"region" => "US", "sales" => 100},
-      ...>   %{"region" => "US", "sales" => 200},
-      ...>   %{"region" => "EU", "sales" => 150}
+      ...>   %{region: "US", sales: 100},
+      ...>   %{region: "US", sales: 200},
+      ...>   %{region: "EU", sales: 150}
       ...> ])
       ...> |> Dux.group_by(:region)
       ...> |> Dux.summarise(total: sum(sales), n: count(sales))
@@ -519,7 +519,7 @@ defmodule Dux do
   @doc """
   Aggregate grouped data using raw SQL expression strings or compiled tuples.
 
-      iex> Dux.from_list([%{"g" => "a", "v" => 1}, %{"g" => "a", "v" => 2}, %{"g" => "b", "v" => 3}])
+      iex> Dux.from_list([%{g: "a", v: 1}, %{g: "a", v: 2}, %{g: "b", v: 3}])
       ...> |> Dux.group_by(:g)
       ...> |> Dux.summarise_with(total: "SUM(v)")
       ...> |> Dux.sort_by(:g)
@@ -547,8 +547,8 @@ defmodule Dux do
   - `:how` — join type: `:inner` (default), `:left`, `:right`, `:cross`, `:anti`, `:semi`
   - `:suffix` — suffix for duplicate column names (default: `"_right"`)
 
-      iex> left = Dux.from_list([%{"id" => 1, "name" => "Alice"}, %{"id" => 2, "name" => "Bob"}])
-      iex> right = Dux.from_list([%{"id" => 1, "score" => 95}, %{"id" => 2, "score" => 87}])
+      iex> left = Dux.from_list([%{id: 1, name: "Alice"}, %{id: 2, name: "Bob"}])
+      iex> right = Dux.from_list([%{id: 1, score: 95}, %{id: 2, score: 87}])
       iex> left
       ...> |> Dux.join(right, on: :id)
       ...> |> Dux.sort_by(:id)
@@ -585,9 +585,9 @@ defmodule Dux do
   @doc """
   Concatenate rows from multiple dataframes (UNION ALL).
 
-      iex> a = Dux.from_list([%{"x" => 1}])
-      iex> b = Dux.from_list([%{"x" => 2}])
-      iex> c = Dux.from_list([%{"x" => 3}])
+      iex> a = Dux.from_list([%{x: 1}])
+      iex> b = Dux.from_list([%{x: 2}])
+      iex> c = Dux.from_list([%{x: 3}])
       iex> Dux.concat_rows([a, b, c])
       ...> |> Dux.to_columns()
       %{"x" => [1, 2, 3]}
@@ -710,7 +710,7 @@ defmodule Dux do
     Triggers computation. The column must be a numeric type.
 
         require Dux
-        df = Dux.from_list([%{"x" => 1.0, "y" => 2.0}, %{"x" => 3.0, "y" => 4.0}])
+        df = Dux.from_list([%{x: 1.0, y: 2.0}, %{x: 3.0, y: 4.0}])
         Dux.to_tensor(df, :x)
         # #Nx.Tensor<f64[2] [1.0, 3.0]>
     """
