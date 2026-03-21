@@ -130,12 +130,16 @@ defmodule Dux.Remote.Coordinator do
       end
 
     # Stage 2: shuffle join
-    # Extract the join column for shuffle (uses first column pair)
-    {left_col, _right_col} = hd(on_cols)
+    # Convert on_cols [{left, right}, ...] to the format Shuffle expects
+    shuffle_on =
+      case on_cols do
+        [{col, col}] -> String.to_atom(col)
+        pairs -> Enum.map(pairs, fn {l, r} -> {String.to_atom(l), String.to_atom(r)} end)
+      end
 
     shuffle_result =
       Shuffle.execute(left_result, right_computed,
-        on: String.to_atom(left_col),
+        on: shuffle_on,
         how: how,
         workers: workers,
         timeout: timeout

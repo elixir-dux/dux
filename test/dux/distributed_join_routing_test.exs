@@ -465,4 +465,115 @@ defmodule Dux.DistributedJoinRoutingTest do
       assert Enum.all?(result, &Map.has_key?(&1, "tag"))
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Multi-column joins
+  # ---------------------------------------------------------------------------
+
+  describe "multi-column joins" do
+    test "broadcast with multi-column join key" do
+      workers = start_workers(2)
+
+      left =
+        Dux.from_list([
+          %{region: "US", year: 2024, revenue: 100},
+          %{region: "EU", year: 2024, revenue: 200},
+          %{region: "US", year: 2025, revenue: 150}
+        ])
+        |> Dux.distribute(workers)
+
+      right =
+        Dux.from_list([
+          %{region: "US", year: 2024, target: 90},
+          %{region: "EU", year: 2024, target: 180}
+        ])
+        |> Dux.compute()
+
+      result =
+        left
+        |> Dux.join(right, on: [:region, :year])
+        |> Dux.sort_by(:region)
+        |> Dux.to_rows()
+
+      # Only 2 matches: US/2024 and EU/2024 (US/2025 has no target)
+      regions = Enum.map(result, & &1["region"]) |> Enum.uniq() |> Enum.sort()
+      assert regions == ["EU", "US"]
+      assert Enum.all?(result, &Map.has_key?(&1, "target"))
+    end
+
+    test "shuffle with multi-column join key" do
+      workers = start_workers(2)
+
+      left =
+        Dux.from_list([
+          %{a: 1, b: "x", val: 10},
+          %{a: 1, b: "y", val: 20},
+          %{a: 2, b: "x", val: 30}
+        ])
+
+      right =
+        Dux.from_list([
+          %{a: 1, b: "x", tag: "match1"},
+          %{a: 2, b: "x", tag: "match2"}
+        ])
+        |> Dux.compute()
+
+      result =
+        left
+        |> Dux.join(right, on: [:a, :b])
+        |> Dux.Remote.Coordinator.execute(
+          workers: workers,
+          broadcast_threshold: 0
+        )
+        |> Dux.sort_by(:a)
+        |> Dux.to_rows()
+
+      tags = Enum.map(result, & &1["tag"]) |> Enum.sort()
+      assert tags == ["match1", "match2"]
+    end
+
+    test "broadcast with different left/right column names" do
+      workers = start_workers(1)
+
+      left =
+        Dux.from_list([%{user_id: 1, score: 100}, %{user_id: 2, score: 200}])
+        |> Dux.distribute(workers)
+
+      right =
+        Dux.from_list([%{id: 1, name: "Alice"}, %{id: 2, name: "Bob"}])
+        |> Dux.compute()
+
+      result =
+        left
+        |> Dux.join(right, on: [{:user_id, :id}])
+        |> Dux.sort_by(:user_id)
+        |> Dux.to_rows()
+
+      names = Enum.map(result, & &1["name"]) |> Enum.sort()
+      assert names == ["Alice", "Bob"]
+    end
+
+    test "shuffle with different left/right column names" do
+      workers = start_workers(2)
+
+      left = Dux.from_list([%{emp_id: 1, salary: 50_000}, %{emp_id: 2, salary: 60_000}])
+
+      right =
+        Dux.from_list([%{id: 1, dept: "Eng"}, %{id: 2, dept: "Sales"}])
+        |> Dux.compute()
+
+      result =
+        left
+        |> Dux.join(right, on: [{:emp_id, :id}])
+        |> Dux.Remote.Coordinator.execute(
+          workers: workers,
+          broadcast_threshold: 0
+        )
+        |> Dux.sort_by(:emp_id)
+        |> Dux.to_rows()
+
+      depts = Enum.map(result, & &1["dept"]) |> Enum.sort()
+      assert depts == ["Eng", "Sales"]
+    end
+  end
 end

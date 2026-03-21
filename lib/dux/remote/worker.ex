@@ -84,10 +84,11 @@ defmodule Dux.Remote.Worker do
   end
 
   @doc """
-  Hash-partition a pipeline's results into `n_buckets` buckets by join key.
+  Hash-partition a pipeline's results into `n_buckets` buckets by join key(s).
 
+  `on` can be a single column (atom/string) or a list of columns.
   Returns `%{bucket_id => ipc_binary}` — each bucket contains the rows
-  whose `hash(join_key) % n_buckets == bucket_id`.
+  whose `hash(join_keys) % n_buckets == bucket_id`.
   """
   def hash_partition(worker, %Dux{} = pipeline, on, n_buckets, timeout \\ :infinity) do
     GenServer.call(worker, {:hash_partition, pipeline, on, n_buckets}, timeout)
@@ -200,13 +201,13 @@ defmodule Dux.Remote.Worker do
         {sql, source_setup} = Dux.QueryBuilder.build(pipeline, db)
         Enum.each(source_setup, fn s -> Dux.Native.db_execute(db, s) end)
 
-        col = qi(to_string(on_col))
+        hash_expr = hash_expr_for(on_col)
 
         # For each bucket, extract rows where hash(key) % n == bucket_id
         buckets =
           for bucket_id <- 0..(n_buckets - 1), into: %{} do
             bucket_sql =
-              "SELECT * EXCLUDE (__bucket) FROM (SELECT *, hash(#{col}) % #{n_buckets} AS __bucket FROM (#{sql}) __src) WHERE __bucket = #{bucket_id}"
+              "SELECT * EXCLUDE (__bucket) FROM (SELECT *, #{hash_expr} % #{n_buckets} AS __bucket FROM (#{sql}) __src) WHERE __bucket = #{bucket_id}"
 
             case Dux.Native.df_query(db, bucket_sql) do
               {:error, _} ->
@@ -283,6 +284,16 @@ defmodule Dux.Remote.Worker do
     :pg.leave(@pg_group, self())
     :ok
   end
+
+  # Build a DuckDB hash() expression for one or more columns.
+  # Single column: hash("col")
+  # Multiple columns: hash("col1", "col2", ...)
+  defp hash_expr_for(cols) when is_list(cols) do
+    quoted = Enum.map_join(cols, ", ", &qi(to_string(&1)))
+    "hash(#{quoted})"
+  end
+
+  defp hash_expr_for(col), do: "hash(#{qi(to_string(col))})"
 
   defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
   defp extract_source_ref(_), do: nil

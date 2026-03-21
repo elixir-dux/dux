@@ -29,7 +29,8 @@ defmodule Dux.Remote.Shuffle do
 
   ## Options
 
-    * `:on` — join column(s) (required)
+    * `:on` — join column(s). Can be an atom, a list of atoms (same name both sides),
+      or a list of `{left_col, right_col}` tuples for different column names.
     * `:how` — join type (default: `:inner`)
     * `:workers` — worker PIDs (default: all from `:pg`)
     * `:timeout` — per-operation timeout (default: `:infinity`)
@@ -44,7 +45,11 @@ defmodule Dux.Remote.Shuffle do
     how = Keyword.get(opts, :how, :inner)
     timeout = Keyword.get(opts, :timeout, :infinity)
 
-    on_col = to_string(on)
+    # Normalize join columns into [{left_col, right_col}, ...]
+    on_pairs = normalize_on(on)
+    left_cols = Enum.map(on_pairs, fn {l, _r} -> to_string(l) end)
+    right_cols = Enum.map(on_pairs, fn {_l, r} -> to_string(r) end)
+
     n_workers = length(workers)
     n_buckets = n_workers * @over_partition_factor
     stage_id = :erlang.unique_integer([:positive])
@@ -59,8 +64,8 @@ defmodule Dux.Remote.Shuffle do
       left_sliced = slice_for_workers(left, workers)
       right_sliced = slice_for_workers(right, workers)
 
-      left_partitions = hash_partition_all(left_sliced, on_col, n_buckets, timeout)
-      right_partitions = hash_partition_all(right_sliced, on_col, n_buckets, timeout)
+      left_partitions = hash_partition_all(left_sliced, left_cols, n_buckets, timeout)
+      right_partitions = hash_partition_all(right_sliced, right_cols, n_buckets, timeout)
 
       # Phase 2: Shuffle exchange — send each bucket to the assigned worker
       # Assign buckets to workers round-robin
@@ -88,7 +93,7 @@ defmodule Dux.Remote.Shuffle do
           workers,
           "shuffle_l_#{stage_id}",
           "shuffle_r_#{stage_id}",
-          on_col,
+          on_pairs,
           how,
           timeout
         )
@@ -148,11 +153,15 @@ defmodule Dux.Remote.Shuffle do
     end)
   end
 
-  defp hash_partition_all(worker_pipelines, on_col, n_buckets, timeout) do
+  defp hash_partition_all(worker_pipelines, on_cols, n_buckets, timeout) do
+    # on_cols is a list of column names (strings). For single column, Worker accepts
+    # a string; for multiple, Worker accepts a list.
+    partition_key = if length(on_cols) == 1, do: hd(on_cols), else: on_cols
+
     worker_pipelines
     |> Task.async_stream(
       fn {worker, pipeline} ->
-        {:ok, buckets} = Worker.hash_partition(worker, pipeline, on_col, n_buckets, timeout)
+        {:ok, buckets} = Worker.hash_partition(worker, pipeline, partition_key, n_buckets, timeout)
         {worker, buckets}
       end,
       timeout: timeout,
@@ -194,9 +203,9 @@ defmodule Dux.Remote.Shuffle do
   # Phase 3: Local join
   # ---------------------------------------------------------------------------
 
-  defp local_join_all(workers, left_prefix, right_prefix, on_col, how, timeout) do
-    quoted_col = qi(on_col)
+  defp local_join_all(workers, left_prefix, right_prefix, on_pairs, how, timeout) do
     join_type = join_type_sql(how)
+    join_condition = build_join_condition(on_pairs)
 
     # Each worker joins all its left buckets against all its right buckets
     workers
@@ -221,7 +230,7 @@ defmodule Dux.Remote.Shuffle do
           join_sql = """
             SELECT * FROM (#{left_union}) __left
             #{join_type} (#{right_union}) __right
-            USING (#{quoted_col})
+            ON #{join_condition}
           """
 
           pipeline = Dux.from_query(join_sql)
@@ -265,4 +274,22 @@ defmodule Dux.Remote.Shuffle do
   defp join_type_sql(:left), do: "LEFT JOIN"
   defp join_type_sql(:right), do: "RIGHT JOIN"
   defp join_type_sql(:cross), do: "CROSS JOIN"
+
+  # Normalize :on into [{left_col, right_col}, ...]
+  defp normalize_on(col) when is_atom(col), do: [{col, col}]
+  defp normalize_on(col) when is_binary(col), do: [{col, col}]
+
+  defp normalize_on(cols) when is_list(cols) do
+    Enum.map(cols, fn
+      {left, right} -> {to_string(left), to_string(right)}
+      col -> {to_string(col), to_string(col)}
+    end)
+  end
+
+  # Build ON condition: __left."col1" = __right."col1" AND __left."col2" = __right."col2"
+  defp build_join_condition(on_pairs) do
+    Enum.map_join(on_pairs, " AND ", fn {left_col, right_col} ->
+      "__left.#{qi(to_string(left_col))} = __right.#{qi(to_string(right_col))}"
+    end)
+  end
 end

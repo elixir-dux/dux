@@ -439,5 +439,81 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         :peer.stop(peer2)
       end
     end
+
+    test "auto-shuffle join via distribute + large right on peers" do
+      {peer1, node1} = start_peer(:auto_shuffle1)
+      {peer2, node2} = start_peer(:auto_shuffle2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        left =
+          Dux.from_query("SELECT x AS id, x * 10 AS amount FROM range(1, 11) t(x)")
+          |> Dux.distribute([w1, w2])
+
+        # Local table ref — force shuffle via threshold: 0
+        right =
+          Dux.from_list(Enum.map(1..5, &%{id: &1, name: "item_#{&1}"}))
+          |> Dux.compute()
+
+        result =
+          left
+          |> Dux.join(right, on: :id)
+          |> Dux.Remote.Coordinator.execute(
+            workers: [w1, w2],
+            broadcast_threshold: 0
+          )
+          |> Dux.sort_by(:id)
+          |> Dux.to_rows()
+
+        ids = Enum.map(result, & &1["id"]) |> Enum.uniq() |> Enum.sort()
+        assert ids == [1, 2, 3, 4, 5]
+        assert Enum.all?(result, &String.starts_with?(&1["name"], "item_"))
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+
+    test "multi-column shuffle join across peers" do
+      {peer1, node1} = start_peer(:multi_shuf1)
+      {peer2, node2} = start_peer(:multi_shuf2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        left = Dux.from_query("""
+          SELECT 'US' AS region, 2024 AS yr, 100 AS rev
+          UNION ALL SELECT 'EU', 2024, 200
+          UNION ALL SELECT 'US', 2025, 150
+        """)
+
+        right =
+          Dux.from_list([
+            %{region: "US", yr: 2024, target: 90},
+            %{region: "EU", yr: 2024, target: 180}
+          ])
+
+        result =
+          Shuffle.execute(left, right,
+            on: [:region, :yr],
+            workers: [w1, w2]
+          )
+          |> Dux.sort_by(:region)
+          |> Dux.to_rows()
+
+        # Only 2 matches (US/2024 and EU/2024)
+        regions = Enum.map(result, & &1["region"]) |> Enum.sort()
+        assert regions == ["EU", "US"]
+        assert Enum.all?(result, &Map.has_key?(&1, "target"))
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
   end
 end
