@@ -2,6 +2,11 @@
 
 ```elixir
 Mix.install([{:dux, "~> 0.1.0"}])
+```
+
+## Section
+
+```elixir
 require Dux
 ```
 
@@ -47,8 +52,8 @@ Dux.from_parquet("data/**/*.parquet")
 |> Dux.Remote.Coordinator.execute()
 ```
 
-> #### No function serialization {: .tip}
->
+> #### No function serialization
+> 
 > `%Dux{}` is plain Elixir data — a source, a list of operations, column names.
 > The coordinator ships this struct to each worker. The worker compiles it to SQL
 > locally and executes against its own DuckDB. No lambdas cross the wire.
@@ -80,31 +85,31 @@ The broadcast flow:
 4. Pipeline is rewritten to join against the broadcast table
 5. Fan out, merge, cleanup
 
-> #### When to broadcast {: .info}
->
+> #### When to broadcast
+> 
 > Use `Dux.Remote.Broadcast.should_broadcast?(df)` to check if a table
 > is small enough (default threshold: 256MB serialized). For large-large
 > joins, distributed shuffle is planned for a future release.
 
 ## Why not Spark?
 
-| | Spark | Dux |
-|---|---|---|
-| **Startup** | JVM cold start (seconds) | BEAM instant (already running) |
-| **Serialization** | Lambda serialization (fragile, opaque) | Ship `%Dux{}` data (plain tuples) |
-| **Cluster manager** | YARN / K8s / Mesos | libcluster + `:pg` |
-| **RPC** | Custom shuffle protocol | `:erpc.multicall` |
-| **Fault tolerance** | Lineage graph replay | Supervisor restart + re-read from S3 |
-| **Per-core perf** | Tungsten engine | DuckDB (5-10x faster) |
+|                     | Spark                                  | Dux                                  |
+| ------------------- | -------------------------------------- | ------------------------------------ |
+| **Startup**         | JVM cold start (seconds)               | BEAM instant (already running)       |
+| **Serialization**   | Lambda serialization (fragile, opaque) | Ship `%Dux{}` data (plain tuples)    |
+| **Cluster manager** | YARN / K8s / Mesos                     | libcluster + `:pg`                   |
+| **RPC**             | Custom shuffle protocol                | `:erpc.multicall`                    |
+| **Fault tolerance** | Lineage graph replay                   | Supervisor restart + re-read from S3 |
+| **Per-core perf**   | Tungsten engine                        | DuckDB (5-10x faster)                |
 
 ## Remote GC
 
 When a computed `%Dux{}` crosses node boundaries, the underlying DuckDB temp table must stay alive on the origin node. Dux handles this automatically with a distributed garbage collector:
 
-- A GC sentinel NIF resource on the consumer node fires when collected
-- The notification propagates to a Holder process on the origin node
-- The Holder releases the DuckDB resource when no consumers remain
-- Node disconnection triggers immediate cleanup
+* A GC sentinel NIF resource on the consumer node fires when collected
+* The notification propagates to a Holder process on the origin node
+* The Holder releases the DuckDB resource when no consumers remain
+* Node disconnection triggers immediate cleanup
 
 You don't need to think about this — it happens transparently.
 

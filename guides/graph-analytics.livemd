@@ -2,12 +2,15 @@
 
 ```elixir
 Mix.install([{:dux, "~> 0.1.0"}])
+```
+
+## Creating a graph
+
+```elixir
 require Dux
 ```
 
 `Dux.Graph` provides graph algorithms as compositions of Dux verbs. A graph is just two dataframes — vertices and edges. Every algorithm reduces to joins, aggregations, and iterations that DuckDB executes.
-
-## Creating a graph
 
 ```elixir
 vertices = Dux.from_list([

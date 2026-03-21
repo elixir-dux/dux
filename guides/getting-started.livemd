@@ -2,10 +2,13 @@
 
 ```elixir
 Mix.install([{:dux, "~> 0.1.0"}])
-require Dux
 ```
 
 ## Your first pipeline
+
+```elixir
+require Dux
+```
 
 Dux is a DuckDB-native dataframe library for Elixir. Pipelines are lazy — operations accumulate until you call `collect/1`.
 
