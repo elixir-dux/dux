@@ -22,6 +22,9 @@ defmodule Dux.Remote.Coordinator do
   alias Dux.Remote.{Merger, Partitioner, PipelineSplitter, Worker}
   import Dux.SQL.Helpers, only: [qi: 1]
 
+  # Broadcast threshold: 256MB serialized Arrow IPC
+  @broadcast_threshold 256 * 1024 * 1024
+
   @doc """
   Execute a `%Dux{}` pipeline across distributed workers.
 
@@ -49,30 +52,38 @@ defmodule Dux.Remote.Coordinator do
     %{worker_ops: worker_ops, coordinator_ops: coord_ops, agg_rewrites: rewrites} =
       PipelineSplitter.split(pipeline.ops)
 
-    worker_pipeline = %{pipeline | ops: worker_ops}
+    # Preprocess joins: broadcast/shuffle right sides that aren't worker-safe
+    {processed_ops, broadcast_tables} = preprocess_joins(worker_ops, workers, timeout)
 
-    # Partition the worker pipeline across workers
-    assignments = Partitioner.assign(worker_pipeline, workers, strategy: strategy)
+    worker_pipeline = %{pipeline | ops: processed_ops}
 
-    # Fan out: each worker executes its partition
-    results = fan_out(assignments, timeout)
+    try do
+      # Partition the worker pipeline across workers
+      assignments = Partitioner.assign(worker_pipeline, workers, strategy: strategy)
 
-    # Collect successful results, handle failures
-    {successes, failures} = partition_results(results)
+      # Fan out: each worker executes its partition
+      results = fan_out(assignments, timeout)
 
-    if successes == [] do
-      reasons = Enum.map(failures, fn {:error, reason} -> reason end)
-      raise ArgumentError, "all workers failed: #{inspect(reasons)}"
+      # Collect successful results, handle failures
+      {successes, failures} = partition_results(results)
+
+      if successes == [] do
+        reasons = Enum.map(failures, fn {:error, reason} -> reason end)
+        raise ArgumentError, "all workers failed: #{inspect(reasons)}"
+      end
+
+      # Merge partial results on coordinator
+      merged = Merger.merge_to_dux(successes, worker_pipeline)
+
+      # Apply AVG rewrites if any
+      merged = apply_avg_rewrites(merged, rewrites)
+
+      # Apply coordinator-only ops (slice, pivot, etc.)
+      apply_coordinator_ops(merged, coord_ops)
+    after
+      # Clean up broadcast tables on all workers
+      cleanup_broadcast_tables(workers, broadcast_tables)
     end
-
-    # Merge partial results on coordinator
-    merged = Merger.merge_to_dux(successes, worker_pipeline)
-
-    # Apply AVG rewrites if any
-    merged = apply_avg_rewrites(merged, rewrites)
-
-    # Apply coordinator-only ops (slice, pivot, etc.)
-    apply_coordinator_ops(merged, coord_ops)
   end
 
   @doc """
@@ -119,6 +130,112 @@ defmodule Dux.Remote.Coordinator do
       {Enum.map(ok, fn {:ok, ipc} -> ipc end), err}
     end)
   end
+
+  # ---------------------------------------------------------------------------
+  # Join preprocessing — broadcast/shuffle non-worker-safe right sides
+  # ---------------------------------------------------------------------------
+
+  # Scan worker ops for joins where the right side holds a source that
+  # workers can't resolve (e.g. a local {:table, ref}).  For each such join,
+  # compute the right side on the coordinator, broadcast it to all workers,
+  # and replace the join op with a join against the broadcast table.
+  #
+  # Returns {processed_ops, broadcast_table_names} where broadcast_table_names
+  # is a list of names to clean up after query execution.
+  defp preprocess_joins(ops, workers, timeout) do
+    Enum.map_reduce(ops, [], fn
+      {:join, %Dux{} = right, how, on_cols, suffix}, broadcast_names ->
+        if worker_safe_source?(right.source) and Enum.all?(right.ops, &worker_safe_op?/1) do
+          # Right side is resolvable on workers — pass through unchanged
+          {{:join, right, how, on_cols, suffix}, broadcast_names}
+        else
+          # Right side has a local source — need to broadcast or shuffle
+          route_join(right, how, on_cols, suffix, workers, timeout, broadcast_names)
+        end
+
+      op, broadcast_names ->
+        {op, broadcast_names}
+    end)
+  end
+
+  # Route a join with a non-worker-safe right side to broadcast or shuffle.
+  defp route_join(right, how, on_cols, suffix, workers, timeout, broadcast_names) do
+    # Compute the right side on the coordinator
+    right_computed = Dux.compute(right)
+    {:table, right_ref} = right_computed.source
+    right_ipc = Dux.Native.table_to_ipc(right_ref)
+
+    if byte_size(right_ipc) <= @broadcast_threshold do
+      # Small enough to broadcast
+      broadcast_name = "__bcast_#{:erlang.unique_integer([:positive])}"
+      broadcast_to_workers(workers, broadcast_name, right_ipc, timeout)
+
+      # Replace right side with a query against the broadcast table
+      broadcast_right = Dux.from_query("SELECT * FROM #{qi(broadcast_name)}")
+      {{:join, broadcast_right, how, on_cols, suffix}, [broadcast_name | broadcast_names]}
+    else
+      # Too large — fall back to shuffle.
+      # We can't inline this into the op list; the shuffle needs to execute
+      # as a separate coordinated stage. For now, raise with a clear message.
+      # Full shuffle-join integration is tracked as brief 2f (future work).
+      raise ArgumentError,
+            "right side of distributed join is too large to broadcast " <>
+              "(#{div(byte_size(right_ipc), 1024 * 1024)}MB > " <>
+              "#{div(@broadcast_threshold, 1024 * 1024)}MB threshold). " <>
+              "Use Dux.Remote.Shuffle.execute/3 directly for large-large joins."
+    end
+  end
+
+  defp broadcast_to_workers(workers, name, ipc_binary, _timeout) do
+    tasks =
+      Enum.map(workers, fn worker ->
+        Task.async(fn -> Worker.register_table(worker, name, ipc_binary) end)
+      end)
+
+    Task.await_many(tasks, 30_000)
+  end
+
+  defp cleanup_broadcast_tables(_workers, []), do: :ok
+
+  defp cleanup_broadcast_tables(workers, broadcast_names) do
+    Enum.each(broadcast_names, fn name ->
+      Enum.each(workers, fn worker ->
+        try do
+          Worker.drop_table(worker, name)
+        catch
+          _, _ -> :ok
+        end
+      end)
+    end)
+  end
+
+  # A source is worker-safe if every worker can independently resolve it.
+  # File paths, SQL queries, and inline lists are worker-safe.
+  # Table refs ({:table, ResourceArc}) are node-local — only the coordinator has them.
+  defp worker_safe_source?({:parquet, _}), do: true
+  defp worker_safe_source?({:csv, _, _}), do: true
+  defp worker_safe_source?({:ndjson, _, _}), do: true
+  defp worker_safe_source?({:sql, _}), do: true
+  defp worker_safe_source?({:query, _}), do: true
+  defp worker_safe_source?({:list, _}), do: true
+  defp worker_safe_source?({:table, _}), do: false
+  defp worker_safe_source?(_), do: false
+
+  # Check if an op itself is worker-safe (no nested non-worker-safe sources).
+  # Joins can nest other Dux structs in the right side.
+  defp worker_safe_op?({:join, %Dux{} = right, _, _, _}) do
+    worker_safe_source?(right.source) and Enum.all?(right.ops, &worker_safe_op?/1)
+  end
+
+  defp worker_safe_op?({:concat_rows, others}) do
+    Enum.all?(others, fn %Dux{} = other ->
+      worker_safe_source?(other.source) and Enum.all?(other.ops, &worker_safe_op?/1)
+    end)
+  end
+
+  defp worker_safe_op?(_), do: true
+
+  # ---------------------------------------------------------------------------
 
   # Apply aggregate rewrites (AVG, STDDEV, VARIANCE, COUNT DISTINCT)
   defp apply_avg_rewrites(dux, rewrites) when map_size(rewrites) == 0, do: dux
