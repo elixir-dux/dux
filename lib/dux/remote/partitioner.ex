@@ -28,6 +28,11 @@ defmodule Dux.Remote.Partitioner do
     end
   end
 
+  # CSV with glob-like path — no splitting (CSV globs less common)
+  defp assign_strategy(pipeline, workers, :round_robin) do
+    replicate(pipeline, workers)
+  end
+
   defp distribute_files(files, workers, pipeline, opts) do
     partitions = chunk_round_robin(files, length(workers))
 
@@ -41,11 +46,6 @@ defmodule Dux.Remote.Partitioner do
 
       {worker, %{pipeline | source: partitioned_source}}
     end)
-  end
-
-  # CSV with glob-like path — no splitting (CSV globs less common)
-  defp assign_strategy(pipeline, workers, :round_robin) do
-    replicate(pipeline, workers)
   end
 
   # Replicate: every worker gets the same pipeline

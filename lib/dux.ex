@@ -700,6 +700,55 @@ defmodule Dux do
   end
 
   # ---------------------------------------------------------------------------
+  # Nx interop
+  # ---------------------------------------------------------------------------
+
+  if Code.ensure_loaded?(Nx) do
+    @doc """
+    Convert a column to an Nx tensor.
+
+    Triggers computation. The column must be a numeric type.
+
+        require Dux
+        df = Dux.from_list([%{"x" => 1.0, "y" => 2.0}, %{"x" => 3.0, "y" => 4.0}])
+        Dux.to_tensor(df, :x)
+        # #Nx.Tensor<f64[2] [1.0, 3.0]>
+    """
+    def to_tensor(%Dux{} = dux, column) do
+      col_name = to_col_name(column)
+      computed = compute(dux)
+      {:table, ref} = computed.source
+      columns = Dux.Native.table_to_columns(ref)
+
+      values = Map.fetch!(columns, col_name)
+      dtype = Map.get(computed.dtypes, col_name)
+
+      nx_type =
+        case dtype do
+          {:s, n} ->
+            String.to_atom("s#{n}")
+
+          {:u, n} ->
+            String.to_atom("u#{n}")
+
+          {:f, n} ->
+            String.to_atom("f#{n}")
+
+          :boolean ->
+            :u8
+
+          {:decimal, _, _} ->
+            :f64
+
+          other ->
+            raise ArgumentError, "column #{col_name} has non-numeric type: #{inspect(other)}"
+        end
+
+      Nx.tensor(values, type: nx_type)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Macro helpers (compile-time)
   # ---------------------------------------------------------------------------
 
@@ -758,13 +807,6 @@ defmodule Dux do
   end
 
   # Force the compiler to keep a value alive until this point.
-  # Uses :erlang.phash2 which is opaque to the compiler — it can't
-  # prove the value is unused and optimize it away.
-  @compile {:inline, keep_alive: 1}
-  defp keep_alive(ref) do
-    :erlang.phash2(ref, 1)
-    :ok
-  end
 
   defp to_col_name(name) when is_atom(name), do: Atom.to_string(name)
   defp to_col_name(name) when is_binary(name), do: name
