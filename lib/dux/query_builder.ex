@@ -328,6 +328,12 @@ defmodule Dux.QueryBuilder do
         {:skip, n} -> ["skip = #{n}"]
         {:null_padding, true} -> ["null_padding = true"]
         {:auto_detect, false} -> ["auto_detect = false"]
+        {:nullstr, s} -> ["nullstr = '#{escape_sql_string(s)}'"]
+        {:types, types} when is_map(types) ->
+          type_strs = Enum.map_join(types, ", ", fn {col, type} ->
+            "'#{escape_sql_string(to_string(col))}': '#{escape_sql_string(type)}'"
+          end)
+          ["types = {#{type_strs}}"]
         _ -> []
       end)
 
