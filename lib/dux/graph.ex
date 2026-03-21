@@ -376,14 +376,24 @@ defmodule Dux.Graph do
       iex> Dux.Graph.shortest_paths(graph, 1) |> Dux.sort_by(:node) |> Dux.to_columns()
       %{"dist" => [0, 1, 1], "node" => [1, 2, 3]}
   """
-  def shortest_paths(%__MODULE__{} = graph, from_vertex) do
+  def shortest_paths(%__MODULE__{} = graph, from_vertex, opts \\ []) do
+    workers = Keyword.get(opts, :workers)
+    max_depth = Keyword.get(opts, :max_depth, 1000)
+
+    if workers do
+      shortest_paths_distributed(graph, from_vertex, max_depth, workers)
+    else
+      shortest_paths_local(graph, from_vertex, max_depth)
+    end
+  end
+
+  defp shortest_paths_local(graph, from_vertex, max_depth) do
     src = graph.edge_src
     dst = graph.edge_dst
 
     db = Dux.Connection.get_db()
     {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
 
-    # Use UNION (not UNION ALL) to deduplicate and prevent exponential blowup on cycles
     sql = """
     WITH RECURSIVE
       edges_cte AS (#{edges_sql}),
@@ -393,12 +403,51 @@ defmodule Dux.Graph do
         SELECT e.#{qi(dst)} AS node, p.dist + 1
         FROM paths p
         JOIN edges_cte e ON p.node = e.#{qi(src)}
-        WHERE p.dist < 1000
+        WHERE p.dist < #{max_depth}
       )
     SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
     """
 
     Dux.from_query(sql)
+  end
+
+  # Distributed: broadcast edges to one worker, run recursive CTE there.
+  # BFS needs the full edge set visible, so we offload to a worker's DuckDB.
+  defp shortest_paths_distributed(graph, from_vertex, max_depth, workers) do
+    src = graph.edge_src
+    dst = graph.edge_dst
+    worker = hd(workers)
+
+    edges_computed = Dux.compute(graph.edges)
+    {:table, edges_ref} = edges_computed.source
+    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+
+    Worker.register_table(worker, "__bfs_edges", edges_ipc)
+
+    sql = """
+    WITH RECURSIVE paths AS (
+        SELECT #{from_vertex} AS node, 0 AS dist
+        UNION
+        SELECT e.#{qi(dst)} AS node, p.dist + 1
+        FROM paths p
+        JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
+        WHERE p.dist < #{max_depth}
+      )
+    SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
+    """
+
+    {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
+    result = Dux.Native.table_from_ipc(result_ipc)
+    names = Dux.Native.table_names(result)
+    dtypes = result |> Dux.Native.table_dtypes() |> Map.new()
+
+    try do
+      Worker.drop_table(worker, "__bfs_edges")
+    catch
+      _, _ -> :ok
+    end
+
+    %Dux{source: {:table, result}, names: names, dtypes: dtypes}
   end
 
   # ---------------------------------------------------------------------------
@@ -663,7 +712,17 @@ defmodule Dux.Graph do
       iex> Dux.Graph.triangle_count(graph)
       1
   """
-  def triangle_count(%__MODULE__{} = graph) do
+  def triangle_count(%__MODULE__{} = graph, opts \\ []) do
+    workers = Keyword.get(opts, :workers)
+
+    if workers do
+      triangle_count_distributed(graph, workers)
+    else
+      triangle_count_local(graph)
+    end
+  end
+
+  defp triangle_count_local(graph) do
     src = graph.edge_src
     dst = graph.edge_dst
 
@@ -691,6 +750,50 @@ defmodule Dux.Graph do
 
     result = Dux.from_query(sql) |> Dux.collect()
     hd(result)["cnt"]
+  end
+
+  # Distributed: broadcast all edges to one worker, count there.
+  # Triangles can span partitions, so the full edge set must be visible.
+  defp triangle_count_distributed(graph, workers) do
+    src = graph.edge_src
+    dst = graph.edge_dst
+    worker = hd(workers)
+
+    edges_computed = Dux.compute(graph.edges)
+    {:table, edges_ref} = edges_computed.source
+    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+
+    Worker.register_table(worker, "__tri_edges", edges_ipc)
+
+    sql = """
+    SELECT COUNT(*) AS cnt FROM (
+      SELECT DISTINCT
+        LEAST(e1.#{qi(src)}, e1.#{qi(dst)}, e2.#{qi(dst)}) AS a,
+        LEAST(
+          GREATEST(e1.#{qi(src)}, e1.#{qi(dst)}),
+          GREATEST(e1.#{qi(src)}, e2.#{qi(dst)}),
+          GREATEST(e1.#{qi(dst)}, e2.#{qi(dst)})
+        ) AS b,
+        GREATEST(e1.#{qi(src)}, e1.#{qi(dst)}, e2.#{qi(dst)}) AS c
+      FROM "__tri_edges" e1
+      JOIN "__tri_edges" e2 ON e1.#{qi(dst)} = e2.#{qi(src)}
+      JOIN "__tri_edges" e3 ON e2.#{qi(dst)} = e3.#{qi(src)} AND e3.#{qi(dst)} = e1.#{qi(src)}
+      WHERE e1.#{qi(src)} < e1.#{qi(dst)}
+        AND e1.#{qi(dst)} < e2.#{qi(dst)}
+    ) triangles
+    """
+
+    {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
+    result = Dux.Native.table_from_ipc(result_ipc)
+    cols = Dux.Native.table_to_columns(result)
+
+    try do
+      Worker.drop_table(worker, "__tri_edges")
+    catch
+      _, _ -> :ok
+    end
+
+    hd(cols["cnt"])
   end
 
   # ---------------------------------------------------------------------------

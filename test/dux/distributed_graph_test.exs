@@ -171,6 +171,144 @@ defmodule Dux.DistributedGraphTest do
   # :peer distributed graph
   # ---------------------------------------------------------------------------
 
+  # ---------------------------------------------------------------------------
+  # Distributed shortest paths (iterative frontier BFS)
+  # ---------------------------------------------------------------------------
+
+  describe "distributed shortest_paths" do
+    test "BFS produces correct distances" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list(Enum.map(1..5, &%{id: &1}))
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 3},
+          %{src: 3, dst: 4},
+          %{src: 4, dst: 5}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      result =
+        Dux.Graph.shortest_paths(graph, 1, workers: workers)
+        |> Dux.sort_by(:node)
+        |> Dux.to_columns()
+
+      assert result["node"] == [1, 2, 3, 4, 5]
+      assert result["dist"] == [0, 1, 2, 3, 4]
+    end
+
+    test "distributed BFS matches local" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list([%{id: 1}, %{id: 2}, %{id: 3}])
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 3},
+          %{src: 1, dst: 3}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      local =
+        Dux.Graph.shortest_paths(graph, 1)
+        |> Dux.sort_by(:node)
+        |> Dux.to_columns()
+
+      dist =
+        Dux.Graph.shortest_paths(graph, 1, workers: workers)
+        |> Dux.sort_by(:node)
+        |> Dux.to_columns()
+
+      assert local == dist
+    end
+
+    test "disconnected vertices not reached" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list(Enum.map(1..4, &%{id: &1}))
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 3, dst: 4}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      result =
+        Dux.Graph.shortest_paths(graph, 1, workers: workers)
+        |> Dux.to_columns()
+
+      # Only nodes 1 and 2 reachable from 1
+      assert Enum.sort(result["node"]) == [1, 2]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Distributed triangle counting
+  # ---------------------------------------------------------------------------
+
+  describe "distributed triangle_count" do
+    test "counts triangles via worker offload" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list([%{id: 1}, %{id: 2}, %{id: 3}])
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 2, dst: 3},
+          %{src: 3, dst: 2},
+          %{src: 1, dst: 3},
+          %{src: 3, dst: 1}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      assert Dux.Graph.triangle_count(graph, workers: workers) == 1
+    end
+
+    test "distributed matches local" do
+      workers = start_workers(1)
+
+      vertices = Dux.from_list(Enum.map(1..4, &%{id: &1}))
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 2, dst: 3},
+          %{src: 3, dst: 2},
+          %{src: 1, dst: 3},
+          %{src: 3, dst: 1},
+          %{src: 3, dst: 4},
+          %{src: 4, dst: 3}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      assert Dux.Graph.triangle_count(graph, workers: workers) ==
+               Dux.Graph.triangle_count(graph)
+    end
+
+    test "no triangles in chain" do
+      workers = start_workers(1)
+
+      vertices = Dux.from_list(Enum.map(1..3, &%{id: &1}))
+
+      edges = Dux.from_list([%{src: 1, dst: 2}, %{src: 2, dst: 3}])
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      assert Dux.Graph.triangle_count(graph, workers: workers) == 0
+    end
+  end
+
   @tag :distributed
   describe "graph on peer nodes" do
     defp start_peer(name) do
