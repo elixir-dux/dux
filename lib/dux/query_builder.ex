@@ -66,6 +66,13 @@ defmodule Dux.QueryBuilder do
     {"SELECT * FROM read_parquet('#{escape_sql_string(path)}')", []}
   end
 
+  # Parquet list — multiple files (from distributed partitioning)
+  defp source_to_sql({:parquet_list, files, opts}, _db) do
+    file_list = Enum.map_join(files, ", ", &"'#{escape_sql_string(&1)}'")
+    options = parquet_read_options(opts)
+    {"SELECT * FROM read_parquet([#{file_list}]#{options})", []}
+  end
+
   defp source_to_sql({:csv, path, opts}, _db) do
     escaped = escape_sql_string(path)
     options = csv_read_options(opts)
