@@ -119,25 +119,63 @@ defmodule Dux.Remote.Coordinator do
     end)
   end
 
-  # Apply AVG rewrites: compute __sum / __count for each rewritten AVG column
+  # Apply aggregate rewrites (AVG, STDDEV, VARIANCE, COUNT DISTINCT)
   defp apply_avg_rewrites(dux, rewrites) when map_size(rewrites) == 0, do: dux
 
   defp apply_avg_rewrites(dux, rewrites) do
-    # For each AVG rewrite, add a mutate computing sum/count,
-    # then discard the intermediate columns
-    avg_exprs =
-      Enum.map(rewrites, fn {name, {:avg, sum_col, count_col, _inner}} ->
-        {name, "\"#{esc(sum_col)}\" / \"#{esc(count_col)}\""}
+    computed_exprs =
+      Enum.map(rewrites, fn
+        {name, {:avg, sum_col, count_col}} ->
+          {name, "\"#{esc(sum_col)}\" / \"#{esc(count_col)}\""}
+
+        {name, {:stddev, :stddev_samp, n, sum_x, sum_x2}} ->
+          {name, stddev_formula(n, sum_x, sum_x2, :samp, true)}
+
+        {name, {:stddev, :stddev_pop, n, sum_x, sum_x2}} ->
+          {name, stddev_formula(n, sum_x, sum_x2, :pop, true)}
+
+        {name, {:stddev, :var_samp, n, sum_x, sum_x2}} ->
+          {name, stddev_formula(n, sum_x, sum_x2, :samp, false)}
+
+        {name, {:stddev, :var_pop, n, sum_x, sum_x2}} ->
+          {name, stddev_formula(n, sum_x, sum_x2, :pop, false)}
+
+        {name, {:count_distinct, cd_col, _inner}} ->
+          # ARRAY_AGG(DISTINCT) across workers → flatten and count distinct
+          {name, "list_distinct(flatten(list(\"#{esc(cd_col)}\"))).__len"}
       end)
 
     intermediate_cols =
-      Enum.flat_map(rewrites, fn {_name, {:avg, sum_col, count_col, _}} ->
-        [String.to_atom(sum_col), String.to_atom(count_col)]
+      Enum.flat_map(rewrites, fn
+        {_, {:avg, sum_col, count_col}} ->
+          [String.to_atom(sum_col), String.to_atom(count_col)]
+
+        {_, {:stddev, _, n, sum_x, sum_x2}} ->
+          [String.to_atom(n), String.to_atom(sum_x), String.to_atom(sum_x2)]
+
+        {_, {:count_distinct, cd_col, _}} ->
+          [String.to_atom(cd_col)]
       end)
 
     dux
-    |> Dux.mutate_with(avg_exprs)
+    |> Dux.mutate_with(computed_exprs)
     |> Dux.discard(intermediate_cols)
+  end
+
+  defp stddev_formula(n_col, sum_col, sum2_col, pop_or_samp, sqrt?) do
+    n = "\"#{esc(n_col)}\""
+    sx = "\"#{esc(sum_col)}\""
+    sx2 = "\"#{esc(sum2_col)}\""
+
+    divisor = if pop_or_samp == :samp, do: "(#{n} - 1)", else: n
+
+    variance = "GREATEST(0, (#{sx2} - #{sx} * #{sx} / #{n}::DOUBLE) / #{divisor}::DOUBLE)"
+
+    if sqrt? do
+      "CASE WHEN #{n} <= 1 AND '#{pop_or_samp}' = 'samp' THEN NULL ELSE SQRT(#{variance}) END"
+    else
+      "CASE WHEN #{n} <= 1 AND '#{pop_or_samp}' = 'samp' THEN NULL ELSE #{variance} END"
+    end
   end
 
   # Apply coordinator-only ops to the merged result

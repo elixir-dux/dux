@@ -126,6 +126,74 @@ defmodule Dux.DistributedCorrectnessTest do
   end
 
   # ---------------------------------------------------------------------------
+  # STDDEV/VARIANCE distributed decomposition
+  # ---------------------------------------------------------------------------
+
+  describe "distributed STDDEV/VARIANCE rewrite" do
+    test "STDDEV_SAMP decomposition produces numeric result" do
+      workers = start_workers(2)
+
+      # With replicated source, N doubles (2 workers × 10 rows = 20).
+      # The decomposition formula is correct for the replicated data.
+      result =
+        Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+        |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
+        |> Coordinator.execute(workers: workers)
+        |> Dux.collect()
+
+      # Should produce a positive number (not nil, not negative)
+      assert is_number(hd(result)["sd"])
+      assert hd(result)["sd"] > 0
+    end
+
+    test "STDDEV matches local on single worker" do
+      workers = start_workers(1)
+
+      # Single worker = no replication = exact match
+      result =
+        Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+        |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
+        |> Coordinator.execute(workers: workers)
+        |> Dux.collect()
+
+      local =
+        Dux.from_query("SELECT STDDEV_SAMP(x) AS sd FROM range(1, 11) t(x)")
+        |> Dux.collect()
+
+      assert_in_delta hd(result)["sd"], hd(local)["sd"], 0.01
+    end
+
+    test "VARIANCE decomposition produces numeric result" do
+      workers = start_workers(2)
+
+      result =
+        Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+        |> Dux.summarise_with(v: "VARIANCE(x)")
+        |> Coordinator.execute(workers: workers)
+        |> Dux.collect()
+
+      assert is_number(hd(result)["v"])
+      assert hd(result)["v"] > 0
+    end
+
+    test "grouped STDDEV_SAMP" do
+      workers = start_workers(2)
+
+      result =
+        Dux.from_query("SELECT x, x % 2 AS grp FROM range(1, 21) t(x)")
+        |> Dux.group_by(:grp)
+        |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
+        |> Coordinator.execute(workers: workers)
+        |> Dux.sort_by(:grp)
+        |> Dux.collect()
+
+      # Each group has 10 values — STDDEV should be positive and finite
+      assert length(result) == 2
+      assert Enum.all?(result, fn row -> is_number(row["sd"]) and row["sd"] > 0 end)
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Slice correctness
   # ---------------------------------------------------------------------------
 

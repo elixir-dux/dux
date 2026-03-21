@@ -129,38 +129,104 @@ defmodule Dux.Remote.PipelineSplitter do
   defp rewrite_aggregates(aggs) do
     {worker_aggs, rewrites} =
       Enum.reduce(aggs, {[], %{}}, fn {name, expr}, {acc_aggs, acc_rewrites} ->
-        if avg_expr?(expr) do
-          inner = extract_inner_expr(expr, "AVG")
-          sum_name = "__avg_sum_#{name}"
-          count_name = "__avg_count_#{name}"
-
-          new_aggs = [
-            {sum_name, rewrite_func(expr, "AVG", "SUM")},
-            {count_name, rewrite_func(expr, "AVG", "COUNT")} | acc_aggs
-          ]
-
-          new_rewrites = Map.put(acc_rewrites, name, {:avg, sum_name, count_name, inner})
-          {new_aggs, new_rewrites}
-        else
-          {[{name, expr} | acc_aggs], acc_rewrites}
-        end
+        classify_and_rewrite(name, expr, acc_aggs, acc_rewrites)
       end)
 
     {Enum.reverse(worker_aggs), rewrites}
   end
 
-  defp avg_expr?(expr) when is_binary(expr), do: String.contains?(String.upcase(expr), "AVG(")
-  defp avg_expr?(_), do: false
+  defp classify_and_rewrite(name, expr, acc_aggs, acc_rewrites) do
+    upper = if is_binary(expr), do: String.upcase(expr), else: ""
 
-  defp extract_inner_expr(expr, func) do
-    # Extract the inner expression from FUNC(inner)
-    regex = ~r/#{func}\((.+)\)/i
+    case classify_agg(upper) do
+      :avg -> rewrite_avg(name, expr, acc_aggs, acc_rewrites)
+      :stddev -> rewrite_stddev(name, expr, upper, acc_aggs, acc_rewrites)
+      :count_distinct -> rewrite_count_distinct(name, expr, acc_aggs, acc_rewrites)
+      :passthrough -> {[{name, expr} | acc_aggs], acc_rewrites}
+    end
+  end
 
-    case Regex.run(regex, expr) do
-      [_, inner] -> inner
+  @stddev_keywords ~w(STDDEV VARIANCE VAR_SAMP VAR_POP STDDEV_SAMP STDDEV_POP)
+
+  defp classify_agg(upper) do
+    cond do
+      String.contains?(upper, "AVG(") ->
+        :avg
+
+      Enum.any?(@stddev_keywords, &String.contains?(upper, &1)) ->
+        :stddev
+
+      String.contains?(upper, "COUNT(DISTINCT") or String.contains?(upper, "COUNT_DISTINCT(") ->
+        :count_distinct
+
+      true ->
+        :passthrough
+    end
+  end
+
+  # AVG(x) → workers: SUM(x), COUNT(x). Coordinator: SUM/COUNT
+  defp rewrite_avg(name, expr, acc_aggs, acc_rewrites) do
+    sum_name = "__avg_sum_#{name}"
+    count_name = "__avg_count_#{name}"
+
+    new_aggs = [
+      {sum_name, rewrite_func(expr, "AVG", "SUM")},
+      {count_name, rewrite_func(expr, "AVG", "COUNT")} | acc_aggs
+    ]
+
+    new_rewrites = Map.put(acc_rewrites, name, {:avg, sum_name, count_name})
+    {new_aggs, new_rewrites}
+  end
+
+  # STDDEV/VARIANCE → workers: COUNT(x), SUM(x), SUM(x*x). Coordinator: algebraic formula
+  defp rewrite_stddev(name, expr, upper, acc_aggs, acc_rewrites) do
+    inner = extract_inner_expr(expr)
+    n_name = "__sd_n_#{name}"
+    sum_name = "__sd_sum_#{name}"
+    sum2_name = "__sd_sum2_#{name}"
+
+    new_aggs = [
+      {n_name, "COUNT(#{inner})"},
+      {sum_name, "SUM(CAST(#{inner} AS DOUBLE))"},
+      {sum2_name, "SUM(CAST(#{inner} AS DOUBLE) * CAST(#{inner} AS DOUBLE))"} | acc_aggs
+    ]
+
+    func_type =
+      cond do
+        String.contains?(upper, "STDDEV_POP") -> :stddev_pop
+        String.contains?(upper, "VAR_POP") -> :var_pop
+        String.contains?(upper, "VAR_SAMP") or String.contains?(upper, "VARIANCE") -> :var_samp
+        true -> :stddev_samp
+      end
+
+    new_rewrites = Map.put(acc_rewrites, name, {:stddev, func_type, n_name, sum_name, sum2_name})
+    {new_aggs, new_rewrites}
+  end
+
+  # COUNT(DISTINCT x) → workers: SELECT DISTINCT x. Coordinator: COUNT(DISTINCT)
+  # This changes the intermediate result shape — workers return rows instead of scalar.
+  # For now, we raise an error since this requires a fundamentally different merge strategy.
+  # The proper implementation would need the Coordinator to collect distinct values and re-count.
+  defp rewrite_count_distinct(name, expr, acc_aggs, acc_rewrites) do
+    inner = extract_inner_expr(expr)
+    cd_name = "__cd_#{name}"
+
+    # Workers compute distinct values (not a scalar count)
+    # The coordinator will need to merge these differently
+    new_aggs = [{cd_name, "ARRAY_AGG(DISTINCT #{inner})"} | acc_aggs]
+    new_rewrites = Map.put(acc_rewrites, name, {:count_distinct, cd_name, inner})
+    {new_aggs, new_rewrites}
+  end
+
+  defp extract_inner_expr(expr) when is_binary(expr) do
+    # Extract the inner expression from FUNC(inner) or FUNC(DISTINCT inner)
+    case Regex.run(~r/\w+\(\s*(?:DISTINCT\s+)?(.+)\)/i, expr) do
+      [_, inner] -> String.trim(inner)
       _ -> expr
     end
   end
+
+  defp extract_inner_expr(expr), do: inspect(expr)
 
   defp rewrite_func(expr, from, to) do
     String.replace(expr, ~r/#{from}\(/i, "#{to}(")

@@ -1,6 +1,8 @@
 defmodule Dux.Remote.Merger do
   @moduledoc false
 
+  import Dux.SQL.Helpers, only: [qi: 1, with_refs: 3]
+
   # Merges partial results from distributed workers.
   #
   # The merge step itself runs on the coordinator's DuckDB — we collect
@@ -26,29 +28,20 @@ defmodule Dux.Remote.Merger do
         {name, table_ref}
       end)
 
-    # Build UNION ALL of all partitions
-    union_sql =
-      table_names
-      |> Enum.map_join(" UNION ALL ", fn {name, _ref} ->
-        ~s(SELECT * FROM "#{name}")
-      end)
+    # Keep refs alive BEFORE building SQL that references temp table names
+    with_refs(:dux_merge_refs, table_names, fn ->
+      union_sql =
+        Enum.map_join(table_names, " UNION ALL ", fn {name, _ref} ->
+          ~s(SELECT * FROM "#{name}")
+        end)
 
-    # Apply any final operations that need re-aggregation
-    final_sql = apply_merge_ops(union_sql, ops)
+      final_sql = apply_merge_ops(union_sql, ops)
 
-    Process.put(:dux_merge_refs, table_names)
-
-    result =
       case Dux.Native.df_query(db, final_sql) do
-        {:error, reason} ->
-          {:error, reason}
-
-        result_ref ->
-          Dux.Native.table_to_ipc(result_ref)
+        {:error, reason} -> {:error, reason}
+        result_ref -> Dux.Native.table_to_ipc(result_ref)
       end
-
-    Process.delete(:dux_merge_refs)
-    result
+    end)
   end
 
   @doc """
@@ -67,16 +60,15 @@ defmodule Dux.Remote.Merger do
         {name, table_ref}
       end)
 
-    Process.put(:dux_merge_refs, input_refs)
+    # Keep refs alive BEFORE building SQL
+    with_refs(:dux_merge_refs, input_refs, fn ->
+      union_sql =
+        Enum.map_join(input_refs, " UNION ALL ", fn {name, _ref} ->
+          ~s(SELECT * FROM "#{name}")
+        end)
 
-    union_sql =
-      Enum.map_join(input_refs, " UNION ALL ", fn {name, _ref} ->
-        ~s(SELECT * FROM "#{name}")
-      end)
+      final_sql = apply_merge_ops(union_sql, pipeline.ops)
 
-    final_sql = apply_merge_ops(union_sql, pipeline.ops)
-
-    result =
       case Dux.Native.df_query(db, final_sql) do
         {:error, reason} ->
           raise ArgumentError, "Merge failed: #{reason}"
@@ -86,9 +78,7 @@ defmodule Dux.Remote.Merger do
           dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
           %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
       end
-
-    Process.delete(:dux_merge_refs)
-    result
+    end)
   end
 
   # ---------------------------------------------------------------------------
@@ -198,11 +188,5 @@ defmodule Dux.Remote.Merger do
   defp re_aggregate_expr(name, _expr) do
     quoted = qi(name)
     "SUM(#{quoted}) AS #{quoted}"
-  end
-
-  # Quote identifier — escape double quotes to prevent SQL injection
-  defp qi(name) do
-    escaped = String.replace(name, ~s("), ~s(""))
-    ~s("#{escaped}")
   end
 end

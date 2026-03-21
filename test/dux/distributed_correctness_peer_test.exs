@@ -131,6 +131,41 @@ defmodule Dux.DistributedCorrectnessPeerTest do
   end
 
   # ---------------------------------------------------------------------------
+  # STDDEV/VARIANCE across real nodes
+  # ---------------------------------------------------------------------------
+
+  describe "STDDEV on peer nodes" do
+    test "STDDEV_SAMP decomposition across peers" do
+      {peer1, node1} = start_peer(:stddev1)
+      {peer2, node2} = start_peer(:stddev2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        result =
+          Dux.from_query("SELECT * FROM range(1, 101) t(x)")
+          |> Dux.summarise_with(sd: "STDDEV_SAMP(x)", v: "VARIANCE(x)")
+          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.collect()
+
+        row = hd(result)
+        # Should produce positive numbers
+        assert is_number(row["sd"])
+        assert row["sd"] > 0
+        assert is_number(row["v"])
+        assert row["v"] > 0
+        # STDDEV = sqrt(VARIANCE)
+        assert_in_delta row["sd"], :math.sqrt(row["v"]), 0.01
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Slice correctness across real nodes
   # ---------------------------------------------------------------------------
 
