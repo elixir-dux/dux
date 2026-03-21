@@ -427,7 +427,13 @@ defmodule Dux.Graph do
   """
   def connected_components(%__MODULE__{} = graph, opts \\ []) do
     max_iterations = Keyword.get(opts, :max_iterations, 100)
-    cc_local(graph, max_iterations)
+    workers = Keyword.get(opts, :workers)
+
+    if workers do
+      cc_distributed(graph, max_iterations, workers)
+    else
+      cc_local(graph, max_iterations)
+    end
   end
 
   defp cc_local(graph, max_iterations) do
@@ -483,6 +489,145 @@ defmodule Dux.Graph do
       end)
 
     final
+  end
+
+  defp cc_distributed(graph, max_iterations, workers) do
+    vid = graph.vertex_id
+    src = graph.edge_src
+    dst = graph.edge_dst
+
+    labels =
+      graph.vertices
+      |> Dux.select([String.to_atom(vid)])
+      |> Dux.mutate_with(component: ~s(#{qi(vid)}))
+      |> Dux.compute()
+
+    # Broadcast edges once (they don't change between iterations)
+    edges_computed = Dux.compute(graph.edges)
+    {:table, edges_ref} = edges_computed.source
+    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+    broadcast_to_workers(workers, [{"__cc_edges", edges_ipc}])
+
+    result =
+      Enum.reduce_while(1..max_iterations, labels, fn _i, labels ->
+        {:table, labels_ref} = labels.source
+        labels_ipc = Dux.Native.table_to_ipc(labels_ref)
+
+        stage = :erlang.unique_integer([:positive])
+        broadcast_to_workers(workers, [{"__cc_labels_#{stage}", labels_ipc}])
+
+        # Forward propagation: for each edge src→dst, propagate src's label to dst
+        # Use the same join-against-broadcast pattern as PageRank
+        fwd_pipeline =
+          Dux.from_query(~s(SELECT * FROM "__cc_edges"))
+          |> Dux.join(
+            Dux.from_query(~s(SELECT * FROM "__cc_labels_#{stage}")),
+            on: [{String.to_atom(src), String.to_atom(vid)}]
+          )
+          |> Dux.select([String.to_atom(dst), :component])
+
+        # Reverse propagation: for each edge src→dst, propagate dst's label to src
+        rev_pipeline =
+          Dux.from_query(~s(SELECT * FROM "__cc_edges"))
+          |> Dux.join(
+            Dux.from_query(~s(SELECT * FROM "__cc_labels_#{stage}")),
+            on: [{String.to_atom(dst), String.to_atom(vid)}]
+          )
+          |> Dux.select([String.to_atom(src), :component])
+
+        # Fan out to workers, collect results
+        fwd_results = fan_out_pipeline(workers, fwd_pipeline)
+        rev_results = fan_out_pipeline(workers, rev_pipeline)
+
+        # Collect all IPC results
+        all_ipc =
+          (fwd_results ++ rev_results)
+          |> Enum.flat_map(fn
+            {:ok, ipc} -> [ipc]
+            _ -> []
+          end)
+
+        # Load results + current labels into coordinator DuckDB, take MIN
+        db = Dux.Connection.get_db()
+
+        input_refs =
+          Enum.map(all_ipc, fn ipc ->
+            ref = Dux.Native.table_from_ipc(ipc)
+            name = Dux.Native.table_ensure(db, ref)
+            {name, ref}
+          end)
+
+        Process.put(:dux_cc_refs, {labels, input_refs, edges_computed})
+
+        {:table, cur_labels_ref} = labels.source
+        cur_table = Dux.Native.table_ensure(db, cur_labels_ref)
+
+        # UNION ALL: current labels + forward neighbor labels (renamed) + reverse neighbor labels (renamed)
+        fwd_unions =
+          input_refs
+          |> Enum.take(length(fwd_results))
+          |> Enum.map_join(" UNION ALL ", fn {name, _} ->
+            ~s(SELECT #{qi(dst)} AS #{qi(vid)}, component FROM "#{name}")
+          end)
+
+        rev_unions =
+          input_refs
+          |> Enum.drop(length(fwd_results))
+          |> Enum.map_join(" UNION ALL ", fn {name, _} ->
+            ~s(SELECT #{qi(src)} AS #{qi(vid)}, component FROM "#{name}")
+          end)
+
+        parts = [~s(SELECT #{qi(vid)}, component FROM "#{cur_table}")]
+        parts = if fwd_unions != "", do: parts ++ [fwd_unions], else: parts
+        parts = if rev_unions != "", do: parts ++ [rev_unions], else: parts
+
+        union_sql = Enum.join(parts, " UNION ALL ")
+
+        merge_sql = """
+          SELECT #{qi(vid)}, MIN(component) AS component
+          FROM (#{union_sql}) __all
+          GROUP BY #{qi(vid)}
+        """
+
+        new_labels =
+          case Dux.Native.df_query(db, merge_sql) do
+            {:error, reason} ->
+              raise "CC merge failed: #{reason}"
+
+            ref ->
+              names = Dux.Native.table_names(ref)
+              dtypes = ref |> Dux.Native.table_dtypes() |> Map.new()
+              %Dux{source: {:table, ref}, names: names, dtypes: dtypes}
+          end
+
+        Process.delete(:dux_cc_refs)
+
+        # Cleanup this iteration's labels (keep edges for next iteration)
+        Enum.each(workers, fn w ->
+          try do
+            Worker.drop_table(w, "__cc_labels_#{stage}")
+          catch
+            _, _ -> :ok
+          end
+        end)
+
+        if converged?(labels, new_labels, vid) do
+          {:halt, new_labels}
+        else
+          {:cont, new_labels}
+        end
+      end)
+
+    # Final cleanup: remove broadcast edges
+    Enum.each(workers, fn w ->
+      try do
+        Worker.drop_table(w, "__cc_edges")
+      catch
+        _, _ -> :ok
+      end
+    end)
+
+    result
   end
 
   defp converged?(old_labels, new_labels, vid) do
@@ -569,6 +714,12 @@ defmodule Dux.Graph do
   defp broadcast_to_workers(workers, tables) do
     tasks = Enum.map(workers, &Task.async(fn -> register_tables(&1, tables) end))
     Task.await_many(tasks, 30_000)
+  end
+
+  defp fan_out_pipeline(workers, pipeline) do
+    workers
+    |> Enum.map(&Task.async(fn -> Worker.execute(&1, pipeline) end))
+    |> Task.await_many(30_000)
   end
 
   defp register_tables(worker, tables) do

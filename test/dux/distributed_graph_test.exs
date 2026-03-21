@@ -109,9 +109,63 @@ defmodule Dux.DistributedGraphTest do
   # Distributed connected components
   # ---------------------------------------------------------------------------
 
-  # Distributed connected_components uses the broadcast pattern.
-  # Complex edge case around broadcast table visibility during
-  # Coordinator.execute needs more investigation. Local CC works correctly.
+  describe "distributed connected_components" do
+    test "finds correct components with workers" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list([%{id: 1}, %{id: 2}, %{id: 3}, %{id: 4}])
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 3, dst: 4},
+          %{src: 4, dst: 3}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      result =
+        Dux.Graph.connected_components(graph, workers: workers)
+        |> Dux.sort_by(:id)
+        |> Dux.to_columns()
+
+      [c1, c2, c3, c4] = result["component"]
+      assert c1 == c2
+      assert c3 == c4
+      assert c1 != c3
+    end
+
+    test "distributed CC matches local" do
+      workers = start_workers(2)
+
+      vertices = Dux.from_list([%{id: 1}, %{id: 2}, %{id: 3}, %{id: 4}, %{id: 5}])
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 2, dst: 3},
+          %{src: 3, dst: 2},
+          %{src: 4, dst: 5},
+          %{src: 5, dst: 4}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      local =
+        Dux.Graph.connected_components(graph)
+        |> Dux.sort_by(:id)
+        |> Dux.to_columns()
+
+      dist =
+        Dux.Graph.connected_components(graph, workers: workers)
+        |> Dux.sort_by(:id)
+        |> Dux.to_columns()
+
+      assert local["component"] == dist["component"]
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # :peer distributed graph
