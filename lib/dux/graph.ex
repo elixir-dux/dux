@@ -218,7 +218,7 @@ defmodule Dux.Graph do
     # Iterative PageRank using SQL joins.
     # The accumulator carries {current_ranks, out_deg, all_prev_ranks} to keep
     # ResourceArc references alive and prevent Erlang GC from dropping temp tables.
-    {final, _out_deg, _prev} =
+    {final, kept_out_deg, kept_prev} =
       Enum.reduce(1..iterations, {ranks, out_deg, [ranks]}, fn _i, {ranks, out_deg, prev} ->
         db = Dux.Connection.get_db()
 
@@ -255,6 +255,10 @@ defmodule Dux.Graph do
         {new_ranks, out_deg, [new_ranks | prev]}
       end)
 
+    # Ensure kept refs survive until after final is returned.
+    # Without this, BEAM GC may collect the ResourceArcs mid-iteration.
+    :erlang.garbage_collect()
+    _ = {kept_out_deg, kept_prev}
     final
   end
 

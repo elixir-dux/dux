@@ -259,7 +259,7 @@ defmodule Dux.QueryBuilder do
     cols =
       row
       |> Enum.sort_by(fn {k, _v} -> k end)
-      |> Enum.map_join(", ", fn {k, v} -> "#{encode_value(v)} AS \"#{k}\"" end)
+      |> Enum.map_join(", ", fn {k, v} -> "#{encode_value(v)} AS #{quote_ident(k)}" end)
 
     "SELECT #{cols}"
   end
