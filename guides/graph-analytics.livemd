@@ -1,20 +1,30 @@
 # Graph Analytics
 
+## Setup
+
+```elixir
+Mix.install([{:dux, "~> 0.1.0"}])
+```
+
+```elixir
+require Dux
+```
+
 `Dux.Graph` provides graph algorithms as compositions of Dux verbs. A graph is just two dataframes — vertices and edges. Every algorithm reduces to joins, aggregations, and iterations that DuckDB executes.
 
 ## Creating a graph
 
 ```elixir
 vertices = Dux.from_list([
-  %{"id" => 1, "name" => "Alice"},
-  %{"id" => 2, "name" => "Bob"},
-  %{"id" => 3, "name" => "Carol"}
+  %{id: 1, name: "Alice"},
+  %{id: 2, name: "Bob"},
+  %{id: 3, name: "Carol"}
 ])
 
 edges = Dux.from_list([
-  %{"src" => 1, "dst" => 2},
-  %{"src" => 2, "dst" => 3},
-  %{"src" => 3, "dst" => 1}
+  %{src: 1, dst: 2},
+  %{src: 2, dst: 3},
+  %{src: 3, dst: 1}
 ])
 
 graph = Dux.Graph.new(vertices: vertices, edges: edges)
@@ -67,7 +77,7 @@ Uses DuckDB recursive CTEs for efficient BFS from a source vertex:
 Dux.Graph.shortest_paths(graph, 1)
 |> Dux.sort_by(:dist)
 |> Dux.collect()
-# [%{"node" => 1, "dist" => 0}, %{"node" => 2, "dist" => 1}, ...]
+# [%{node: 1, dist: 0}, %{node: 2, dist: 1}, ...]
 ```
 
 ### Connected components

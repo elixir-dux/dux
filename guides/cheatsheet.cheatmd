@@ -4,7 +4,7 @@
 
 ### From lists
 ```elixir
-Dux.from_list([%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}])
+Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
 ```
 
 ### From files

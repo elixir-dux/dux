@@ -1,5 +1,15 @@
 # Distributed Queries
 
+## Setup
+
+```elixir
+Mix.install([{:dux, "~> 0.1.0"}])
+```
+
+```elixir
+require Dux
+```
+
 Dux distributes analytical workloads across a BEAM cluster. Each node runs its own DuckDB instance. The coordinator partitions data, fans out pipelines, and merges results. No JVM, no YARN, no Spark — just BEAM processes and message passing.
 
 ## Architecture

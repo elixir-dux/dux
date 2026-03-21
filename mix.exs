@@ -75,9 +75,9 @@ defmodule Dux.MixProject do
       main: "Dux",
       source_ref: "v#{@version}",
       extras: [
-        "guides/getting-started.md",
-        "guides/distributed-queries.md",
-        "guides/graph-analytics.md",
+        "guides/getting-started.livemd",
+        "guides/distributed-queries.livemd",
+        "guides/graph-analytics.livemd",
         "guides/cheatsheet.cheatmd",
         "CHANGELOG.md"
       ],

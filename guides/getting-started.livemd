@@ -1,30 +1,16 @@
 # Getting Started
 
-Dux is a DuckDB-native dataframe library for Elixir. This guide walks you through installation, your first pipeline, and the key concepts.
+Dux is a DuckDB-native dataframe library for Elixir. This guide walks you through your first pipeline and the key concepts.
 
-## Installation
-
-Add `dux` to your dependencies:
+## Setup
 
 ```elixir
-def deps do
-  [
-    {:dux, "~> 0.1.0"}
-  ]
-end
+Mix.install([{:dux, "~> 0.1.0"}])
 ```
 
-Precompiled NIF binaries are provided — no Rust or DuckDB compilation needed.
-
-> #### Local builds {: .info}
->
-> If you need a local build (e.g., for a target not yet supported), set:
->
-> ```bash
-> DUX_BUILD=true mix deps.compile dux --force
-> ```
->
-> This requires a Rust toolchain.
+```elixir
+require Dux
+```
 
 ## Your first pipeline
 
@@ -32,18 +18,18 @@ Precompiled NIF binaries are provided — no Rust or DuckDB compilation needed.
 require Dux
 
 Dux.from_list([
-  %{"name" => "Alice", "department" => "Engineering", "salary" => 120_000},
-  %{"name" => "Bob", "department" => "Engineering", "salary" => 110_000},
-  %{"name" => "Carol", "department" => "Sales", "salary" => 95_000},
-  %{"name" => "Dave", "department" => "Sales", "salary" => 105_000}
+  %{name: "Alice", department: "Engineering", salary: 120_000},
+  %{name: "Bob", department: "Engineering", salary: 110_000},
+  %{name: "Carol", department: "Sales", salary: 95_000},
+  %{name: "Dave", department: "Sales", salary: 105_000}
 ])
 |> Dux.filter(salary > 100_000)
 |> Dux.sort_by(desc: :salary)
 |> Dux.collect()
 # [
-#   %{"name" => "Alice", "department" => "Engineering", "salary" => 120000},
-#   %{"name" => "Bob", "department" => "Engineering", "salary" => 110000},
-#   %{"name" => "Dave", "department" => "Sales", "salary" => 105000}
+#   %{name: "Alice", department: "Engineering", salary: 120000},
+#   %{name: "Bob", department: "Engineering", salary: 110000},
+#   %{name: "Dave", department: "Sales", salary: 105000}
 # ]
 ```
 
