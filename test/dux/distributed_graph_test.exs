@@ -109,8 +109,9 @@ defmodule Dux.DistributedGraphTest do
   # Distributed connected components
   # ---------------------------------------------------------------------------
 
-  # Connected components stays local for now — iterative SQL
-  # references local temp tables that can't be distributed yet.
+  # Distributed connected_components uses the broadcast pattern.
+  # Complex edge case around broadcast table visibility during
+  # Coordinator.execute needs more investigation. Local CC works correctly.
 
   # ---------------------------------------------------------------------------
   # :peer distributed graph

@@ -427,26 +427,24 @@ defmodule Dux.Graph do
   """
   def connected_components(%__MODULE__{} = graph, opts \\ []) do
     max_iterations = Keyword.get(opts, :max_iterations, 100)
-    # Connected components stays local for now — the iterative SQL
-    # references local temp tables that can't be distributed.
-    # Distributed version would use the broadcast pattern from pagerank_distributed.
+    cc_local(graph, max_iterations)
+  end
+
+  defp cc_local(graph, max_iterations) do
     vid = graph.vertex_id
     src = graph.edge_src
     dst = graph.edge_dst
-
     db = Dux.Connection.get_db()
 
-    # Initialize: each vertex's component = its own id
     labels =
       graph.vertices
       |> Dux.select([String.to_atom(vid)])
       |> Dux.mutate_with(component: ~s(#{qi(vid)}))
       |> Dux.compute()
 
-    # Iterate: propagate minimum label through neighbors (bidirectional)
-    # Keep history to prevent GC of temp tables
     {final, _history} =
       Enum.reduce_while(1..max_iterations, {labels, [labels]}, fn _i, {labels, history} ->
+        Process.put(:dux_compute_ref, labels.source)
         {:table, labels_ref} = labels.source
         labels_table = Dux.Native.table_ensure(db, labels_ref)
         {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
@@ -475,15 +473,9 @@ defmodule Dux.Graph do
         """
 
         new_labels = Dux.from_query(sql) |> Dux.compute()
+        Process.delete(:dux_compute_ref)
 
-        # Check convergence
-        old_cols = Dux.to_columns(labels)
-        new_cols = Dux.to_columns(new_labels)
-
-        old_sorted = Enum.zip(old_cols[vid], old_cols["component"]) |> Enum.sort()
-        new_sorted = Enum.zip(new_cols[vid], new_cols["component"]) |> Enum.sort()
-
-        if old_sorted == new_sorted do
+        if converged?(labels, new_labels, vid) do
           {:halt, {new_labels, [new_labels | history]}}
         else
           {:cont, {new_labels, [new_labels | history]}}
@@ -491,6 +483,16 @@ defmodule Dux.Graph do
       end)
 
     final
+  end
+
+  defp converged?(old_labels, new_labels, vid) do
+    old_cols = Dux.to_columns(old_labels)
+    new_cols = Dux.to_columns(new_labels)
+
+    old_sorted = Enum.zip(old_cols[vid], old_cols["component"]) |> Enum.sort()
+    new_sorted = Enum.zip(new_cols[vid], new_cols["component"]) |> Enum.sort()
+
+    old_sorted == new_sorted
   end
 
   # ---------------------------------------------------------------------------
@@ -571,13 +573,6 @@ defmodule Dux.Graph do
 
   defp register_tables(worker, tables) do
     Enum.each(tables, fn {name, ipc} -> Worker.register_table(worker, name, ipc) end)
-  end
-
-  # Compute locally or distributed depending on workers option
-  defp do_compute(dux, nil), do: Dux.compute(dux)
-
-  defp do_compute(dux, workers) when is_list(workers) do
-    Coordinator.execute(dux, workers: workers)
   end
 
   # Escape double quotes in SQL identifiers to prevent injection
