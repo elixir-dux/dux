@@ -26,7 +26,7 @@ defmodule Dux.Graph do
       |> Dux.collect()
   """
 
-  defstruct [:vertices, :edges, :vertex_id, :edge_src, :edge_dst]
+  defstruct [:vertices, :edges, :vertex_id, :edge_src, :edge_dst, :workers]
 
   @type t :: %__MODULE__{
           vertices: Dux.t(),
@@ -88,6 +88,20 @@ defmodule Dux.Graph do
       edge_src: src_col,
       edge_dst: dst_col
     }
+  end
+
+  @doc """
+  Mark a graph for distributed execution across the given workers.
+
+  All subsequent algorithms will automatically use the distributed path.
+
+      graph = Dux.Graph.new(vertices: v, edges: e)
+              |> Dux.Graph.distributed(workers)
+
+      graph |> Dux.Graph.pagerank()  # automatically distributed
+  """
+  def distributed(%__MODULE__{} = graph, workers) when is_list(workers) do
+    %{graph | workers: workers}
   end
 
   # ---------------------------------------------------------------------------
@@ -195,7 +209,7 @@ defmodule Dux.Graph do
   def pagerank(%__MODULE__{} = graph, opts \\ []) do
     damping = Keyword.get(opts, :damping, 0.85)
     iterations = Keyword.get(opts, :iterations, 20)
-    workers = Keyword.get(opts, :workers)
+    workers = graph.workers
 
     if workers do
       pagerank_distributed(graph, damping, iterations, workers)
@@ -293,70 +307,75 @@ defmodule Dux.Graph do
       |> Dux.mutate_with(rank: "#{initial_rank}")
       |> Dux.compute()
 
-    # Compute out-degree
+    # Compute out-degree — keep ref alive through all iterations
     out_deg = out_degree(graph) |> Dux.compute()
+    Process.put(:dux_pr_outdeg, out_deg)
 
     # Each iteration: broadcast ranks + out_deg to workers,
     # workers compute contributions from their edges,
     # coordinator merges and updates ranks
-    Enum.reduce(1..iterations, ranks, fn _i, ranks ->
-      # Broadcast current ranks and out_degree to all workers
-      {:table, ranks_ref} = ranks.source
-      ranks_ipc = Dux.Native.table_to_ipc(ranks_ref)
+    result =
+      Enum.reduce(1..iterations, ranks, fn _i, ranks ->
+        # Broadcast current ranks and out_degree to all workers
+        {:table, ranks_ref} = ranks.source
+        ranks_ipc = Dux.Native.table_to_ipc(ranks_ref)
 
-      {:table, outdeg_ref} = out_deg.source
-      outdeg_ipc = Dux.Native.table_to_ipc(outdeg_ref)
+        {:table, outdeg_ref} = out_deg.source
+        outdeg_ipc = Dux.Native.table_to_ipc(outdeg_ref)
 
-      stage = :erlang.unique_integer([:positive])
+        stage = :erlang.unique_integer([:positive])
 
-      broadcast_to_workers(workers, [
-        {"__pr_ranks_#{stage}", ranks_ipc},
-        {"__pr_outdeg_#{stage}", outdeg_ipc}
-      ])
+        broadcast_to_workers(workers, [
+          {"__pr_ranks_#{stage}", ranks_ipc},
+          {"__pr_outdeg_#{stage}", outdeg_ipc}
+        ])
 
-      # Each worker computes contributions from its copy of the edges
-      contribution_pipeline =
-        graph.edges
-        |> Dux.join(
-          Dux.from_query(~s(SELECT * FROM "__pr_ranks_#{stage}")),
-          on: [{String.to_atom(src), String.to_atom(vid)}]
-        )
-        |> Dux.join(
-          Dux.from_query(~s(SELECT * FROM "__pr_outdeg_#{stage}")),
-          on: [{String.to_atom(src), String.to_atom(vid)}]
-        )
-        |> Dux.mutate_with(contribution: "\"rank\" / \"out_degree\"")
-        |> Dux.group_by(String.to_atom(dst))
-        |> Dux.summarise_with(incoming: "SUM(contribution)")
+        # Each worker computes contributions from its copy of the edges
+        contribution_pipeline =
+          graph.edges
+          |> Dux.join(
+            Dux.from_query(~s(SELECT * FROM "__pr_ranks_#{stage}")),
+            on: [{String.to_atom(src), String.to_atom(vid)}]
+          )
+          |> Dux.join(
+            Dux.from_query(~s(SELECT * FROM "__pr_outdeg_#{stage}")),
+            on: [{String.to_atom(src), String.to_atom(vid)}]
+          )
+          |> Dux.mutate_with(contribution: "\"rank\" / \"out_degree\"")
+          |> Dux.group_by(String.to_atom(dst))
+          |> Dux.summarise_with(incoming: "SUM(contribution)")
 
-      # Fan out, merge contributions, then rename on coordinator
-      contributions =
-        Coordinator.execute(contribution_pipeline, workers: workers)
-        |> Dux.rename([{String.to_atom(dst), String.to_atom(vid)}])
-        |> Dux.compute()
+        # Fan out, merge contributions, then rename on coordinator
+        contributions =
+          Coordinator.execute(contribution_pipeline, workers: workers)
+          |> Dux.rename([{String.to_atom(dst), String.to_atom(vid)}])
+          |> Dux.compute()
 
-      # Compute new ranks on coordinator: base_rank + damping * incoming
-      # Left join with vertices to ensure all vertices get a rank
-      new_ranks =
-        graph.vertices
-        |> Dux.select([String.to_atom(vid)])
-        |> Dux.join(contributions, on: String.to_atom(vid), how: :left)
-        |> Dux.mutate_with(rank: "COALESCE(#{base_rank} + #{damping} * incoming, #{base_rank})")
-        |> Dux.select([String.to_atom(vid), :rank])
-        |> Dux.compute()
+        # Compute new ranks on coordinator: base_rank + damping * incoming
+        # Left join with vertices to ensure all vertices get a rank
+        new_ranks =
+          graph.vertices
+          |> Dux.select([String.to_atom(vid)])
+          |> Dux.join(contributions, on: String.to_atom(vid), how: :left)
+          |> Dux.mutate_with(rank: "COALESCE(#{base_rank} + #{damping} * incoming, #{base_rank})")
+          |> Dux.select([String.to_atom(vid), :rank])
+          |> Dux.compute()
 
-      # Cleanup broadcast tables
-      Enum.each(workers, fn w ->
-        try do
-          Worker.drop_table(w, "__pr_ranks_#{stage}")
-          Worker.drop_table(w, "__pr_outdeg_#{stage}")
-        catch
-          _, _ -> :ok
-        end
+        # Cleanup broadcast tables
+        Enum.each(workers, fn w ->
+          try do
+            Worker.drop_table(w, "__pr_ranks_#{stage}")
+            Worker.drop_table(w, "__pr_outdeg_#{stage}")
+          catch
+            _, _ -> :ok
+          end
+        end)
+
+        new_ranks
       end)
 
-      new_ranks
-    end)
+    Process.delete(:dux_pr_outdeg)
+    result
   end
 
   # ---------------------------------------------------------------------------
@@ -388,7 +407,7 @@ defmodule Dux.Graph do
       %{"dist" => [0, 1, 1], "node" => [1, 2, 3]}
   """
   def shortest_paths(%__MODULE__{} = graph, from_vertex, opts \\ []) do
-    workers = Keyword.get(opts, :workers)
+    workers = graph.workers
     max_depth = Keyword.get(opts, :max_depth, 1000)
 
     if workers do
@@ -494,7 +513,7 @@ defmodule Dux.Graph do
   """
   def connected_components(%__MODULE__{} = graph, opts \\ []) do
     max_iterations = Keyword.get(opts, :max_iterations, 100)
-    workers = Keyword.get(opts, :workers)
+    workers = graph.workers
 
     if workers do
       cc_distributed(graph, max_iterations, workers)
@@ -735,8 +754,8 @@ defmodule Dux.Graph do
       iex> Dux.Graph.triangle_count(graph)
       1
   """
-  def triangle_count(%__MODULE__{} = graph, opts \\ []) do
-    workers = Keyword.get(opts, :workers)
+  def triangle_count(%__MODULE__{} = graph) do
+    workers = graph.workers
 
     if workers do
       triangle_count_distributed(graph, workers)

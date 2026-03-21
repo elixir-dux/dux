@@ -49,7 +49,7 @@ defmodule Dux do
   `collect/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
   """
 
-  defstruct [:source, :remote, ops: [], names: [], dtypes: %{}, groups: []]
+  defstruct [:source, :remote, :workers, ops: [], names: [], dtypes: %{}, groups: []]
 
   @type source ::
           {:parquet, String.t()}
@@ -98,6 +98,39 @@ defmodule Dux do
   """
   def from_list(rows) when is_list(rows) do
     %Dux{source: {:list, rows}}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Distribution
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Mark a Dux for distributed execution across the given workers.
+
+  All subsequent operations (`compute/1`, `collect/1`, etc.) will automatically
+  use the Coordinator to fan out work across the workers. `collect/1` and
+  `to_columns/1` always bring results back to the calling node.
+
+  ## Examples
+
+      workers = Dux.Remote.Worker.list()
+
+      Dux.from_parquet("data/**/*.parquet")
+      |> Dux.distributed(workers)
+      |> Dux.filter(amount > 100)
+      |> Dux.group_by(:region)
+      |> Dux.summarise(total: sum(amount))
+      |> Dux.collect()
+  """
+  def distributed(%Dux{} = dux, workers) when is_list(workers) do
+    %{dux | workers: workers}
+  end
+
+  @doc """
+  Return to local execution (remove distributed workers).
+  """
+  def local(%Dux{} = dux) do
+    %{dux | workers: nil}
   end
 
   # ---------------------------------------------------------------------------
@@ -669,12 +702,18 @@ defmodule Dux do
       iex> match?({:table, _}, df.source)
       true
   """
+  # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+  def compute(%Dux{workers: workers} = dux) when is_list(workers) and workers != [] do
+    # Distributed execution — delegate to Coordinator
+    result = Dux.Remote.Coordinator.execute(dux, workers: workers)
+    # Preserve workers so subsequent ops stay distributed
+    %{result | workers: workers}
+  end
+
   def compute(%Dux{} = dux) do
+    # Local execution
     db = Dux.Connection.get_db()
 
-    # Store any source refs in process dict to prevent GC during query.
-    # The BEAM compiler can optimize away local variable references,
-    # but process dictionary entries are opaque to the optimizer.
     source_ref = extract_source_ref(dux)
     Process.put(:dux_compute_ref, source_ref)
 
