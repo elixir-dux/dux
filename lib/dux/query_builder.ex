@@ -204,10 +204,13 @@ defmodule Dux.QueryBuilder do
     {right_sql, _setup} = source_to_sql(right.source, right_db)
     right_ref = "(#{right_sql}) __right"
 
+    # Wrap prev in a named subquery so ON conditions can reference it
+    left_ref = "(SELECT * FROM #{prev}) __left"
+
     join_type = join_type_sql(how)
 
-    join_clause = build_join_clause(join_type, right_ref, on_cols, prev)
-    {"SELECT * FROM #{prev} #{join_clause}", groups}
+    join_clause = build_join_clause(join_type, right_ref, on_cols, "__left")
+    {"SELECT * FROM #{left_ref} #{join_clause}", groups}
   end
 
   defp op_to_sql({:concat_rows, others}, prev, groups) do
