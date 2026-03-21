@@ -791,6 +791,84 @@ defmodule Dux do
     end
   end
 
+  @doc """
+  Print a formatted preview of the data. Triggers computation.
+
+  Shows the first `limit` rows (default 5) as a formatted table with
+  a shape summary.
+
+  ## Options
+
+    * `:limit` - number of rows to show (default: `5`)
+
+  Returns `:ok`.
+  """
+  def peek(%Dux{} = dux, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 5)
+
+    computed = dux |> head(limit) |> compute()
+    {:table, ref} = computed.source
+
+    names = Dux.Native.table_names(ref)
+    columns = Dux.Native.table_to_columns(ref)
+    total_rows = n_rows(dux)
+
+    # Calculate column widths
+    col_data =
+      Enum.map(names, fn name ->
+        values = Map.get(columns, name, [])
+        cells = Enum.map(values, &cell_to_string/1)
+
+        width =
+          max(String.length(name), cells |> Enum.map(&String.length/1) |> Enum.max(fn -> 0 end))
+
+        width = min(width, 30)
+        {name, cells, width}
+      end)
+
+    # Header
+    separator =
+      "+-" <> Enum.map_join(col_data, "-+-", fn {_, _, w} -> String.duplicate("-", w) end) <> "-+"
+
+    header =
+      "| " <>
+        Enum.map_join(col_data, " | ", fn {name, _, w} -> String.pad_trailing(name, w) end) <>
+        " |"
+
+    # Rows
+    n_preview = length(Map.get(columns, hd(names), []))
+
+    rows =
+      for i <- 0..(n_preview - 1) do
+        "| " <>
+          Enum.map_join(col_data, " | ", fn {_, cells, w} ->
+            cell = Enum.at(cells, i, "")
+            pad_cell(cell, w)
+          end) <> " |"
+      end
+
+    output =
+      [separator, header, separator | rows] ++
+        [separator, "#{total_rows} rows × #{length(names)} columns"]
+
+    IO.puts(Enum.join(output, "\n"))
+    :ok
+  end
+
+  defp pad_cell(cell, width) do
+    truncated =
+      if String.length(cell) > width,
+        do: String.slice(cell, 0, width - 1) <> "…",
+        else: cell
+
+    String.pad_trailing(truncated, width)
+  end
+
+  defp cell_to_string(nil), do: ""
+  defp cell_to_string(v) when is_binary(v), do: v
+  defp cell_to_string(v) when is_float(v), do: Float.to_string(v)
+  defp cell_to_string(v), do: Kernel.inspect(v)
+
   # ---------------------------------------------------------------------------
   # Macro helpers (compile-time)
   # ---------------------------------------------------------------------------
