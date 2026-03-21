@@ -29,7 +29,7 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:rustler, "~> 0.36.0", runtime: false},
+      {:rustler, "~> 0.37.3", runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.36", only: :dev, runtime: false},
       {:stream_data, "~> 1.1", only: [:dev, :test]}

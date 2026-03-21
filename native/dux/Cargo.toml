@@ -9,7 +9,7 @@ path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustler = "0.36"
+rustler = "0.37"
 duckdb = { version = "1.2", features = ["bundled", "vtab-arrow", "appender-arrow"] }
 arrow = { version = "57", default-features = false, features = ["ipc"] }
 thiserror = "2"

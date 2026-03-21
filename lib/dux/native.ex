@@ -29,4 +29,8 @@ defmodule Dux.Native do
   # Arrow IPC serialization (for distribution)
   def table_to_ipc(_table), do: :erlang.nif_error(:nif_not_loaded)
   def table_from_ipc(_binary), do: :erlang.nif_error(:nif_not_loaded)
+
+  # GC sentinel (for distributed resource tracking)
+  def gc_sentinel_new(_pid, _msg), do: :erlang.nif_error(:nif_not_loaded)
+  def gc_sentinel_alive(_sentinel), do: :erlang.nif_error(:nif_not_loaded)
 end

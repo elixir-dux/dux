@@ -4,6 +4,7 @@ pub use duckdb::arrow;
 mod database;
 mod dataframe;
 mod error;
+mod gc_sentinel;
 mod types;
 
 pub use database::{DuxDb, DuxDbRef};
