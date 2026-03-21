@@ -2,7 +2,7 @@ defmodule Dux.DistributedTest do
   use ExUnit.Case, async: false
   require Dux
 
-  alias Dux.Remote.{Coordinator, Worker}
+  alias Dux.Remote.Worker
 
   @moduletag :distributed
   @moduletag timeout: 60_000
@@ -146,10 +146,13 @@ defmodule Dux.DistributedTest do
 
         result =
           Dux.from_query("SELECT 1 AS x")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
+          |> Dux.compute()
 
         # Each worker returns x=1, merger concatenates → 2 rows
         assert Dux.n_rows(result) == 2
+        # Workers are preserved after compute
+        assert result.workers == [w1, w2]
       after
         stop_peer(peer1)
         stop_peer(peer2)
@@ -168,12 +171,12 @@ defmodule Dux.DistributedTest do
 
         result =
           Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+          |> Dux.distribute([w1, w2])
           |> Dux.summarise_with(total: "SUM(x)")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.to_columns()
 
-        cols = Dux.to_columns(result)
         # Each worker sums 1..10=55, merger re-aggregates: 55+55=110
-        assert hd(cols["total"]) == 110
+        assert hd(result["total"]) == 110
       after
         stop_peer(peer1)
         stop_peer(peer2)
@@ -279,7 +282,8 @@ defmodule Dux.DistributedTest do
 
         # Distribute across 2 peer workers and collect
         result =
-          Coordinator.execute(pipeline, workers: [w1, w2])
+          pipeline
+          |> Dux.distribute([w1, w2])
           |> Dux.sort_by(:region)
           |> Dux.to_rows()
 
@@ -357,7 +361,7 @@ defmodule Dux.DistributedTest do
           |> Dux.group_by(:region_name)
           |> Dux.summarise_with(total: "SUM(amount)")
 
-        result = Coordinator.execute(pipeline, workers: [w1, w2])
+        result = pipeline |> Dux.distribute([w1, w2]) |> Dux.compute()
         rows = Dux.sort_by(result, :region_name) |> Dux.to_rows()
 
         assert length(rows) == 3
