@@ -13,19 +13,17 @@ defimpl Inspect, for: Dux do
     dtypes = dux.dtypes
 
     header = "DuckDB[#{n_rows} x #{n_cols}]"
+    dist_line = distribution_line(dux.workers)
     col_lines = Enum.map(names, &format_column(&1, columns, dtypes))
+
+    lines =
+      [line(), string(header)] ++
+        (if dist_line, do: [line(), string(dist_line)], else: []) ++
+        [line() | Enum.intersperse(col_lines, line())]
 
     concat([
       "#Dux<",
-      nest(
-        concat([
-          line(),
-          string(header),
-          line()
-          | Enum.intersperse(col_lines, line())
-        ]),
-        2
-      ),
+      nest(concat(lines), 2),
       line(),
       ">"
     ])
@@ -35,14 +33,15 @@ defimpl Inspect, for: Dux do
     |> color(:map, opts)
   end
 
-  def inspect(%Dux{source: source, ops: ops}, opts) do
+  def inspect(%Dux{source: source, ops: ops, workers: workers}, opts) do
     # Lazy — show source type and op count without materializing
     source_desc = describe_source(source)
+    dist_tag = if workers, do: " distributed(#{length(workers)} workers)", else: ""
 
     if ops == [] do
-      color("#Dux<lazy #{source_desc}>", :map, opts)
+      color("#Dux<lazy #{source_desc}#{dist_tag}>", :map, opts)
     else
-      color("#Dux<lazy [#{length(ops)} ops] #{source_desc}>", :map, opts)
+      color("#Dux<lazy [#{length(ops)} ops] #{source_desc}#{dist_tag}>", :map, opts)
     end
   end
 
@@ -89,6 +88,30 @@ defimpl Inspect, for: Dux do
   defp format_dtype({:decimal, p, s}), do: "decimal(#{p},#{s})"
   defp format_dtype(nil), do: "unknown"
   defp format_dtype(other), do: Kernel.inspect(other)
+
+  defp distribution_line(nil), do: nil
+  defp distribution_line([]), do: nil
+
+  defp distribution_line(workers) when is_list(workers) do
+    nodes =
+      workers
+      |> Enum.flat_map(fn
+        pid when is_pid(pid) -> [node(pid)]
+        _ -> []
+      end)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    node_desc =
+      case nodes do
+        [] -> "#{length(workers)} workers"
+        [n] when n == node() -> "local"
+        [n] -> "#{n}"
+        ns -> "#{length(ns)} nodes"
+      end
+
+    "distributed: #{length(workers)} workers on #{node_desc}"
+  end
 
   defp describe_source({:sql, sql}) do
     truncated = truncate(sql, 40)
