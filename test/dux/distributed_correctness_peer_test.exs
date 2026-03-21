@@ -375,6 +375,49 @@ defmodule Dux.DistributedCorrectnessPeerTest do
       end
     end
 
+    test "auto-broadcast join via distribute + join on peers" do
+      {peer1, node1} = start_peer(:auto_bcast1)
+      {peer2, node2} = start_peer(:auto_bcast2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Left: distributed across peer workers
+        left =
+          Dux.from_query("SELECT x AS id, x * 10 AS amount FROM range(1, 6) t(x)")
+          |> Dux.distribute([w1, w2])
+
+        # Right: local table ref — will be auto-broadcast by Coordinator
+        right =
+          Dux.from_list([
+            %{id: 1, name: "Alice"},
+            %{id: 3, name: "Carol"},
+            %{id: 5, name: "Eve"}
+          ])
+          |> Dux.compute()
+
+        result =
+          left
+          |> Dux.join(right, on: :id)
+          |> Dux.sort_by(:id)
+          |> Dux.to_rows()
+
+        # 3 matching ids per worker × 2 workers = 6 rows
+        assert length(result) == 6
+
+        names = Enum.map(result, & &1["name"]) |> Enum.uniq() |> Enum.sort()
+        assert names == ["Alice", "Carol", "Eve"]
+
+        # All rows have amount from left side
+        assert Enum.all?(result, &is_integer(&1["amount"]))
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+
     test "shuffle join across peer workers" do
       {peer1, node1} = start_peer(:shuffle_peer1)
       {peer2, node2} = start_peer(:shuffle_peer2)
