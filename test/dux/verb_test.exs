@@ -60,7 +60,7 @@ defmodule Dux.VerbTest do
     test "filters by condition" do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
-        |> Dux.filter("x > 5")
+        |> Dux.filter_with("x > 5")
         |> Dux.to_columns()
 
       assert result == %{"x" => [6, 7, 8, 9, 10]}
@@ -69,7 +69,7 @@ defmodule Dux.VerbTest do
     test "compound conditions" do
       result =
         Dux.from_query("SELECT * FROM range(1, 21) t(x)")
-        |> Dux.filter("x > 5 AND x < 10")
+        |> Dux.filter_with("x > 5 AND x < 10")
         |> Dux.to_columns()
 
       assert result == %{"x" => [6, 7, 8, 9]}
@@ -78,8 +78,8 @@ defmodule Dux.VerbTest do
     test "chained filters are ANDed" do
       result =
         Dux.from_query("SELECT * FROM range(1, 21) t(x)")
-        |> Dux.filter("x > 5")
-        |> Dux.filter("x < 10")
+        |> Dux.filter_with("x > 5")
+        |> Dux.filter_with("x < 10")
         |> Dux.to_columns()
 
       assert result == %{"x" => [6, 7, 8, 9]}
@@ -92,7 +92,7 @@ defmodule Dux.VerbTest do
           %{"name" => "Bob"},
           %{"name" => "Alicia"}
         ])
-        |> Dux.filter("name LIKE 'Ali%'")
+        |> Dux.filter_with("name LIKE 'Ali%'")
         |> Dux.to_columns()
 
       assert result == %{"name" => ["Alice", "Alicia"]}
@@ -101,7 +101,7 @@ defmodule Dux.VerbTest do
     test "filter returns empty when nothing matches" do
       result =
         Dux.from_query("SELECT * FROM range(5) t(x)")
-        |> Dux.filter("x > 100")
+        |> Dux.filter_with("x > 100")
         |> Dux.to_columns()
 
       assert result == %{"x" => []}
@@ -195,7 +195,7 @@ defmodule Dux.VerbTest do
     test "adds new columns" do
       result =
         Dux.from_query("SELECT 1 AS x, 2 AS y")
-        |> Dux.mutate(z: "x + y")
+        |> Dux.mutate_with(z: "x + y")
         |> Dux.to_columns()
 
       assert result == %{"x" => [1], "y" => [2], "z" => [3]}
@@ -204,7 +204,7 @@ defmodule Dux.VerbTest do
     test "multiple mutations in one call" do
       result =
         Dux.from_query("SELECT 10 AS x")
-        |> Dux.mutate(doubled: "x * 2", halved: "x / 2")
+        |> Dux.mutate_with(doubled: "x * 2", halved: "x / 2")
         |> Dux.to_columns()
 
       assert result["doubled"] == [20]
@@ -214,8 +214,8 @@ defmodule Dux.VerbTest do
     test "chained mutates" do
       result =
         Dux.from_query("SELECT 5 AS x")
-        |> Dux.mutate(y: "x * 2")
-        |> Dux.mutate(z: "y + x")
+        |> Dux.mutate_with(y: "x * 2")
+        |> Dux.mutate_with(z: "y + x")
         |> Dux.to_columns()
 
       assert result == %{"x" => [5], "y" => [10], "z" => [15]}
@@ -224,7 +224,7 @@ defmodule Dux.VerbTest do
     test "string expressions" do
       result =
         Dux.from_list([%{"name" => "alice"}])
-        |> Dux.mutate(upper_name: "UPPER(name)")
+        |> Dux.mutate_with(upper_name: "UPPER(name)")
         |> Dux.to_columns()
 
       assert result["upper_name"] == ["ALICE"]
@@ -293,7 +293,7 @@ defmodule Dux.VerbTest do
           %{"g" => "b", "v" => 30}
         ])
         |> Dux.group_by(:g)
-        |> Dux.summarise(total: "SUM(v)")
+        |> Dux.summarise_with(total: "SUM(v)")
         |> Dux.sort_by(:g)
         |> Dux.to_columns()
 
@@ -309,7 +309,7 @@ defmodule Dux.VerbTest do
           %{"g" => "x", "v" => 3}
         ])
         |> Dux.group_by(:g)
-        |> Dux.summarise(total: "SUM(v)", avg: "AVG(v)", n: "COUNT(*)")
+        |> Dux.summarise_with(total: "SUM(v)", avg: "AVG(v)", n: "COUNT(*)")
         |> Dux.collect()
 
       row = hd(result)
@@ -327,7 +327,7 @@ defmodule Dux.VerbTest do
           %{"a" => 2, "b" => "x", "v" => 40}
         ])
         |> Dux.group_by([:a, :b])
-        |> Dux.summarise(total: "SUM(v)")
+        |> Dux.summarise_with(total: "SUM(v)")
         |> Dux.sort_by([:a, :b])
         |> Dux.collect()
 
@@ -338,7 +338,7 @@ defmodule Dux.VerbTest do
     test "global aggregation without group_by" do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
-        |> Dux.summarise(total: "SUM(x)", n: "COUNT(*)")
+        |> Dux.summarise_with(total: "SUM(x)", n: "COUNT(*)")
         |> Dux.collect()
 
       row = hd(result)
@@ -441,7 +441,7 @@ defmodule Dux.VerbTest do
 
       result =
         base
-        |> Dux.filter("x > 5")
+        |> Dux.filter_with("x > 5")
         |> Dux.to_columns()
 
       assert result == %{"x" => [6, 7, 8, 9]}
@@ -452,8 +452,8 @@ defmodule Dux.VerbTest do
         Dux.from_query("SELECT * FROM range(1, 6) t(x)")
         |> Dux.compute()
 
-      a = base |> Dux.filter("x <= 3") |> Dux.n_rows()
-      b = base |> Dux.filter("x > 3") |> Dux.n_rows()
+      a = base |> Dux.filter_with("x <= 3") |> Dux.n_rows()
+      b = base |> Dux.filter_with("x > 3") |> Dux.n_rows()
 
       assert a == 3
       assert b == 2
@@ -464,8 +464,8 @@ defmodule Dux.VerbTest do
     test "shows generated SQL" do
       sql =
         Dux.from_query("SELECT * FROM t")
-        |> Dux.filter("x > 10")
-        |> Dux.mutate(y: "x * 2")
+        |> Dux.filter_with("x > 10")
+        |> Dux.mutate_with(y: "x * 2")
         |> Dux.head(5)
         |> Dux.sql_preview()
 
@@ -490,9 +490,9 @@ defmodule Dux.VerbTest do
 
       result =
         Dux.from_list(data)
-        |> Dux.filter("amount > 100")
+        |> Dux.filter_with("amount > 100")
         |> Dux.group_by(:region)
-        |> Dux.summarise(total: "SUM(amount)", n: "COUNT(*)")
+        |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
         |> Dux.sort_by(:region)
         |> Dux.collect()
 
@@ -507,8 +507,8 @@ defmodule Dux.VerbTest do
     test "select → mutate → filter → sort → head" do
       result =
         Dux.from_query("SELECT * FROM range(1, 101) t(x)")
-        |> Dux.mutate(squared: "x * x")
-        |> Dux.filter("squared > 50")
+        |> Dux.mutate_with(squared: "x * x")
+        |> Dux.filter_with("squared > 50")
         |> Dux.select([:x, :squared])
         |> Dux.sort_by(desc: :squared)
         |> Dux.head(3)
@@ -536,7 +536,7 @@ defmodule Dux.VerbTest do
         orders
         |> Dux.join(products, on: :product_id)
         |> Dux.group_by(:name)
-        |> Dux.summarise(total_qty: "SUM(qty)")
+        |> Dux.summarise_with(total_qty: "SUM(qty)")
         |> Dux.sort_by(:name)
         |> Dux.collect()
 
@@ -553,7 +553,7 @@ defmodule Dux.VerbTest do
     test "filter with invalid SQL returns error on compute" do
       assert_raise ArgumentError, ~r/DuckDB query failed/, fn ->
         Dux.from_query("SELECT 1 AS x")
-        |> Dux.filter("INVALID SYNTAX !!!!")
+        |> Dux.filter_with("INVALID SYNTAX !!!!")
         |> Dux.compute()
       end
     end
@@ -580,7 +580,7 @@ defmodule Dux.VerbTest do
     test "summarise without group_by does global aggregation" do
       result =
         Dux.from_query("SELECT * FROM range(1, 4) t(x)")
-        |> Dux.summarise(total: "SUM(x)")
+        |> Dux.summarise_with(total: "SUM(x)")
         |> Dux.collect()
 
       assert [%{"total" => 6}] = result
@@ -612,8 +612,8 @@ defmodule Dux.VerbTest do
     test "empty dataframe through full pipeline" do
       result =
         Dux.from_query("SELECT 1 AS x WHERE false")
-        |> Dux.filter("x > 0")
-        |> Dux.mutate(y: "x * 2")
+        |> Dux.filter_with("x > 0")
+        |> Dux.mutate_with(y: "x * 2")
         |> Dux.sort_by(:x)
         |> Dux.n_rows()
 
@@ -625,7 +625,7 @@ defmodule Dux.VerbTest do
 
       df =
         Enum.reduce(1..30, df, fn i, acc ->
-          Dux.mutate(acc, [{String.to_atom("c#{i}"), "x + #{i}"}])
+          Dux.mutate_with(acc, [{String.to_atom("c#{i}"), "x + #{i}"}])
         end)
 
       result = Dux.n_rows(df)
@@ -642,7 +642,7 @@ defmodule Dux.VerbTest do
       result =
         Dux.from_query("SELECT * FROM range(100) t(x)")
         |> Dux.group_by(:x)
-        |> Dux.summarise(n: "COUNT(*)")
+        |> Dux.summarise_with(n: "COUNT(*)")
         |> Dux.n_rows()
 
       assert result == 100
@@ -651,8 +651,8 @@ defmodule Dux.VerbTest do
     test "filter that eliminates everything then aggregates" do
       result =
         Dux.from_query("SELECT * FROM range(100) t(x)")
-        |> Dux.filter("x > 1000")
-        |> Dux.summarise(n: "COUNT(*)")
+        |> Dux.filter_with("x > 1000")
+        |> Dux.summarise_with(n: "COUNT(*)")
         |> Dux.collect()
 
       assert [%{"n" => 0}] = result
@@ -672,7 +672,7 @@ defmodule Dux.VerbTest do
 
       df =
         Enum.reduce(1..20, df, fn i, acc ->
-          Dux.filter(acc, "x >= #{i}")
+          Dux.filter_with(acc, "x >= #{i}")
         end)
 
       result = Dux.to_columns(df)
@@ -705,7 +705,7 @@ defmodule Dux.VerbTest do
       check all(total <- integer(1..100), threshold <- integer(0..100)) do
         result =
           Dux.from_query("SELECT * FROM range(#{total}) t(x)")
-          |> Dux.filter("x >= #{threshold}")
+          |> Dux.filter_with("x >= #{threshold}")
           |> Dux.n_rows()
 
         assert result <= total

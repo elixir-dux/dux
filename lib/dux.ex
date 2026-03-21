@@ -6,6 +6,10 @@ defmodule Dux do
   Pipelines are lazy — operations accumulate until `compute/1` compiles them to
   SQL CTEs and executes against DuckDB.
 
+  `require Dux` to use expression-based verbs like `filter/2`, `mutate/2`,
+  and `summarise/2`. Bare identifiers become column names, `^` interpolates
+  Elixir values as parameter bindings.
+
   ## Creating data
 
       iex> df = Dux.from_list([%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}])
@@ -14,24 +18,35 @@ defmodule Dux do
 
   ## Piping through verbs
 
+      iex> require Dux
       iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
-      ...> |> Dux.filter("x > 2")
-      ...> |> Dux.mutate(doubled: "x * 2")
+      ...> |> Dux.filter(x > 2)
+      ...> |> Dux.mutate(doubled: x * 2)
       ...> |> Dux.to_columns()
       %{"doubled" => [6, 8, 10], "x" => [3, 4, 5]}
+
+  ## Interpolation with ^
+
+      iex> require Dux
+      iex> min_val = 3
+      iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
+      ...> |> Dux.filter(x > ^min_val)
+      ...> |> Dux.to_columns()
+      %{"x" => [4, 5]}
+
+  ## Raw SQL strings
+
+  The `_with` variants accept raw SQL strings for programmatic use:
+
+      iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
+      ...> |> Dux.filter_with("x > 3")
+      ...> |> Dux.to_columns()
+      %{"x" => [4, 5]}
 
   ## Lazy by default
 
   Operations accumulate — nothing hits DuckDB until you call `compute/1`,
   `collect/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
-
-      iex> df = Dux.from_query("SELECT 1 AS x")
-      ...> |> Dux.filter("x > 0")
-      ...> |> Dux.mutate(y: "x + 1")
-      iex> is_list(df.ops)
-      true
-      iex> length(df.ops)
-      2
   """
 
   defstruct [:source, ops: [], names: [], dtypes: %{}, groups: []]
@@ -230,23 +245,59 @@ defmodule Dux do
   @doc """
   Filter rows matching a condition.
 
-  Accepts a SQL expression string or a `{sql, params}` tuple from the query compiler.
+  This is a macro — bare identifiers become column names, `^` interpolates
+  Elixir values. Requires `require Dux`.
+
+      iex> require Dux
+      iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
+      ...> |> Dux.filter(x > 3)
+      ...> |> Dux.to_columns()
+      %{"x" => [4, 5]}
+
+      iex> require Dux
+      iex> threshold = 7
+      iex> Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+      ...> |> Dux.filter(x >= ^threshold)
+      ...> |> Dux.to_columns()
+      %{"x" => [7, 8, 9, 10]}
+
+  For raw SQL strings, use `filter_with/2`.
+  """
+  defmacro filter(dux, expr) do
+    if is_binary(expr) do
+      quote do
+        Dux.filter_with(unquote(dux), unquote(expr))
+      end
+    else
+      {ast, pins} = Dux.Query.traverse_public(expr, [])
+
+      quote do
+        pins = unquote(Enum.reverse(pins))
+        compiled = Dux.Query.Compiler.to_sql(unquote(Macro.escape(ast)), pins)
+        Dux.filter_with(unquote(dux), compiled)
+      end
+    end
+  end
+
+  @doc """
+  Filter rows using a raw SQL expression string or compiled `{sql, params}`.
 
       iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
-      ...> |> Dux.filter("x > 3")
+      ...> |> Dux.filter_with("x > 3")
       ...> |> Dux.to_columns()
       %{"x" => [4, 5]}
 
       iex> Dux.from_query("SELECT * FROM range(1, 11) t(x)")
-      ...> |> Dux.filter("x % 2 = 0")
+      ...> |> Dux.filter_with("x % 2 = 0")
       ...> |> Dux.to_columns()
       %{"x" => [2, 4, 6, 8, 10]}
   """
-  def filter(%Dux{ops: ops} = dux, expr) when is_binary(expr) do
+  def filter_with(%Dux{ops: ops} = dux, expr) when is_binary(expr) do
     %{dux | ops: ops ++ [{:filter, expr}]}
   end
 
-  def filter(%Dux{ops: ops} = dux, {sql, params}) when is_binary(sql) and is_list(params) do
+  def filter_with(%Dux{ops: ops} = dux, {sql, params})
+      when is_binary(sql) and is_list(params) do
     %{dux | ops: ops ++ [{:filter, inline_params(sql, params)}]}
   end
 
@@ -318,16 +369,43 @@ defmodule Dux do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Add or replace columns using SQL expressions.
+  Add or replace columns using expressions.
 
-  Accepts a keyword list of `column_name: "sql_expression"`.
+  This is a macro — bare identifiers in expressions become column names,
+  `^` interpolates Elixir values. Requires `require Dux`.
+
+      iex> require Dux
+      iex> Dux.from_query("SELECT 1 AS x, 2 AS y")
+      ...> |> Dux.mutate(z: x + y, w: x * 10)
+      ...> |> Dux.collect()
+      [%{"w" => 10, "x" => 1, "y" => 2, "z" => 3}]
+
+      iex> require Dux
+      iex> factor = 5
+      iex> Dux.from_query("SELECT 10 AS x")
+      ...> |> Dux.mutate(scaled: x * ^factor)
+      ...> |> Dux.collect()
+      [%{"scaled" => 50, "x" => 10}]
+
+  For raw SQL strings, use `mutate_with/2`.
+  """
+  defmacro mutate(dux, pairs) do
+    compiled_pairs = compile_keyword_exprs(pairs)
+
+    quote do
+      Dux.mutate_with(unquote(dux), unquote(compiled_pairs))
+    end
+  end
+
+  @doc """
+  Add or replace columns using raw SQL expression strings or compiled tuples.
 
       iex> Dux.from_query("SELECT 1 AS x, 2 AS y")
-      ...> |> Dux.mutate(z: "x + y", w: "x * 10")
+      ...> |> Dux.mutate_with(z: "x + y", w: "x * 10")
       ...> |> Dux.collect()
       [%{"w" => 10, "x" => 1, "y" => 2, "z" => 3}]
   """
-  def mutate(%Dux{ops: ops} = dux, exprs) when is_list(exprs) do
+  def mutate_with(%Dux{ops: ops} = dux, exprs) when is_list(exprs) do
     assignments =
       Enum.map(exprs, fn {name, expr} ->
         {to_col_name(name), resolve_expr(expr)}
@@ -386,9 +464,10 @@ defmodule Dux do
   @doc """
   Group by columns for subsequent aggregation.
 
+      iex> require Dux
       iex> Dux.from_list([%{"g" => "a", "v" => 1}, %{"g" => "a", "v" => 2}, %{"g" => "b", "v" => 3}])
       ...> |> Dux.group_by(:g)
-      ...> |> Dux.summarise(total: "SUM(v)")
+      ...> |> Dux.summarise(total: sum(v))
       ...> |> Dux.sort_by(:g)
       ...> |> Dux.collect()
       [%{"g" => "a", "total" => 3}, %{"g" => "b", "total" => 3}]
@@ -410,22 +489,44 @@ defmodule Dux do
   end
 
   @doc """
-  Aggregate grouped data using SQL expressions.
+  Aggregate grouped data using expressions.
 
-  Requires a prior `group_by/2`.
+  This is a macro — function calls like `sum(col)`, `count(col)`, `avg(col)`
+  compile to DuckDB SQL aggregations. Requires `require Dux`.
 
+      iex> require Dux
       iex> Dux.from_list([
       ...>   %{"region" => "US", "sales" => 100},
       ...>   %{"region" => "US", "sales" => 200},
       ...>   %{"region" => "EU", "sales" => 150}
       ...> ])
       ...> |> Dux.group_by(:region)
-      ...> |> Dux.summarise(total: "SUM(sales)", n: "COUNT(*)")
+      ...> |> Dux.summarise(total: sum(sales), n: count(sales))
       ...> |> Dux.sort_by(:region)
       ...> |> Dux.collect()
       [%{"n" => 1, "region" => "EU", "total" => 150}, %{"n" => 2, "region" => "US", "total" => 300}]
+
+  For raw SQL strings, use `summarise_with/2`.
   """
-  def summarise(%Dux{ops: ops} = dux, aggs) when is_list(aggs) do
+  defmacro summarise(dux, pairs) do
+    compiled_pairs = compile_keyword_exprs(pairs)
+
+    quote do
+      Dux.summarise_with(unquote(dux), unquote(compiled_pairs))
+    end
+  end
+
+  @doc """
+  Aggregate grouped data using raw SQL expression strings or compiled tuples.
+
+      iex> Dux.from_list([%{"g" => "a", "v" => 1}, %{"g" => "a", "v" => 2}, %{"g" => "b", "v" => 3}])
+      ...> |> Dux.group_by(:g)
+      ...> |> Dux.summarise_with(total: "SUM(v)")
+      ...> |> Dux.sort_by(:g)
+      ...> |> Dux.collect()
+      [%{"g" => "a", "total" => 3}, %{"g" => "b", "total" => 3}]
+  """
+  def summarise_with(%Dux{ops: ops} = dux, aggs) when is_list(aggs) do
     assignments =
       Enum.map(aggs, fn {name, expr} ->
         {to_col_name(name), resolve_expr(expr)}
@@ -552,7 +653,7 @@ defmodule Dux do
   Return the SQL that would be generated, without executing.
 
       iex> sql = Dux.from_query("SELECT * FROM t")
-      ...> |> Dux.filter("x > 10")
+      ...> |> Dux.filter_with("x > 10")
       ...> |> Dux.head(5)
       ...> |> Dux.sql_preview()
       iex> sql =~ "WHERE"
@@ -577,6 +678,42 @@ defmodule Dux do
     computed = compute(dux)
     {:table, ref} = computed.source
     Dux.Native.table_n_rows(ref)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Macro helpers (compile-time)
+  # ---------------------------------------------------------------------------
+
+  @doc false
+  defmacro __using__(_opts) do
+    quote do
+      require Dux
+    end
+  end
+
+  # Compile a keyword list where values are expressions.
+  # Returns AST that evaluates to a keyword list of {name, {sql, params}}.
+  @doc false
+  def compile_keyword_exprs(pairs) when is_list(pairs) do
+    Enum.map(pairs, fn {name, expr} ->
+      if is_binary(expr) do
+        # Raw SQL string — pass through
+        {name, expr}
+      else
+        {ast, pins} = Dux.Query.traverse_public(expr, [])
+
+        # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+        compiled =
+          quote do
+            (fn ->
+               pins = unquote(Enum.reverse(pins))
+               Dux.Query.Compiler.to_sql(unquote(Macro.escape(ast)), pins)
+             end).()
+          end
+
+        {name, compiled}
+      end
+    end)
   end
 
   # ---------------------------------------------------------------------------

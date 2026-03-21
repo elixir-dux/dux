@@ -72,8 +72,8 @@ defmodule Dux.IOTest do
 
       try do
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
-        |> Dux.filter("x > 5")
-        |> Dux.mutate(doubled: "x * 2")
+        |> Dux.filter_with("x > 5")
+        |> Dux.mutate_with(doubled: "x * 2")
         |> Dux.to_csv(path)
 
         result =
@@ -341,7 +341,7 @@ defmodule Dux.IOTest do
         |> Dux.to_parquet(path1)
 
         Dux.from_parquet(path1)
-        |> Dux.filter("x > 50")
+        |> Dux.filter_with("x > 50")
         |> Dux.to_parquet(path2)
 
         result = Dux.from_parquet(path2) |> Dux.n_rows()
