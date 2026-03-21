@@ -49,7 +49,7 @@ defmodule Dux do
   `collect/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
   """
 
-  defstruct [:source, ops: [], names: [], dtypes: %{}, groups: []]
+  defstruct [:source, :remote, ops: [], names: [], dtypes: %{}, groups: []]
 
   @type source ::
           {:parquet, String.t()}

@@ -1,17 +1,13 @@
-use rustler::env::SavedTerm;
 use rustler::{Env, LocalPid, OwnedEnv, Resource, ResourceArc, Term};
+use rustler::env::SavedTerm;
 use std::sync::Mutex;
 
 /// A NIF resource that sends a pre-built message to a local PID when
 /// the Erlang VM garbage-collects the reference.
 ///
-/// This is the core mechanism for distributed GC: when a remote node
-/// is done with a resource, the GC sentinel fires a notification to
-/// the local LocalGC process, which forwards it to the Holder on the
-/// origin node.
-///
-/// The message is saved in an OwnedEnv at creation time and sent via
-/// `send_and_clear` in the Drop impl — this works from the GC thread.
+/// Uses OwnedEnv to store the message, then raw enif_send in Drop
+/// because Rustler's send_and_clear panics on managed threads (GC runs
+/// on the scheduler thread).
 pub struct GcSentinelRef {
     inner: Mutex<Option<SentinelInner>>,
 }
@@ -22,7 +18,6 @@ struct SentinelInner {
     msg: SavedTerm,
 }
 
-// SavedTerm is Send, OwnedEnv is Send, LocalPid is Send
 unsafe impl Send for SentinelInner {}
 unsafe impl Sync for SentinelInner {}
 
@@ -33,14 +28,16 @@ impl Drop for GcSentinelRef {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.inner.lock() {
             if let Some(inner) = guard.take() {
-                // Send the pre-saved message to the target PID.
-                // This works from the GC thread because OwnedEnv
-                // owns its own environment.
-                let pid = inner.pid;
-                let msg = inner.msg;
-                let mut owned_env = inner.owned_env;
-                let _ = owned_env.send_and_clear(&pid, |env| {
-                    msg.load(env)
+                // We can't use OwnedEnv::send_and_clear here because Drop runs
+                // on a managed BEAM scheduler thread. Instead, spawn an OS thread
+                // to do the send, which is unmanaged.
+                std::thread::spawn(move || {
+                    let pid = inner.pid;
+                    let msg = inner.msg;
+                    let mut owned_env = inner.owned_env;
+                    let _ = owned_env.send_and_clear(&pid, |env| {
+                        msg.load(env)
+                    });
                 });
             }
         }
@@ -48,9 +45,6 @@ impl Drop for GcSentinelRef {
 }
 
 /// Create a new GC sentinel that will send `msg` to `pid` when collected.
-///
-/// The message is deep-copied into an OwnedEnv so it survives independently
-/// of the caller's environment.
 #[rustler::nif]
 #[allow(unused_variables)]
 fn gc_sentinel_new<'a>(env: Env<'a>, pid: LocalPid, msg: Term<'a>) -> ResourceArc<GcSentinelRef> {
