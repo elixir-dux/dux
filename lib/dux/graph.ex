@@ -1,4 +1,6 @@
 defmodule Dux.Graph do
+  alias Dux.Remote.{Coordinator, Worker}
+
   @moduledoc """
   Graph analytics on Dux dataframes.
 
@@ -302,15 +304,10 @@ defmodule Dux.Graph do
 
       stage = :erlang.unique_integer([:positive])
 
-      tasks =
-        Enum.map(workers, fn w ->
-          Task.async(fn ->
-            Dux.Remote.Worker.register_table(w, "__pr_ranks_#{stage}", ranks_ipc)
-            Dux.Remote.Worker.register_table(w, "__pr_outdeg_#{stage}", outdeg_ipc)
-          end)
-        end)
-
-      Task.await_many(tasks, 30_000)
+      broadcast_to_workers(workers, [
+        {"__pr_ranks_#{stage}", ranks_ipc},
+        {"__pr_outdeg_#{stage}", outdeg_ipc}
+      ])
 
       # Each worker computes contributions from its copy of the edges
       contribution_pipeline =
@@ -329,7 +326,7 @@ defmodule Dux.Graph do
 
       # Fan out, merge contributions, then rename on coordinator
       contributions =
-        Dux.Remote.Coordinator.execute(contribution_pipeline, workers: workers)
+        Coordinator.execute(contribution_pipeline, workers: workers)
         |> Dux.rename([{String.to_atom(dst), String.to_atom(vid)}])
         |> Dux.compute()
 
@@ -346,8 +343,8 @@ defmodule Dux.Graph do
       # Cleanup broadcast tables
       Enum.each(workers, fn w ->
         try do
-          Dux.Remote.Worker.drop_table(w, "__pr_ranks_#{stage}")
-          Dux.Remote.Worker.drop_table(w, "__pr_outdeg_#{stage}")
+          Worker.drop_table(w, "__pr_ranks_#{stage}")
+          Worker.drop_table(w, "__pr_outdeg_#{stage}")
         catch
           _, _ -> :ok
         end
@@ -432,7 +429,7 @@ defmodule Dux.Graph do
     max_iterations = Keyword.get(opts, :max_iterations, 100)
     # Connected components stays local for now — the iterative SQL
     # references local temp tables that can't be distributed.
-    # TODO: implement broadcast pattern like pagerank_distributed
+    # Distributed version would use the broadcast pattern from pagerank_distributed.
     vid = graph.vertex_id
     src = graph.edge_src
     dst = graph.edge_dst
@@ -567,11 +564,20 @@ defmodule Dux.Graph do
     Dux.n_rows(graph.edges)
   end
 
+  defp broadcast_to_workers(workers, tables) do
+    tasks = Enum.map(workers, &Task.async(fn -> register_tables(&1, tables) end))
+    Task.await_many(tasks, 30_000)
+  end
+
+  defp register_tables(worker, tables) do
+    Enum.each(tables, fn {name, ipc} -> Worker.register_table(worker, name, ipc) end)
+  end
+
   # Compute locally or distributed depending on workers option
   defp do_compute(dux, nil), do: Dux.compute(dux)
 
   defp do_compute(dux, workers) when is_list(workers) do
-    Dux.Remote.Coordinator.execute(dux, workers: workers)
+    Coordinator.execute(dux, workers: workers)
   end
 
   # Escape double quotes in SQL identifiers to prevent injection
