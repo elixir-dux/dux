@@ -307,21 +307,19 @@ defmodule Dux.Graph do
       |> Dux.mutate_with(rank: "#{initial_rank}")
       |> Dux.compute()
 
-    # Compute out-degree — keep ref alive through all iterations
+    # Compute out-degree and serialize to IPC ONCE.
+    # IPC binaries are plain BEAM binaries — immune to the ResourceArc GC race
+    # that affects DuxTableRef. This avoids the flaky GC issue where out_deg's
+    # temp table gets collected between iterations under test GC pressure.
     out_deg = out_degree(graph) |> Dux.compute()
-    Process.put(:dux_pr_outdeg, out_deg)
+    {:table, outdeg_ref} = out_deg.source
+    outdeg_ipc = Dux.Native.table_to_ipc(outdeg_ref)
 
-    # Each iteration: broadcast ranks + out_deg to workers,
-    # workers compute contributions from their edges,
-    # coordinator merges and updates ranks
     result =
       Enum.reduce(1..iterations, ranks, fn _i, ranks ->
-        # Broadcast current ranks and out_degree to all workers
+        # Serialize current ranks each iteration (ranks changes)
         {:table, ranks_ref} = ranks.source
         ranks_ipc = Dux.Native.table_to_ipc(ranks_ref)
-
-        {:table, outdeg_ref} = out_deg.source
-        outdeg_ipc = Dux.Native.table_to_ipc(outdeg_ref)
 
         stage = :erlang.unique_integer([:positive])
 
@@ -374,7 +372,6 @@ defmodule Dux.Graph do
         new_ranks
       end)
 
-    Process.delete(:dux_pr_outdeg)
     result
   end
 
@@ -868,7 +865,12 @@ defmodule Dux.Graph do
   end
 
   defp register_tables(worker, tables) do
-    Enum.each(tables, fn {name, ipc} -> Worker.register_table(worker, name, ipc) end)
+    Enum.each(tables, fn {name, ipc} ->
+      case Worker.register_table(worker, name, ipc) do
+        {:ok, _} -> :ok
+        {:error, reason} -> raise "Failed to register table #{name}: #{reason}"
+      end
+    end)
   end
 
   # Escape double quotes in SQL identifiers to prevent injection

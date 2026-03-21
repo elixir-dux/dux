@@ -160,11 +160,10 @@ defmodule Dux.Remote.Worker do
     result =
       try do
         table_ref = Dux.Native.table_from_ipc(ipc_binary)
-        # Register as a temp table with the given name
+        Process.put(:dux_register_ref, table_ref)
         temp_name = Dux.Native.table_ensure(db, table_ref)
         escaped = escape_ident(name)
 
-        # Create a named table by copying from the temp table
         Dux.Native.db_execute(db, "DROP TABLE IF EXISTS \"#{escaped}\"")
 
         Dux.Native.db_execute(
@@ -172,6 +171,7 @@ defmodule Dux.Remote.Worker do
           "CREATE TEMPORARY TABLE \"#{escaped}\" AS SELECT * FROM \"#{temp_name}\""
         )
 
+        Process.delete(:dux_register_ref)
         {:ok, name}
       rescue
         e -> {:error, Exception.message(e)}

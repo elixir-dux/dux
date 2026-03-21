@@ -58,9 +58,6 @@ defmodule Dux.DistributedGraphTest do
   # ---------------------------------------------------------------------------
 
   describe "distributed pagerank" do
-    @tag :skip
-    # Known GC flaky under ExUnit — passes in mix run consistently.
-    # The out_deg ref gets collected between iterations under test GC pressure.
     test "pagerank with workers option" do
       workers = start_workers(2)
       graph = triangle_graph()
