@@ -703,6 +703,12 @@ defmodule Dux do
   @doc """
   Return the SQL that would be generated, without executing.
 
+  ## Options
+
+    * `:pretty` - format with indentation (default: `false`)
+
+  ## Examples
+
       iex> sql = Dux.from_query("SELECT * FROM t")
       ...> |> Dux.filter_with("x > 10")
       ...> |> Dux.head(5)
@@ -712,10 +718,15 @@ defmodule Dux do
       iex> sql =~ "LIMIT"
       true
   """
-  def sql_preview(%Dux{} = dux) do
+  def sql_preview(%Dux{} = dux, opts \\ []) do
     db = Dux.Connection.get_db()
     {sql, _setup} = Dux.QueryBuilder.build(dux, db)
-    sql
+
+    if Keyword.get(opts, :pretty, false) do
+      pretty_sql(sql)
+    else
+      sql
+    end
   end
 
   @doc """
@@ -839,6 +850,39 @@ defmodule Dux do
   end
 
   # Force the compiler to keep a value alive until this point.
+
+  defp pretty_sql(sql) do
+    # Split CTEs and format each one
+    case String.split(sql, "\n", trim: true) do
+      ["WITH", cte_line | rest] ->
+        ctes_and_final = [String.trim(cte_line) | Enum.map(rest, &String.trim/1)]
+
+        formatted =
+          Enum.map(ctes_and_final, fn line ->
+            line
+            |> String.replace(~r/\)\s*$/, ")")
+            |> format_sql_line()
+          end)
+
+        "WITH\n" <> Enum.join(formatted, "\n")
+
+      _ ->
+        format_sql_line(sql)
+    end
+  end
+
+  defp format_sql_line(line) do
+    line
+    |> String.replace(" FROM ", "\n    FROM ")
+    |> String.replace(" WHERE ", "\n    WHERE ")
+    |> String.replace(" GROUP BY ", "\n    GROUP BY ")
+    |> String.replace(" ORDER BY ", "\n    ORDER BY ")
+    |> String.replace(" LIMIT ", "\n    LIMIT ")
+    |> String.replace(" INNER JOIN ", "\n    INNER JOIN ")
+    |> String.replace(" LEFT JOIN ", "\n    LEFT JOIN ")
+    |> String.replace(" USING ", "\n      USING ")
+    |> String.replace(" ON ", "\n      ON ")
+  end
 
   defp atomize_keys(map) when is_map(map) do
     Map.new(map, fn {k, v} -> {String.to_atom(k), v} end)
