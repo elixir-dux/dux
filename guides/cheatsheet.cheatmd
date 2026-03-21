@@ -60,6 +60,7 @@ Dux.mutate_with(df, revenue: "price * qty")
 Dux.select(df, [:name, :age])        # keep columns
 Dux.discard(df, [:temp])             # drop columns
 Dux.rename(df, old_name: :new_name)  # rename columns
+Dux.drop_nil(df, [:age])             # remove nil rows
 ```
 
 ## Sorting & Limiting
@@ -100,6 +101,21 @@ df
 )
 ```
 
+## Reshape
+
+### Pivot
+{: .col-2}
+
+#### Wide (long → wide)
+```elixir
+Dux.pivot_wider(df, :product, :sales, agg: "SUM")
+```
+
+#### Long (wide → long)
+```elixir
+Dux.pivot_longer(df, [:q1, :q2], names_to: "quarter", values_to: "sales")
+```
+
 ## Joins
 
 ```elixir
@@ -130,14 +146,17 @@ Dux.to_parquet(df, "out.parquet", compression: :zstd)
 Dux.to_ndjson(df, "out.ndjson")
 ```
 
-## Materialization
+## Materialization & Inspection
 
 ```elixir
-Dux.compute(df)     # → %Dux{} with table ref
-Dux.collect(df)     # → [%{col => val}, ...]
-Dux.to_columns(df)  # → %{col => [vals]}
-Dux.n_rows(df)      # → integer
-Dux.sql_preview(df) # → SQL string (no execution)
+Dux.compute(df)                    # → %Dux{} with table ref
+Dux.collect(df)                    # → [%{"col" => val}, ...]
+Dux.collect(df, atom_keys: true)   # → [%{col: val}, ...]
+Dux.to_columns(df)                 # → %{"col" => [vals]}
+Dux.n_rows(df)                     # → integer
+Dux.peek(df)                       # print formatted table
+Dux.sql_preview(df)                # → SQL string
+Dux.sql_preview(df, pretty: true)  # → formatted SQL
 ```
 
 ## Distributed
@@ -149,8 +168,11 @@ Dux.sql_preview(df) # → SQL string (no execution)
 # Coordinate across cluster
 Dux.Remote.Coordinator.execute(pipeline)
 
-# Broadcast join (star-schema)
+# Broadcast join (star-schema, small right table)
 Dux.Remote.Broadcast.execute(fact, dim, on: :id)
+
+# Shuffle join (large-large)
+Dux.Remote.Shuffle.execute(left, right, on: :key)
 ```
 
 ## Graph
@@ -158,11 +180,18 @@ Dux.Remote.Broadcast.execute(fact, dim, on: :id)
 ```elixir
 graph = Dux.Graph.new(vertices: v, edges: e)
 
+# Local
 Dux.Graph.pagerank(graph)
 Dux.Graph.shortest_paths(graph, start_node)
 Dux.Graph.connected_components(graph)
 Dux.Graph.triangle_count(graph)
 Dux.Graph.out_degree(graph)
+
+# Distributed (add workers: option)
+Dux.Graph.pagerank(graph, workers: workers)
+Dux.Graph.connected_components(graph, workers: workers)
+Dux.Graph.shortest_paths(graph, start_node, workers: workers)
+Dux.Graph.triangle_count(graph, workers: workers)
 ```
 
 ## Nx Interop

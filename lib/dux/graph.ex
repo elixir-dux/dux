@@ -170,6 +170,11 @@ defmodule Dux.Graph do
 
     * `:damping` - damping factor (default: `0.85`)
     * `:iterations` - number of iterations (default: `20`)
+    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local)
+
+  When `workers` is provided, uses the broadcast-iterate pattern: each iteration
+  broadcasts current ranks to all workers, workers compute local contributions,
+  coordinator merges.
 
   ## Examples
 
@@ -364,6 +369,12 @@ defmodule Dux.Graph do
   Uses DuckDB's recursive CTEs for efficient graph traversal.
   Returns a `%Dux{}` with columns `[node, dist]`.
 
+  ## Options
+
+    * `:max_depth` - maximum BFS depth (default: `1000`)
+    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local).
+      When provided, broadcasts edges to a worker and runs the recursive CTE there.
+
   ## Examples
 
       iex> edges = Dux.from_list([
@@ -459,6 +470,13 @@ defmodule Dux.Graph do
 
   Each vertex is assigned a component ID (the minimum vertex ID in its component).
   Returns a `%Dux{}` with columns `[vertex_id, component]`.
+
+  ## Options
+
+    * `:max_iterations` - maximum propagation iterations (default: `100`)
+    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local).
+      When provided, uses the broadcast-iterate pattern: broadcasts labels and edges
+      to workers each iteration.
 
   ## Examples
 
@@ -699,6 +717,11 @@ defmodule Dux.Graph do
   A triangle is a set of three vertices where each pair is connected by an edge.
   Edges must be bidirectional for triangle detection.
   Returns an integer count.
+
+  ## Options
+
+    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local).
+      When provided, broadcasts edges to a worker and runs the triple self-join there.
 
   ## Examples
 
