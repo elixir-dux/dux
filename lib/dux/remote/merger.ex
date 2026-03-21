@@ -36,6 +36,8 @@ defmodule Dux.Remote.Merger do
     # Apply any final operations that need re-aggregation
     final_sql = apply_merge_ops(union_sql, ops)
 
+    Process.put(:dux_merge_refs, table_names)
+
     result =
       case Dux.Native.df_query(db, final_sql) do
         {:error, reason} ->
@@ -45,7 +47,7 @@ defmodule Dux.Remote.Merger do
           Dux.Native.table_to_ipc(result_ref)
       end
 
-    _ = table_names
+    Process.delete(:dux_merge_refs)
     result
   end
 
@@ -56,13 +58,16 @@ defmodule Dux.Remote.Merger do
     db = Dux.Connection.get_db()
 
     # Load each worker result as a temp table.
-    # Keep refs alive in the list to prevent GC before the query runs.
+    # Store refs in process dictionary to prevent GC — the BEAM compiler
+    # can optimize away local variable references, but not process dict.
     input_refs =
       Enum.map(ipc_results, fn ipc ->
         table_ref = Dux.Native.table_from_ipc(ipc)
         name = Dux.Native.table_ensure(db, table_ref)
         {name, table_ref}
       end)
+
+    Process.put(:dux_merge_refs, input_refs)
 
     union_sql =
       Enum.map_join(input_refs, " UNION ALL ", fn {name, _ref} ->
@@ -82,8 +87,7 @@ defmodule Dux.Remote.Merger do
           %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
       end
 
-    # Prevent GC of input refs until after the query completes
-    _ = input_refs
+    Process.delete(:dux_merge_refs)
     result
   end
 

@@ -46,11 +46,15 @@ defmodule Dux.BroadcastTest do
 
       result =
         Broadcast.execute(fact, dim, on: :region_id, workers: workers)
+        |> Dux.sort_by(:region_id)
         |> Dux.collect()
 
       # 2 workers × 3 fact rows = 6 joined rows
       assert length(result) == 6
       assert Enum.all?(result, &Map.has_key?(&1, "name"))
+      # Verify sorted
+      ids = Enum.map(result, & &1["region_id"])
+      assert ids == Enum.sort(ids)
     end
 
     test "broadcast join with aggregation" do

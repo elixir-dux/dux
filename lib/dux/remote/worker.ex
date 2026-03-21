@@ -110,20 +110,26 @@ defmodule Dux.Remote.Worker do
   def handle_call({:execute, %Dux{} = pipeline}, _from, %{db: db} = state) do
     result =
       try do
+        # Keep source refs alive to prevent GC of temp tables during query
+        source_ref = extract_source_ref(pipeline)
         {sql, source_setup} = Dux.QueryBuilder.build(pipeline, db)
 
         Enum.each(source_setup, fn setup_sql ->
           Dux.Native.db_execute(db, setup_sql)
         end)
 
-        case Dux.Native.df_query(db, sql) do
-          {:error, reason} ->
-            {:error, reason}
+        query_result =
+          case Dux.Native.df_query(db, sql) do
+            {:error, reason} ->
+              {:error, reason}
 
-          table_ref ->
-            ipc = Dux.Native.table_to_ipc(table_ref)
-            {:ok, ipc}
-        end
+            table_ref ->
+              ipc = Dux.Native.table_to_ipc(table_ref)
+              {:ok, ipc}
+          end
+
+        :erlang.phash2(source_ref, 1)
+        query_result
       rescue
         e -> {:error, Exception.message(e)}
       end
@@ -186,4 +192,7 @@ defmodule Dux.Remote.Worker do
   end
 
   defp escape_ident(name), do: String.replace(name, ~s("), ~s(""))
+
+  defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
+  defp extract_source_ref(_), do: nil
 end

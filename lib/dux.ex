@@ -614,21 +614,32 @@ defmodule Dux do
   """
   def compute(%Dux{} = dux) do
     db = Dux.Connection.get_db()
+
+    # Store any source refs in process dict to prevent GC during query.
+    # The BEAM compiler can optimize away local variable references,
+    # but process dictionary entries are opaque to the optimizer.
+    source_ref = extract_source_ref(dux)
+    Process.put(:dux_compute_ref, source_ref)
+
     {sql, source_setup} = Dux.QueryBuilder.build(dux, db)
 
     Enum.each(source_setup, fn setup_sql ->
       Dux.Native.db_execute(db, setup_sql)
     end)
 
-    case Dux.Native.df_query(db, sql) do
-      {:error, reason} ->
-        raise ArgumentError, "DuckDB query failed: #{reason}"
+    result =
+      case Dux.Native.df_query(db, sql) do
+        {:error, reason} ->
+          raise ArgumentError, "DuckDB query failed: #{reason}"
 
-      table_ref ->
-        names = Dux.Native.table_names(table_ref)
-        dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
-        %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
-    end
+        table_ref ->
+          names = Dux.Native.table_names(table_ref)
+          dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
+          %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+      end
+
+    Process.delete(:dux_compute_ref)
+    result
   end
 
   @doc """
@@ -728,6 +739,33 @@ defmodule Dux do
   # Internal helpers
   # ---------------------------------------------------------------------------
 
+  # Extract any NIF resource refs from the source to keep them alive
+  # across function calls that reference temp tables by name.
+  defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
+
+  defp extract_source_ref(%Dux{ops: ops} = dux) do
+    # Also check for join ops that hold a right-side Dux with a table ref
+    join_refs =
+      Enum.flat_map(ops, fn
+        {:join, %Dux{source: {:table, ref}}, _, _, _} -> [ref]
+        _ -> []
+      end)
+
+    case dux.source do
+      {:table, ref} -> [ref | join_refs]
+      _ -> join_refs
+    end
+  end
+
+  # Force the compiler to keep a value alive until this point.
+  # Uses :erlang.phash2 which is opaque to the compiler — it can't
+  # prove the value is unused and optimize it away.
+  @compile {:inline, keep_alive: 1}
+  defp keep_alive(ref) do
+    :erlang.phash2(ref, 1)
+    :ok
+  end
+
   defp to_col_name(name) when is_atom(name), do: Atom.to_string(name)
   defp to_col_name(name) when is_binary(name), do: name
 
@@ -755,6 +793,7 @@ defmodule Dux do
 
   defp write_copy(%Dux{} = dux, path, format, opts) do
     db = Dux.Connection.get_db()
+    Process.put(:dux_write_ref, extract_source_ref(dux))
     {query_sql, source_setup} = Dux.QueryBuilder.build(dux, db)
 
     Enum.each(source_setup, fn setup_sql ->
@@ -765,10 +804,14 @@ defmodule Dux do
     escaped_path = String.replace(path, "'", "''")
     sql = "COPY (#{query_sql}) TO '#{escaped_path}' (#{copy_opts})"
 
-    case Dux.Native.db_execute(db, sql) do
-      {} -> :ok
-      {:error, reason} -> raise ArgumentError, "DuckDB write failed: #{reason}"
-    end
+    result =
+      case Dux.Native.db_execute(db, sql) do
+        {} -> :ok
+        {:error, reason} -> raise ArgumentError, "DuckDB write failed: #{reason}"
+      end
+
+    Process.delete(:dux_write_ref)
+    result
   end
 
   defp build_copy_options("CSV", opts) do
