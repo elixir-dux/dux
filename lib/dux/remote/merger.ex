@@ -121,13 +121,12 @@ defmodule Dux.Remote.Merger do
         "SELECT DISTINCT * FROM (#{union_sql}) __merged"
 
       {:re_aggregate, groups, aggs} ->
-        # Re-aggregate partial results
+        # Re-aggregate partial results with correct functions
         group_cols = Enum.map_join(groups, ", ", &qi/1)
 
         agg_cols =
-          Enum.map_join(aggs, ", ", fn {name, _expr} ->
-            quoted = qi(name)
-            "SUM(#{quoted}) AS #{quoted}"
+          Enum.map_join(aggs, ", ", fn {name, expr} ->
+            re_aggregate_expr(name, expr)
           end)
 
         select = if groups == [], do: agg_cols, else: "#{group_cols}, #{agg_cols}"
@@ -177,6 +176,28 @@ defmodule Dux.Remote.Merger do
       {:asc, col} -> "#{qi(col)} ASC"
       {:desc, col} -> "#{qi(col)} DESC"
     end)
+  end
+
+  # Determine the correct re-aggregation function based on the original expression.
+  # SUM → SUM, COUNT → SUM, MIN → MIN, MAX → MAX
+  # AVG columns should have been rewritten by PipelineSplitter before reaching here.
+  defp re_aggregate_expr(name, expr) when is_binary(expr) do
+    upper = String.upcase(expr)
+    quoted = qi(name)
+
+    cond do
+      String.contains?(upper, "MIN(") -> "MIN(#{quoted}) AS #{quoted}"
+      String.contains?(upper, "MAX(") -> "MAX(#{quoted}) AS #{quoted}"
+      String.contains?(upper, "SUM(") -> "SUM(#{quoted}) AS #{quoted}"
+      String.contains?(upper, "COUNT(") -> "SUM(#{quoted}) AS #{quoted}"
+      # Default: SUM (safe for additive aggregates)
+      true -> "SUM(#{quoted}) AS #{quoted}"
+    end
+  end
+
+  defp re_aggregate_expr(name, _expr) do
+    quoted = qi(name)
+    "SUM(#{quoted}) AS #{quoted}"
   end
 
   # Quote identifier — escape double quotes to prevent SQL injection
