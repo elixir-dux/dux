@@ -1,5 +1,6 @@
 defmodule DuxTest do
   use ExUnit.Case
+  doctest Dux
 
   test "struct creation with defaults" do
     dux = %Dux{}

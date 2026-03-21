@@ -521,6 +521,21 @@ pub fn array_value_to_term<'a>(env: Env<'a>, array: &dyn Array, idx: usize) -> T
             Term::map_from_pairs(env, &map_entries)
                 .unwrap_or_else(|_| atoms::nil().encode(env))
         }
+        DataType::Decimal128(_, scale) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<Decimal128Array>()
+                .unwrap();
+            let raw = arr.value(idx);
+            if *scale == 0 {
+                // Integer-valued decimal: return as i64
+                (raw as i64).encode(env)
+            } else {
+                // Fractional decimal: return as f64
+                let divisor = 10_f64.powi(*scale as i32);
+                ((raw as f64) / divisor).encode(env)
+            }
+        }
         _ => {
             // Fallback: encode as string representation
             format!("{:?}", array).encode(env)
