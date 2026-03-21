@@ -645,27 +645,59 @@ defmodule Dux do
   @doc """
   Compute and return results as a list of maps.
 
+  ## Options
+
+    * `:atom_keys` - use atom keys instead of string keys (default: `false`)
+
+  ## Examples
+
       iex> Dux.from_query("SELECT 1 AS x, 'hello' AS y")
       ...> |> Dux.collect()
       [%{"x" => 1, "y" => "hello"}]
+
+      iex> Dux.from_query("SELECT 1 AS x, 'hello' AS y")
+      ...> |> Dux.collect(atom_keys: true)
+      [%{x: 1, y: "hello"}]
   """
-  def collect(%Dux{} = dux) do
+  def collect(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
     {:table, ref} = computed.source
-    Dux.Native.table_to_rows(ref)
+    rows = Dux.Native.table_to_rows(ref)
+
+    if Keyword.get(opts, :atom_keys, false) do
+      Enum.map(rows, &atomize_keys/1)
+    else
+      rows
+    end
   end
 
   @doc """
   Compute and return results as a map of column_name => [values].
 
+  ## Options
+
+    * `:atom_keys` - use atom keys instead of string keys (default: `false`)
+
+  ## Examples
+
       iex> Dux.from_query("SELECT * FROM range(3) t(x)")
       ...> |> Dux.to_columns()
       %{"x" => [0, 1, 2]}
+
+      iex> Dux.from_query("SELECT * FROM range(3) t(x)")
+      ...> |> Dux.to_columns(atom_keys: true)
+      %{x: [0, 1, 2]}
   """
-  def to_columns(%Dux{} = dux) do
+  def to_columns(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
     {:table, ref} = computed.source
-    Dux.Native.table_to_columns(ref)
+    columns = Dux.Native.table_to_columns(ref)
+
+    if Keyword.get(opts, :atom_keys, false) do
+      atomize_keys(columns)
+    else
+      columns
+    end
   end
 
   @doc """
@@ -807,6 +839,10 @@ defmodule Dux do
   end
 
   # Force the compiler to keep a value alive until this point.
+
+  defp atomize_keys(map) when is_map(map) do
+    Map.new(map, fn {k, v} -> {String.to_atom(k), v} end)
+  end
 
   defp to_col_name(name) when is_atom(name), do: Atom.to_string(name)
   defp to_col_name(name) when is_binary(name), do: name
