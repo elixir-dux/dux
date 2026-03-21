@@ -175,6 +175,7 @@ defmodule Dux do
 
       iex> Dux.from_list([%{"x" => 1}, %{"x" => 1}, %{"x" => 2}])
       ...> |> Dux.distinct()
+      ...> |> Dux.sort_by(:x)
       ...> |> Dux.to_columns()
       %{"x" => [1, 2]}
   """
@@ -394,11 +395,15 @@ defmodule Dux do
       Dux.Native.db_execute(db, setup_sql)
     end)
 
-    table_ref = Dux.Native.df_query(db, sql)
-    names = Dux.Native.table_names(table_ref)
-    dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
+    case Dux.Native.df_query(db, sql) do
+      {:error, reason} ->
+        raise ArgumentError, "DuckDB query failed: #{reason}"
 
-    %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+      table_ref ->
+        names = Dux.Native.table_names(table_ref)
+        dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
+        %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+    end
   end
 
   @doc """
