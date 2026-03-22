@@ -71,8 +71,8 @@ defmodule Dux.Graph do
     dst_col = to_string(Keyword.get(opts, :edge_dst, :dst))
     id_col = to_string(Keyword.get(opts, :vertex_id, :id))
 
-    db = Dux.Connection.get_db()
-    {edges_sql, _} = Dux.QueryBuilder.build(edges, db)
+    conn = Dux.Connection.get_conn()
+    {edges_sql, _} = Dux.QueryBuilder.build(edges, conn)
 
     vertices_sql = """
       SELECT DISTINCT #{qi(id_col)} FROM (
@@ -157,8 +157,8 @@ defmodule Dux.Graph do
     src = graph.edge_src
     dst = graph.edge_dst
 
-    db = Dux.Connection.get_db()
-    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
+    conn = Dux.Connection.get_conn()
+    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
     sql = """
       SELECT #{qi(vid)}, CAST(COUNT(*) AS BIGINT) AS degree FROM (
@@ -256,17 +256,17 @@ defmodule Dux.Graph do
 
     {final, kept_out_deg, kept_prev} =
       Enum.reduce(1..iterations, {ranks, out_deg, [ranks]}, fn _i, {ranks, out_deg, prev} ->
-        db = Dux.Connection.get_db()
+        conn = Dux.Connection.get_conn()
         Process.put(:dux_compute_ref, {ranks.source, out_deg.source})
 
         {:table, ranks_ref} = ranks.source
-        ranks_table = Dux.Native.table_ensure(db, ranks_ref)
+        ranks_table = ranks_ref.name
 
         {:table, outdeg_ref} = out_deg.source
-        outdeg_table = Dux.Native.table_ensure(db, outdeg_ref)
+        outdeg_table = outdeg_ref.name
 
-        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
-        {verts_sql, _} = Dux.QueryBuilder.build(graph.vertices, db)
+        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
+        {verts_sql, _} = Dux.QueryBuilder.build(graph.vertices, conn)
 
         sql = """
           WITH
@@ -326,13 +326,15 @@ defmodule Dux.Graph do
     # temp table gets collected between iterations under test GC pressure.
     out_deg = out_degree(graph) |> Dux.compute()
     {:table, outdeg_ref} = out_deg.source
-    outdeg_ipc = Dux.Native.table_to_ipc(outdeg_ref)
+    conn = Dux.Connection.get_conn()
+    outdeg_ipc = Dux.Backend.table_to_ipc(conn, outdeg_ref)
 
     result =
       Enum.reduce(1..iterations, ranks, fn _i, ranks ->
         # Serialize current ranks each iteration (ranks changes)
         {:table, ranks_ref} = ranks.source
-        ranks_ipc = Dux.Native.table_to_ipc(ranks_ref)
+        conn = Dux.Connection.get_conn()
+        ranks_ipc = Dux.Backend.table_to_ipc(conn, ranks_ref)
 
         stage = :erlang.unique_integer([:positive])
 
@@ -443,8 +445,8 @@ defmodule Dux.Graph do
     src = graph.edge_src
     dst = graph.edge_dst
 
-    db = Dux.Connection.get_db()
-    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
+    conn = Dux.Connection.get_conn()
+    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
     sql = """
     WITH RECURSIVE
@@ -472,7 +474,8 @@ defmodule Dux.Graph do
 
     edges_computed = Dux.compute(graph.edges)
     {:table, edges_ref} = edges_computed.source
-    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+    conn = Dux.Connection.get_conn()
+    edges_ipc = Dux.Backend.table_to_ipc(conn, edges_ref)
 
     Worker.register_table(worker, "__bfs_edges", edges_ipc)
 
@@ -489,9 +492,9 @@ defmodule Dux.Graph do
     """
 
     {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
-    result = Dux.Native.table_from_ipc(result_ipc)
-    names = Dux.Native.table_names(result)
-    dtypes = result |> Dux.Native.table_dtypes() |> Map.new()
+    result = Dux.Backend.table_from_ipc(conn, result_ipc)
+    names = Dux.Backend.table_names(conn, result)
+    dtypes = Dux.Backend.table_dtypes(conn, result) |> Map.new()
 
     try do
       Worker.drop_table(worker, "__bfs_edges")
@@ -560,7 +563,7 @@ defmodule Dux.Graph do
     vid = graph.vertex_id
     src = graph.edge_src
     dst = graph.edge_dst
-    db = Dux.Connection.get_db()
+    conn = Dux.Connection.get_conn()
 
     labels =
       graph.vertices
@@ -572,8 +575,8 @@ defmodule Dux.Graph do
       Enum.reduce_while(1..max_iterations, {labels, [labels]}, fn _i, {labels, history} ->
         Process.put(:dux_compute_ref, labels.source)
         {:table, labels_ref} = labels.source
-        labels_table = Dux.Native.table_ensure(db, labels_ref)
-        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
+        labels_table = labels_ref.name
+        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
         sql = """
           WITH
@@ -625,13 +628,15 @@ defmodule Dux.Graph do
     # Broadcast edges once (they don't change between iterations)
     edges_computed = Dux.compute(graph.edges)
     {:table, edges_ref} = edges_computed.source
-    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+    conn = Dux.Connection.get_conn()
+    edges_ipc = Dux.Backend.table_to_ipc(conn, edges_ref)
     broadcast_to_workers(workers, [{"__cc_edges", edges_ipc}])
 
     result =
       Enum.reduce_while(1..max_iterations, labels, fn _i, labels ->
         {:table, labels_ref} = labels.source
-        labels_ipc = Dux.Native.table_to_ipc(labels_ref)
+        conn = Dux.Connection.get_conn()
+        labels_ipc = Dux.Backend.table_to_ipc(conn, labels_ref)
 
         stage = :erlang.unique_integer([:positive])
         broadcast_to_workers(workers, [{"__cc_labels_#{stage}", labels_ipc}])
@@ -668,19 +673,19 @@ defmodule Dux.Graph do
           end)
 
         # Load results + current labels into coordinator DuckDB, take MIN
-        db = Dux.Connection.get_db()
+        conn = Dux.Connection.get_conn()
 
         input_refs =
           Enum.map(all_ipc, fn ipc ->
-            ref = Dux.Native.table_from_ipc(ipc)
-            name = Dux.Native.table_ensure(db, ref)
+            ref = Dux.Backend.table_from_ipc(conn, ipc)
+            name = ref.name
             {name, ref}
           end)
 
         Process.put(:dux_cc_refs, {labels, input_refs, edges_computed})
 
         {:table, cur_labels_ref} = labels.source
-        cur_table = Dux.Native.table_ensure(db, cur_labels_ref)
+        cur_table = cur_labels_ref.name
 
         # UNION ALL: current labels + forward neighbor labels (renamed) + reverse neighbor labels (renamed)
         fwd_unions =
@@ -709,16 +714,10 @@ defmodule Dux.Graph do
           GROUP BY #{qi(vid)}
         """
 
-        new_labels =
-          case Dux.Native.df_query(db, merge_sql) do
-            {:error, reason} ->
-              raise "CC merge failed: #{reason}"
-
-            ref ->
-              names = Dux.Native.table_names(ref)
-              dtypes = ref |> Dux.Native.table_dtypes() |> Map.new()
-              %Dux{source: {:table, ref}, names: names, dtypes: dtypes}
-          end
+        merge_ref = Dux.Backend.query(conn, merge_sql)
+        merge_names = Dux.Backend.table_names(conn, merge_ref)
+        merge_dtypes = Dux.Backend.table_dtypes(conn, merge_ref) |> Map.new()
+        new_labels = %Dux{source: {:table, merge_ref}, names: merge_names, dtypes: merge_dtypes}
 
         Process.delete(:dux_cc_refs)
 
@@ -814,8 +813,8 @@ defmodule Dux.Graph do
     src = graph.edge_src
     dst = graph.edge_dst
 
-    db = Dux.Connection.get_db()
-    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, db)
+    conn = Dux.Connection.get_conn()
+    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
     sql = """
     WITH edges_cte AS (#{edges_sql})
@@ -849,7 +848,8 @@ defmodule Dux.Graph do
 
     edges_computed = Dux.compute(graph.edges)
     {:table, edges_ref} = edges_computed.source
-    edges_ipc = Dux.Native.table_to_ipc(edges_ref)
+    conn = Dux.Connection.get_conn()
+    edges_ipc = Dux.Backend.table_to_ipc(conn, edges_ref)
 
     Worker.register_table(worker, "__tri_edges", edges_ipc)
 
@@ -872,8 +872,8 @@ defmodule Dux.Graph do
     """
 
     {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
-    result = Dux.Native.table_from_ipc(result_ipc)
-    cols = Dux.Native.table_to_columns(result)
+    result = Dux.Backend.table_from_ipc(conn, result_ipc)
+    cols = Dux.Backend.table_to_columns(conn, result)
 
     try do
       Worker.drop_table(worker, "__tri_edges")

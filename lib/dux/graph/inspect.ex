@@ -44,7 +44,7 @@ defimpl Inspect, for: Dux.Graph do
   end
 
   defp safe_count(%Dux{source: {:table, ref}}) do
-    Dux.Native.table_n_rows(ref)
+    Dux.Backend.table_n_rows(Dux.Connection.get_conn(), ref)
   end
 
   defp safe_count(%Dux{} = dux) do
