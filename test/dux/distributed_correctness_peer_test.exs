@@ -29,7 +29,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
 
   defp start_worker_on(node) do
     :erpc.call(node, DynamicSupervisor, :start_child, [
-      Dux.Remote.HolderSupervisor,
+      Dux.DynamicSupervisor,
       %{id: Worker, start: {Worker, :start_link, [[]]}, restart: :temporary}
     ])
   end

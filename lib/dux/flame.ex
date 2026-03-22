@@ -75,7 +75,7 @@ if Code.ensure_loaded?(FLAME) do
           )
 
       DynamicSupervisor.start_child(
-        Dux.Remote.HolderSupervisor,
+        Dux.DynamicSupervisor,
         {FLAME.Pool, pool_opts}
       )
     end
