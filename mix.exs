@@ -18,9 +18,12 @@ defmodule Dux.MixProject do
       package: package(),
       docs: docs(),
       source_url: @source_url,
-      homepage_url: @source_url,
-      preferred_cli_env: [check: :test]
+      homepage_url: @source_url
     ]
+  end
+
+  def cli do
+    [preferred_envs: [check: :test]]
   end
 
   def application do

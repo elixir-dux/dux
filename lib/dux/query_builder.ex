@@ -58,7 +58,12 @@ defmodule Dux.QueryBuilder do
       true ->
         # Large lists: ingest via ADBC to avoid SQL expression depth limits
         col_names = rows |> hd() |> Map.keys() |> Enum.map(&to_string/1)
-        has_special = Enum.any?(col_names, &(&1 != String.replace(&1, ~r/[^a-zA-Z0-9_]/, "")))
+
+        has_special =
+          Enum.any?(col_names, fn name ->
+            name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "") or
+              String.downcase(name) in Dux.Backend.sql_reserved_words()
+          end)
 
         if has_special do
           # Special column names: use SQL VALUES even for large lists,

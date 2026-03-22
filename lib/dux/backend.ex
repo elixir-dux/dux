@@ -62,11 +62,7 @@ defmodule Dux.Backend do
     else
       # ADBC ingest doesn't quote column names, so columns with spaces/special
       # chars fail. Fall back to CREATE TABLE AS for those cases.
-      has_special_names =
-        Enum.any?(materialized.data, fn col ->
-          name = col.field.name
-          name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "")
-        end)
+      has_special_names = has_special_column_names?(materialized.data)
 
       if has_special_names do
         create_table_with_data(conn, sql)
@@ -268,10 +264,24 @@ defmodule Dux.Backend do
     end
   end
 
+  @sql_reserved ~w(
+    add all alter and as between by case check column constraint create cross
+    database default delete desc distinct drop else end except exists false
+    fetch first for foreign from full group having if in index inner insert
+    into is join key left like limit natural not null offset on or order outer
+    primary references right select set table then to true union unique update
+    using values view when where with
+  )
+
+  @doc false
+  def sql_reserved_words, do: @sql_reserved
+
   defp has_special_column_names?(columns) do
     Enum.any?(columns, fn col ->
       name = col.field.name
-      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "")
+
+      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "") or
+        String.downcase(name) in @sql_reserved
     end)
   end
 

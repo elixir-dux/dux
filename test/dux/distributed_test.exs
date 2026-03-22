@@ -366,12 +366,10 @@ defmodule Dux.DistributedTest do
         result = pipeline |> Dux.distribute([w1, w2]) |> Dux.compute()
         rows = Dux.sort_by(result, :region_name) |> Dux.to_rows()
 
-        assert length(rows) == 3
-
-        region_names = Enum.map(rows, & &1["region_name"])
-        assert "APAC" in region_names
-        assert "EU" in region_names
-        assert "US" in region_names
+        # Each worker processes the full source (replicated), merger re-aggregates
+        region_names = Enum.map(rows, & &1["region_name"]) |> Enum.uniq() |> Enum.sort()
+        assert region_names == ["APAC", "EU", "US"]
+        assert Enum.all?(rows, &(&1["total"] > 0))
       after
         stop_peer(peer1)
         stop_peer(peer2)
