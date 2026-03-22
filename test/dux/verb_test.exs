@@ -429,8 +429,7 @@ defmodule Dux.VerbTest do
       df = Dux.from_query("SELECT 1 AS x") |> Dux.compute()
 
       assert df.ops == []
-      assert {:table, ref} = df.source
-      assert is_reference(ref)
+      assert {:table, %Dux.TableRef{}} = df.source
       assert df.names == ["x"]
     end
 

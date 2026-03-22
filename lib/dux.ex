@@ -1157,7 +1157,10 @@ defmodule Dux do
       escaped_path = String.replace(path, "'", "''")
       sql = "COPY (#{query_sql}) TO '#{escaped_path}' (#{copy_opts})"
 
-      Dux.Backend.execute(conn, sql)
+      case Adbc.Connection.query(conn, sql) do
+        {:ok, _} -> :ok
+        {:error, err} -> raise ArgumentError, "DuckDB write failed: #{Exception.message(err)}"
+      end
 
       Process.delete(:dux_write_ref)
       {:ok, meta}

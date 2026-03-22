@@ -49,30 +49,57 @@ defmodule Dux.Backend do
 
     materialized = Adbc.Result.materialize(result)
 
-    # Handle empty results (0 columns) — DuckDB returns these for some queries.
-    # Can't ingest empty column lists, so create a temp table via SQL instead.
+    # ADBC returns empty data list for 0-row results. Can't ingest empty columns.
+    # Instead, create the temp table via SQL (CREATE ... AS SELECT ... WHERE false)
+    # to preserve the schema.
     if materialized.data == [] do
-      empty_table_ref(conn)
+      create_table_from_sql(conn, sql)
     else
-      ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+      # ADBC ingest doesn't quote column names, so columns with spaces/special
+      # chars fail. Fall back to CREATE TABLE AS for those cases.
+      has_special_names =
+        Enum.any?(materialized.data, fn col ->
+          name = col.field.name
+          name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "")
+        end)
 
-      %TableRef{
-        name: ingest_result.table,
-        gc_ref: ingest_result,
-        node: node()
-      }
+      if has_special_names do
+        create_table_with_data(conn, sql)
+      else
+        ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+
+        %TableRef{
+          name: ingest_result.table,
+          gc_ref: ingest_result,
+          node: node()
+        }
+      end
     end
   end
 
-  defp empty_table_ref(conn) do
-    name = "__dux_empty_#{:erlang.unique_integer([:positive])}"
-    Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
+  # Create a temp table from SQL, preserving schema but no data.
+  defp create_table_from_sql(conn, sql) do
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
 
-    %TableRef{
-      name: name,
-      gc_ref: nil,
-      node: node()
-    }
+    Adbc.Connection.query!(
+      conn,
+      "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM (#{sql}) __src WHERE false"
+    )
+
+    %TableRef{name: name, gc_ref: nil, node: node()}
+  end
+
+  # Create a temp table from SQL, preserving both schema and data.
+  # Used when column names contain special characters that break ADBC ingest.
+  defp create_table_with_data(conn, sql) do
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
+
+    Adbc.Connection.query!(
+      conn,
+      "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM (#{sql}) __src"
+    )
+
+    %TableRef{name: name, gc_ref: nil, node: node()}
   end
 
   # ---------------------------------------------------------------------------
@@ -116,15 +143,22 @@ defmodule Dux.Backend do
   # ---------------------------------------------------------------------------
 
   @doc false
-  def table_to_columns(conn, %TableRef{name: name}) do
-    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(name)}")
+  def table_to_columns(conn, %TableRef{} = ref) do
+    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
     map = Adbc.Result.to_map(result)
-    Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+
+    if map == %{} do
+      # Empty result — ADBC strips columns. Recover schema from DESCRIBE.
+      names = table_names(conn, ref)
+      Map.new(names, fn name -> {name, []} end)
+    else
+      Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+    end
   end
 
   @doc false
-  def table_to_rows(conn, %TableRef{name: name}) do
-    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(name)}")
+  def table_to_rows(conn, %TableRef{} = ref) do
+    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
     map = Adbc.Result.to_map(result)
 
     if map == %{} do

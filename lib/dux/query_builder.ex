@@ -45,12 +45,31 @@ defmodule Dux.QueryBuilder do
     {~s(SELECT * FROM "#{escape_sql_string(table_name)}"), []}
   end
 
-  defp source_to_sql({:list, rows}, _db) when is_list(rows) do
-    if rows == [] do
-      {"SELECT WHERE false", []}
-    else
-      values = Enum.map_join(rows, " UNION ALL ", &row_to_select/1)
-      {values, []}
+  defp source_to_sql({:list, rows}, conn) when is_list(rows) do
+    cond do
+      rows == [] ->
+        {"SELECT WHERE false", []}
+
+      length(rows) <= 500 ->
+        # Small lists: generate SQL VALUES (safe for all column names)
+        values = Enum.map_join(rows, " UNION ALL ", &row_to_select/1)
+        {values, []}
+
+      true ->
+        # Large lists: ingest via ADBC to avoid SQL expression depth limits
+        col_names = rows |> hd() |> Map.keys() |> Enum.map(&to_string/1)
+        has_special = Enum.any?(col_names, &(&1 != String.replace(&1, ~r/[^a-zA-Z0-9_]/, "")))
+
+        if has_special do
+          # Special column names: use SQL VALUES even for large lists,
+          # with chunked UNION ALL to stay under depth limit
+          values = Enum.map_join(rows, " UNION ALL ", &row_to_select/1)
+          {values, []}
+        else
+          columns = rows_to_columns(rows)
+          table_ref = ingest_columns(conn, columns)
+          {~s(SELECT * FROM "#{escape_sql_string(table_ref.name)}"), []}
+        end
     end
   end
 
@@ -374,5 +393,51 @@ defmodule Dux.QueryBuilder do
       [] -> ""
       _ -> ", " <> Enum.join(parts, ", ")
     end
+  end
+
+  # Convert row-oriented list of maps to Adbc.Column format for ingest.
+  defp rows_to_columns(rows) do
+    # Get all column names from the first row
+    col_names =
+      rows
+      |> hd()
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+      |> Enum.sort()
+
+    Enum.map(col_names, fn name ->
+      values = Enum.map(rows, fn row ->
+        # Try both string and atom keys
+        Map.get(row, name) || Map.get(row, String.to_atom(name))
+      end)
+
+      %Adbc.Column{
+        field: %Adbc.Field{name: name, type: infer_type(values), nullable: true, metadata: nil},
+        data: values
+      }
+    end)
+  end
+
+  defp infer_type([]), do: :string
+  defp infer_type(values) do
+    sample = Enum.find(values, & &1 != nil)
+    case sample do
+      nil -> :string
+      v when is_integer(v) -> :s64
+      v when is_float(v) -> :f64
+      v when is_binary(v) -> :string
+      v when is_boolean(v) -> :boolean
+      _ -> :string
+    end
+  end
+
+  defp ingest_columns(conn, columns) do
+    ingest_result = Adbc.Connection.ingest!(conn, columns)
+
+    %Dux.TableRef{
+      name: ingest_result.table,
+      gc_ref: ingest_result,
+      node: node()
+    }
   end
 end
