@@ -873,5 +873,4 @@ defmodule Dux.Graph do
       end
     end)
   end
-
 end

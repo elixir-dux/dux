@@ -161,7 +161,9 @@ defmodule Dux.Remote.Shuffle do
     worker_pipelines
     |> Task.async_stream(
       fn {worker, pipeline} ->
-        {:ok, buckets} = Worker.hash_partition(worker, pipeline, partition_key, n_buckets, timeout)
+        {:ok, buckets} =
+          Worker.hash_partition(worker, pipeline, partition_key, n_buckets, timeout)
+
         {worker, buckets}
       end,
       timeout: timeout,

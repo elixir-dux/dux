@@ -189,7 +189,11 @@ defmodule Dux.DistributedParquetPeerTest do
         for i <- 1..4 do
           rows =
             for j <- 1..10 do
-              %{id: (i - 1) * 10 + j, region: Enum.at(["US", "EU", "APAC"], rem(j, 3)), amount: j * 100}
+              %{
+                id: (i - 1) * 10 + j,
+                region: Enum.at(["US", "EU", "APAC"], rem(j, 3)),
+                amount: j * 100
+              }
             end
 
           Dux.from_list(rows)

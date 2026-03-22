@@ -4,7 +4,6 @@ defmodule Dux.MixProject do
   @version "0.1.1"
   @source_url "https://github.com/elixir-dux/dux"
 
-
   def project do
     [
       app: :dux,

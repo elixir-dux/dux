@@ -322,19 +322,37 @@ defmodule Dux.QueryBuilder do
   defp csv_read_options(opts) do
     parts =
       Enum.flat_map(opts, fn
-        {:delimiter, d} -> ["delim = '#{escape_sql_string(d)}'"]
-        {:header, true} -> ["header = true"]
-        {:header, false} -> ["header = false"]
-        {:skip, n} -> ["skip = #{n}"]
-        {:null_padding, true} -> ["null_padding = true"]
-        {:auto_detect, false} -> ["auto_detect = false"]
-        {:nullstr, s} -> ["nullstr = '#{escape_sql_string(s)}'"]
+        {:delimiter, d} ->
+          ["delim = '#{escape_sql_string(d)}'"]
+
+        {:header, true} ->
+          ["header = true"]
+
+        {:header, false} ->
+          ["header = false"]
+
+        {:skip, n} ->
+          ["skip = #{n}"]
+
+        {:null_padding, true} ->
+          ["null_padding = true"]
+
+        {:auto_detect, false} ->
+          ["auto_detect = false"]
+
+        {:nullstr, s} ->
+          ["nullstr = '#{escape_sql_string(s)}'"]
+
         {:types, types} when is_map(types) ->
-          type_strs = Enum.map_join(types, ", ", fn {col, type} ->
-            "'#{escape_sql_string(to_string(col))}': '#{escape_sql_string(type)}'"
-          end)
+          type_strs =
+            Enum.map_join(types, ", ", fn {col, type} ->
+              "'#{escape_sql_string(to_string(col))}': '#{escape_sql_string(type)}'"
+            end)
+
           ["types = {#{type_strs}}"]
-        _ -> []
+
+        _ ->
+          []
       end)
 
     case parts do

@@ -18,7 +18,7 @@ defimpl Inspect, for: Dux do
 
     lines =
       [line(), string(header)] ++
-        (if dist_line, do: [line(), string(dist_line)], else: []) ++
+        if(dist_line, do: [line(), string(dist_line)], else: []) ++
         [line() | Enum.intersperse(col_lines, line())]
 
     concat([

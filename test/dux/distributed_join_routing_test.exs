@@ -228,7 +228,10 @@ defmodule Dux.DistributedJoinRoutingTest do
       dim1 = Dux.from_list([%{id: 1, name: "Alice"}, %{id: 2, name: "Bob"}]) |> Dux.compute()
 
       dim2 =
-        Dux.from_list([%{region: "US", country: "United States"}, %{region: "EU", country: "Europe"}])
+        Dux.from_list([
+          %{region: "US", country: "United States"},
+          %{region: "EU", country: "Europe"}
+        ])
         |> Dux.compute()
 
       result =
@@ -380,7 +383,12 @@ defmodule Dux.DistributedJoinRoutingTest do
       workers = start_workers(2)
 
       left_data = Enum.map(1..10, &%{key: &1, left_val: &1 * 10})
-      right_data = [%{key: 2, right_val: 200}, %{key: 5, right_val: 500}, %{key: 8, right_val: 800}]
+
+      right_data = [
+        %{key: 2, right_val: 200},
+        %{key: 5, right_val: 500},
+        %{key: 8, right_val: 800}
+      ]
 
       left = Dux.from_list(left_data)
       right = Dux.from_list(right_data) |> Dux.compute()

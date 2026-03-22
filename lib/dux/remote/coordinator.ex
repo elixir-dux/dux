@@ -71,8 +71,18 @@ defmodule Dux.Remote.Coordinator do
         # Pipeline needs a shuffle stage: execute pre-join → shuffle → post-join
         try do
           execute_with_shuffle(
-            pipeline, ops_before, right_computed, how, on_cols, suffix,
-            ops_after, coord_ops, rewrites, workers, strategy, timeout
+            pipeline,
+            ops_before,
+            right_computed,
+            how,
+            on_cols,
+            suffix,
+            ops_after,
+            coord_ops,
+            rewrites,
+            workers,
+            strategy,
+            timeout
           )
         after
           cleanup_broadcast_tables(workers, broadcast_tables)
@@ -116,8 +126,18 @@ defmodule Dux.Remote.Coordinator do
   # 2. Shuffle join the result with the right side
   # 3. Apply remaining ops + coordinator ops
   defp execute_with_shuffle(
-         pipeline, ops_before, right_computed, how, on_cols, _suffix,
-         ops_after, coord_ops, rewrites, workers, strategy, timeout
+         pipeline,
+         ops_before,
+         right_computed,
+         how,
+         on_cols,
+         _suffix,
+         ops_after,
+         coord_ops,
+         rewrites,
+         workers,
+         strategy,
+         timeout
        ) do
     # Stage 1: execute pre-join ops distributed
     left_result =
@@ -244,8 +264,8 @@ defmodule Dux.Remote.Coordinator do
         )
       else
         # Large → shuffle. Split the pipeline here.
-        {:shuffle, Enum.reverse(processed),
-         {right_computed, how, on_cols, suffix}, rest, broadcast_names}
+        {:shuffle, Enum.reverse(processed), {right_computed, how, on_cols, suffix}, rest,
+         broadcast_names}
       end
     end
   end
@@ -396,5 +416,4 @@ defmodule Dux.Remote.Coordinator do
     # Unknown op — append directly
     %{dux | ops: dux.ops ++ [op]}
   end
-
 end

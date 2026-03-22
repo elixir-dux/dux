@@ -486,11 +486,12 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         {:ok, w2} = start_worker_on(node2)
         Process.sleep(200)
 
-        left = Dux.from_query("""
-          SELECT 'US' AS region, 2024 AS yr, 100 AS rev
-          UNION ALL SELECT 'EU', 2024, 200
-          UNION ALL SELECT 'US', 2025, 150
-        """)
+        left =
+          Dux.from_query("""
+            SELECT 'US' AS region, 2024 AS yr, 100 AS rev
+            UNION ALL SELECT 'EU', 2024, 200
+            UNION ALL SELECT 'US', 2025, 150
+          """)
 
         right =
           Dux.from_list([

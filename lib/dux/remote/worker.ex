@@ -240,6 +240,7 @@ defmodule Dux.Remote.Worker do
         table_ref = Dux.Native.table_from_ipc(ipc_binary)
         Process.put(:dux_append_ref, table_ref)
         temp = Dux.Native.table_ensure(db, table_ref)
+
         if Map.has_key?(state.tables, table_name) do
           # Append to existing table
           Dux.Native.db_execute(db, "INSERT INTO #{qi(table_name)} SELECT * FROM \"#{temp}\"")

@@ -152,5 +152,4 @@ defmodule Dux.Remote.Broadcast do
   defp normalize_on(col) when is_atom(col), do: [col]
   defp normalize_on(col) when is_binary(col), do: [String.to_atom(col)]
   defp normalize_on(cols) when is_list(cols), do: cols
-
 end
