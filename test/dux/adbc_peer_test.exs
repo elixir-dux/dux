@@ -3,6 +3,7 @@ defmodule Dux.AdbcPeerTest do
   require Dux
 
   alias Dux.Remote.Worker
+  alias Dux.Test.Datasets
 
   @moduletag :distributed
   @moduletag timeout: 120_000
@@ -303,10 +304,10 @@ defmodule Dux.AdbcPeerTest do
         {:ok, w2} = start_worker_on(node2)
         Process.sleep(200)
 
-        airlines = Dux.Test.Datasets.airlines() |> Dux.compute()
+        airlines = Datasets.airlines() |> Dux.compute()
 
         result =
-          Dux.Test.Datasets.flights()
+          Datasets.flights()
           |> Dux.distribute([w1, w2])
           |> Dux.join(airlines, on: :carrier)
           |> Dux.group_by(:name)
@@ -315,7 +316,7 @@ defmodule Dux.AdbcPeerTest do
           |> Dux.head()
           |> Dux.to_rows()
 
-        assert length(result) > 0
+        assert result != []
         assert Enum.all?(result, &Map.has_key?(&1, "name"))
         assert Enum.all?(result, &(&1["n"] > 0))
       after
@@ -334,7 +335,7 @@ defmodule Dux.AdbcPeerTest do
         Process.sleep(200)
 
         result =
-          Dux.Test.Datasets.penguins()
+          Datasets.penguins()
           |> Dux.distribute([w1, w2])
           |> Dux.drop_nil([:body_mass_g])
           |> Dux.group_by(:species)
