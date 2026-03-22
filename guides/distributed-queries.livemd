@@ -1,7 +1,7 @@
 # Distributed Queries
 
 ```elixir
-Mix.install([{:dux, "~> 0.1.0"}])
+Mix.install([{:dux, "~> 0.1.1"}])
 ```
 
 ## Section

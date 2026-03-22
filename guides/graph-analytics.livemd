@@ -1,7 +1,7 @@
 # Graph Analytics
 
 ```elixir
-Mix.install([{:dux, "~> 0.1.0"}])
+Mix.install([{:dux, "~> 0.1.1"}])
 ```
 
 ## Creating a graph
@@ -57,13 +57,13 @@ graph
 |> Dux.Graph.pagerank(iterations: 20, damping: 0.85)
 |> Dux.sort_by(desc: :rank)
 |> Dux.head(10)
-|> Dux.to_rows()
+|> Dux.collect()
 ```
 
 Returns a `%Dux{}` with columns `[vertex_id, rank]`.
 
-> #### Composability {: .tip}
->
+> #### Composability
+> 
 > Every graph algorithm returns a `%Dux{}` struct. Pipe it into any Dux verb —
 > filter, join with other data, write to Parquet, whatever you need.
 
@@ -74,7 +74,7 @@ Uses DuckDB recursive CTEs for efficient BFS from a source vertex:
 ```elixir
 Dux.Graph.shortest_paths(graph, 1)
 |> Dux.sort_by(:dist)
-|> Dux.to_rows()
+|> Dux.collect()
 ```
 
 ### Connected components
@@ -86,7 +86,7 @@ Dux.Graph.connected_components(graph)
 |> Dux.group_by(:component)
 |> Dux.summarise_with(size: "COUNT(*)")
 |> Dux.sort_by(desc: :size)
-|> Dux.to_rows()
+|> Dux.collect()
 ```
 
 ### Triangle counting
@@ -98,8 +98,8 @@ count = Dux.Graph.triangle_count(graph)
 # 1
 ```
 
-> #### Bidirectional edges required {: .warning}
->
+> #### Bidirectional edges required
+> 
 > Triangle counting expects edges in both directions. If your graph is
 > directed, add reverse edges before counting.
 

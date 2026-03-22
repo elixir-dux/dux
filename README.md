@@ -31,7 +31,7 @@ Dux.from_parquet("s3://data/sales/**/*.parquet")
 ```elixir
 def deps do
   [
-    {:dux, "~> 0.1.0"}
+    {:dux, "~> 0.1.1"}
   ]
 end
 ```
@@ -70,30 +70,30 @@ result =
 
 All operations are verbs on `%Dux{}` structs:
 
-| Verb | Description |
-|------|-------------|
-| `filter/2` | Filter rows (macro: `filter(df, x > 10)`) |
-| `mutate/2` | Add/replace columns (macro: `mutate(df, y: x * 2)`) |
-| `select/2` | Keep columns |
-| `discard/2` | Drop columns |
-| `sort_by/2` | Sort rows (asc/desc) |
-| `group_by/2` | Group for aggregation |
-| `summarise/2` | Aggregate (macro: `summarise(df, total: sum(x))`) |
-| `join/3` | Inner, left, right, cross, anti, semi joins |
-| `head/2` | First N rows |
-| `slice/3` | Offset + limit |
-| `distinct/1` | Deduplicate |
-| `drop_nil/2` | Remove rows with nil values |
-| `rename/2` | Rename columns |
-| `pivot_wider/4` | Long → wide (DuckDB PIVOT) |
-| `pivot_longer/3` | Wide → long (DuckDB UNPIVOT) |
-| `concat_rows/1` | UNION ALL |
-| `compute/1` | Execute the pipeline |
-| `to_rows/1` | Execute and return list of maps (`atom_keys: true` option) |
-| `to_columns/1` | Execute and return column map |
-| `peek/2` | Print formatted table preview |
-| `n_rows/1` | Count rows |
-| `sql_preview/2` | Show generated SQL (`pretty: true` option) |
+| Verb             | Description                                                |
+| ---------------- | ---------------------------------------------------------- |
+| `filter/2`       | Filter rows (macro: `filter(df, x > 10)`)                  |
+| `mutate/2`       | Add/replace columns (macro: `mutate(df, y: x * 2)`)        |
+| `select/2`       | Keep columns                                               |
+| `discard/2`      | Drop columns                                               |
+| `sort_by/2`      | Sort rows (asc/desc)                                       |
+| `group_by/2`     | Group for aggregation                                      |
+| `summarise/2`    | Aggregate (macro: `summarise(df, total: sum(x))`)          |
+| `join/3`         | Inner, left, right, cross, anti, semi joins                |
+| `head/2`         | First N rows                                               |
+| `slice/3`        | Offset + limit                                             |
+| `distinct/1`     | Deduplicate                                                |
+| `drop_nil/2`     | Remove rows with nil values                                |
+| `rename/2`       | Rename columns                                             |
+| `pivot_wider/4`  | Long → wide (DuckDB PIVOT)                                 |
+| `pivot_longer/3` | Wide → long (DuckDB UNPIVOT)                               |
+| `concat_rows/1`  | UNION ALL                                                  |
+| `compute/1`      | Execute the pipeline                                       |
+| `to_rows/1`      | Execute and return list of maps (`atom_keys: true` option) |
+| `to_columns/1`   | Execute and return column map                              |
+| `peek/2`         | Print formatted table preview                              |
+| `n_rows/1`       | Count rows                                                 |
+| `sql_preview/2`  | Show generated SQL (`pretty: true` option)                 |
 
 The `_with` variants (`filter_with/2`, `mutate_with/2`, `summarise_with/2`) accept raw SQL strings for programmatic use.
 
