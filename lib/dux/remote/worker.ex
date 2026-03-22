@@ -166,7 +166,7 @@ defmodule Dux.Remote.Worker do
 
         Dux.Backend.execute(
           conn,
-          "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM \"#{temp_name}\""
+          "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM #{qi(temp_name)}"
         )
 
         Process.delete(:dux_register_ref)
@@ -236,14 +236,14 @@ defmodule Dux.Remote.Worker do
 
         if Map.has_key?(state.tables, table_name) do
           # Append to existing table
-          Dux.Backend.execute(conn, "INSERT INTO #{qi(table_name)} SELECT * FROM \"#{temp}\"")
+          Dux.Backend.execute(conn, "INSERT INTO #{qi(table_name)} SELECT * FROM #{qi(temp)}")
         else
           # Create new table
           Dux.Backend.execute(conn, "DROP TABLE IF EXISTS #{qi(table_name)}")
 
           Dux.Backend.execute(
             conn,
-            "CREATE TEMPORARY TABLE #{qi(table_name)} AS SELECT * FROM \"#{temp}\""
+            "CREATE TEMPORARY TABLE #{qi(table_name)} AS SELECT * FROM #{qi(temp)}"
           )
         end
 

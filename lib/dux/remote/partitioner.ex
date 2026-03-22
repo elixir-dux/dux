@@ -48,7 +48,15 @@ defmodule Dux.Remote.Partitioner do
     end)
   end
 
-  # Replicate: every worker gets the same pipeline
+  # Replicate: every worker gets the same pipeline.
+  # Table refs are connection-local — convert to list source for workers.
+  defp replicate(%Dux{source: {:table, %Dux.TableRef{} = ref}} = pipeline, workers) do
+    conn = Dux.Connection.get_conn()
+    rows = Dux.Backend.table_to_rows(conn, ref)
+    worker_pipeline = %{pipeline | source: {:list, rows}}
+    Enum.map(workers, fn worker -> {worker, worker_pipeline} end)
+  end
+
   defp replicate(pipeline, workers) do
     Enum.map(workers, fn worker -> {worker, pipeline} end)
   end

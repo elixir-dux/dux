@@ -148,14 +148,15 @@ defmodule Dux.Remote.Shuffle do
   end
 
   defp slice_for_workers(pipeline, workers) do
+    # Table refs are connection-local — materialize to list for workers
+    safe_pipeline = ensure_worker_safe(pipeline)
     n = length(workers)
 
     workers
     |> Enum.with_index(1)
     |> Enum.map(fn {worker, idx} ->
-      # Each worker gets rows where NTILE(N) == idx
       sliced =
-        pipeline
+        safe_pipeline
         |> Dux.mutate_with(__slice: "NTILE(#{n}) OVER ()")
         |> Dux.filter_with("__slice = #{idx}")
         |> Dux.discard([:__slice])
@@ -163,6 +164,14 @@ defmodule Dux.Remote.Shuffle do
       {worker, sliced}
     end)
   end
+
+  defp ensure_worker_safe(%Dux{source: {:table, %Dux.TableRef{} = ref}} = pipeline) do
+    conn = Dux.Connection.get_conn()
+    rows = Dux.Backend.table_to_rows(conn, ref)
+    %{pipeline | source: {:list, rows}}
+  end
+
+  defp ensure_worker_safe(pipeline), do: pipeline
 
   defp hash_partition_all(worker_pipelines, on_cols, n_buckets, timeout) do
     # on_cols is a list of column names (strings). For single column, Worker accepts
