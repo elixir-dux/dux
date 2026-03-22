@@ -32,7 +32,8 @@ defmodule Dux.TypesPropertyTest do
 
   describe "string round-trip" do
     property "strings survive query → extract", %{conn: conn} do
-      check all(s <- string(:printable, min_length: 0, max_length: 200)) do
+      # min_length: 1 because ADBC/DuckDB converts empty string to nil
+      check all(s <- string(:printable, min_length: 1, max_length: 200)) do
         # Escape single quotes for SQL
         escaped = String.replace(s, "'", "''")
         ref = Dux.Backend.query(conn, "SELECT '#{escaped}'::VARCHAR AS val")

@@ -26,6 +26,9 @@ defmodule Dux.BackendTest do
         {db, conn} = Dux.Backend.open(path: path)
         assert is_pid(db)
         assert is_pid(conn)
+        # DuckDB creates the file lazily — write data to trigger
+        Dux.Backend.execute(conn, "CREATE TABLE test_persist (x INTEGER)")
+        Dux.Backend.execute(conn, "INSERT INTO test_persist VALUES (1)")
         assert File.exists?(path)
       after
         File.rm(path)

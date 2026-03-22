@@ -14,13 +14,13 @@ defmodule Dux.Backend do
 
   @doc false
   def open(opts \\ []) do
-    driver_opts =
+    db_opts =
       case Keyword.get(opts, :path) do
         nil -> []
         path -> [path: path]
       end
 
-    {:ok, db} = Adbc.Database.start_link(driver: :duckdb, process_options: driver_opts)
+    {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
     {:ok, conn} = Adbc.Connection.start_link(database: db)
     {db, conn}
   end
