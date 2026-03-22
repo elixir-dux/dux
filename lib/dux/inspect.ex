@@ -47,7 +47,10 @@ defimpl Inspect, for: Dux do
       [color("#Dux<", :map, opts), color("lazy ", :atom, opts)] ++
         if(ops != [], do: [color("[#{length(ops)} ops] ", :list, opts)], else: []) ++
         [string(source_desc)] ++
-        if(workers, do: [color(" distributed(#{length(workers)} workers)", :atom, opts)], else: []) ++
+        if(workers,
+          do: [color(" distributed(#{length(workers)} workers)", :atom, opts)],
+          else: []
+        ) ++
         [color(">", :map, opts)]
 
     concat(parts)
