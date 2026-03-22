@@ -365,12 +365,18 @@ defmodule Dux.Remote.Coordinator do
     end
   end
 
-  # Apply coordinator-only ops to the merged result
+  # Apply coordinator-only ops to the merged result and compute locally.
+  # The result must be fully materialized — if we return a %Dux{} with pending ops
+  # and workers still set, compute() would re-distribute those ops.
   defp apply_coordinator_ops(dux, []), do: dux
 
-  defp apply_coordinator_ops(dux, [op | rest]) do
-    updated = apply_single_op(dux, op)
-    apply_coordinator_ops(updated, rest)
+  defp apply_coordinator_ops(dux, coord_ops) do
+    pipeline = Enum.reduce(coord_ops, dux, &apply_single_op(&2, &1))
+
+    # Compute locally to materialize the result — strip workers to prevent
+    # re-distribution of coordinator-only ops
+    local = %{pipeline | workers: nil}
+    Dux.compute(local)
   end
 
   defp apply_single_op(dux, {:slice, offset, length}), do: Dux.slice(dux, offset, length)

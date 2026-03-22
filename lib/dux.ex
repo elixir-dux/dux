@@ -703,6 +703,13 @@ defmodule Dux do
       true
   """
   # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+  def compute(%Dux{workers: workers, source: {:table, _}, ops: []} = dux)
+      when is_list(workers) and workers != [] do
+    # Already computed — don't re-distribute
+    dux
+  end
+
+  # credo:disable-for-next-line Credo.Check.Design.AliasUsage
   def compute(%Dux{workers: workers} = dux) when is_list(workers) and workers != [] do
     # Distributed execution — delegate to Coordinator
     result = Dux.Remote.Coordinator.execute(dux, workers: workers)

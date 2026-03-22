@@ -127,10 +127,27 @@ defmodule Dux.Remote.Merger do
   end
 
   defp find_merge_strategy(ops) do
-    # Walk ops in reverse to find what the merge needs to handle
-    ops
-    |> Enum.reverse()
-    |> do_find_merge_strategy()
+    # The primary concern is whether there's an aggregation that needs re-aggregation.
+    # Sort/head/distinct are secondary — they apply after re-aggregation if needed.
+    has_summarise = Enum.any?(ops, &match?({:summarise, _}, &1))
+
+    if has_summarise do
+      # Find the summarise and its groups
+      {groups, aggs} = find_aggregation(ops)
+      {:re_aggregate, groups, aggs}
+    else
+      # No aggregation — check for sort/head/distinct
+      ops
+      |> Enum.reverse()
+      |> do_find_merge_strategy()
+    end
+  end
+
+  defp find_aggregation(ops) do
+    summarise_idx = Enum.find_index(ops, &match?({:summarise, _}, &1))
+    {:summarise, aggs} = Enum.at(ops, summarise_idx)
+    groups = find_groups(Enum.take(ops, summarise_idx))
+    {groups, aggs}
   end
 
   # Default: just concatenate
@@ -147,12 +164,6 @@ defmodule Dux.Remote.Merger do
 
   # Distinct → re-distinct
   defp do_find_merge_strategy([{:distinct, _} | _]), do: :re_distinct
-
-  # Summarise → re-aggregate
-  defp do_find_merge_strategy([{:summarise, aggs} | rest]) do
-    groups = find_groups(rest)
-    {:re_aggregate, groups, aggs}
-  end
 
   # Skip other ops and keep looking
   defp do_find_merge_strategy([_ | rest]), do: do_find_merge_strategy(rest)
