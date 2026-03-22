@@ -51,7 +51,7 @@ defmodule Dux.DistributedJoinRoutingTest do
 
       # Each worker gets all 3 rows (replicated source) and joins with broadcast right
       # After merge: duplicated but all rows should have both amount and name
-      assert length(result) > 0
+      assert result != []
       assert Enum.all?(result, &(Map.has_key?(&1, "name") and Map.has_key?(&1, "amount")))
 
       # Verify correct join results
@@ -75,7 +75,7 @@ defmodule Dux.DistributedJoinRoutingTest do
         |> Dux.sort_by(:id)
         |> Dux.to_rows()
 
-      assert length(result) > 0
+      assert result != []
       assert Enum.all?(result, &Map.has_key?(&1, "label"))
     end
 
@@ -129,7 +129,7 @@ defmodule Dux.DistributedJoinRoutingTest do
         |> Dux.to_rows()
 
       # All left rows preserved, unmatched get nil for name
-      assert length(result) > 0
+      assert result != []
 
       matched = Enum.filter(result, &(&1["name"] != nil))
       assert Enum.all?(matched, &(&1["name"] == "Alice"))
@@ -196,7 +196,7 @@ defmodule Dux.DistributedJoinRoutingTest do
         |> Dux.sort_by(:id)
         |> Dux.to_rows()
 
-      assert length(result) > 0
+      assert result != []
       assert Enum.all?(result, &Map.has_key?(&1, "name"))
     end
 
@@ -241,7 +241,7 @@ defmodule Dux.DistributedJoinRoutingTest do
         |> Dux.sort_by(:id)
         |> Dux.to_rows()
 
-      assert length(result) > 0
+      assert result != []
       assert Enum.all?(result, &(Map.has_key?(&1, "name") and Map.has_key?(&1, "country")))
     end
 
@@ -291,7 +291,7 @@ defmodule Dux.DistributedJoinRoutingTest do
         |> Dux.join(right, on: [{:"my id", :"my id"}])
         |> Dux.to_rows()
 
-      assert length(result) > 0
+      assert result != []
       assert hd(result)["na\"me"] == "Alice"
     end
 
