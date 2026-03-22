@@ -4,7 +4,6 @@ defimpl Inspect, for: Dux do
   @preview_limit 5
 
   def inspect(%Dux{source: {:table, ref}} = dux, opts) do
-    # Computed — show shape, columns, dtypes, first few values
     names = Dux.Native.table_names(ref)
     n_rows = Dux.Native.table_n_rows(ref)
     n_cols = length(names)
@@ -12,59 +11,92 @@ defimpl Inspect, for: Dux do
     columns = Dux.Native.table_to_columns(ref)
     dtypes = dux.dtypes
 
-    header = "DuckDB[#{n_rows} x #{n_cols}]"
-    dist_line = distribution_line(dux.workers)
-    col_lines = Enum.map(names, &format_column(&1, columns, dtypes))
+    # Header: DuckDB[rows x cols]
+    header =
+      concat([
+        color("DuckDB", :atom, opts),
+        color("[", :list, opts),
+        string("#{n_rows} x #{n_cols}"),
+        color("]", :list, opts)
+      ])
 
-    lines =
-      [line(), string(header)] ++
-        if(dist_line, do: [line(), string(dist_line)], else: []) ++
-        [line() | Enum.intersperse(col_lines, line())]
+    # Distribution line (if distributed)
+    dist = distribution_doc(dux.workers, opts)
+
+    # Column lines: name dtype [values]
+    col_docs = Enum.map(names, &format_column(&1, columns, dtypes, opts))
+
+    inner =
+      [line(), header] ++
+        if(dist, do: [line(), dist], else: []) ++
+        [line() | Enum.intersperse(col_docs, line())]
 
     concat([
-      "#Dux<",
-      nest(concat(lines), 2),
+      color("#Dux<", :map, opts),
+      nest(concat(inner), 2),
       line(),
-      ">"
+      color(">", :map, opts)
     ])
     |> group()
-    |> format(opts.width)
-    |> IO.iodata_to_binary()
-    |> color(:map, opts)
   end
 
   def inspect(%Dux{source: source, ops: ops, workers: workers}, opts) do
-    # Lazy — show source type and op count without materializing
     source_desc = describe_source(source)
-    dist_tag = if workers, do: " distributed(#{length(workers)} workers)", else: ""
 
-    if ops == [] do
-      color("#Dux<lazy #{source_desc}#{dist_tag}>", :map, opts)
-    else
-      color("#Dux<lazy [#{length(ops)} ops] #{source_desc}#{dist_tag}>", :map, opts)
-    end
+    parts =
+      [color("#Dux<", :map, opts), color("lazy ", :atom, opts)] ++
+        if(ops != [], do: [color("[#{length(ops)} ops] ", :list, opts)], else: []) ++
+        [string(source_desc)] ++
+        if(workers, do: [color(" distributed(#{length(workers)} workers)", :atom, opts)], else: []) ++
+        [color(">", :map, opts)]
+
+    concat(parts)
   end
 
-  defp format_column(name, columns, dtypes) do
-    dtype = format_dtype(Map.get(dtypes, name))
+  defp format_column(name, columns, dtypes, opts) do
+    dtype_str = format_dtype(Map.get(dtypes, name))
     values = Map.get(columns, name, [])
-    preview = format_values(values)
-    string("#{name} #{dtype} #{preview}")
+
+    concat([
+      color(name, :map, opts),
+      string(" "),
+      color(dtype_str, :atom, opts),
+      string(" "),
+      format_values(values, opts)
+    ])
   end
 
-  defp format_values(values) when length(values) <= @preview_limit do
-    "[#{Enum.map_join(values, ", ", &format_value/1)}]"
+  defp format_values(values, opts) when length(values) <= @preview_limit do
+    inner = Enum.map(values, &value_doc(&1, opts)) |> Enum.intersperse(string(", "))
+
+    concat([
+      color("[", :list, opts),
+      concat(inner),
+      color("]", :list, opts)
+    ])
   end
 
-  defp format_values(values) do
+  defp format_values(values, opts) do
     shown = Enum.take(values, @preview_limit)
-    "[#{Enum.map_join(shown, ", ", &format_value/1)}, ...]"
+    inner = Enum.map(shown, &value_doc(&1, opts)) |> Enum.intersperse(string(", "))
+
+    concat([
+      color("[", :list, opts),
+      concat(inner),
+      string(", "),
+      color("...", :list, opts),
+      color("]", :list, opts)
+    ])
   end
 
-  defp format_value(nil), do: "nil"
-  defp format_value(v) when is_binary(v), do: ~s("#{truncate(v, 20)}")
-  defp format_value(v) when is_float(v), do: Float.to_string(v)
-  defp format_value(v), do: inspect(v)
+  defp value_doc(nil, opts), do: color("nil", :atom, opts)
+
+  defp value_doc(v, opts) when is_binary(v) do
+    color(~s("#{truncate(v, 20)}"), :string, opts)
+  end
+
+  defp value_doc(v, _opts) when is_float(v), do: string(Float.to_string(v))
+  defp value_doc(v, _opts), do: string(Kernel.inspect(v))
 
   defp truncate(s, max) do
     if String.length(s) > max do
@@ -89,10 +121,10 @@ defimpl Inspect, for: Dux do
   defp format_dtype(nil), do: "unknown"
   defp format_dtype(other), do: Kernel.inspect(other)
 
-  defp distribution_line(nil), do: nil
-  defp distribution_line([]), do: nil
+  defp distribution_doc(nil, _opts), do: nil
+  defp distribution_doc([], _opts), do: nil
 
-  defp distribution_line(workers) when is_list(workers) do
+  defp distribution_doc(workers, opts) when is_list(workers) do
     nodes =
       workers
       |> Enum.flat_map(fn
@@ -110,12 +142,14 @@ defimpl Inspect, for: Dux do
         ns -> "#{length(ns)} nodes"
       end
 
-    "distributed: #{length(workers)} workers on #{node_desc}"
+    concat([
+      color("distributed:", :atom, opts),
+      string(" #{length(workers)} workers on #{node_desc}")
+    ])
   end
 
   defp describe_source({:sql, sql}) do
-    truncated = truncate(sql, 40)
-    "sql: #{truncated}"
+    "sql: #{truncate(sql, 40)}"
   end
 
   defp describe_source({:csv, path, _}), do: "csv: #{Path.basename(path)}"
