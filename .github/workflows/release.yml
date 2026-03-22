@@ -2,45 +2,39 @@ name: Build precompiled NIFs
 
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - main
+    paths:
+      - "native/**"
+      - ".github/workflows/release.yml"
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
-
 jobs:
-  build:
-    name: NIF ${{ matrix.nif }} - ${{ matrix.target }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  build_release:
+    name: NIF ${{ matrix.nif }} - ${{ matrix.job.target }} (${{ matrix.job.os }})
+    runs-on: ${{ matrix.job.os }}
+
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     strategy:
       fail-fast: false
       matrix:
         nif: ["2.16"]
-        target:
-          - aarch64-apple-darwin
-          - x86_64-apple-darwin
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - x86_64-pc-windows-msvc
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-15
-          - target: x86_64-apple-darwin
-            os: macos-15
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            cross: "true"
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-22.04
-            cross: "true"
-          - target: x86_64-pc-windows-msvc
-            os: windows-2025
+        job:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-22.04, use-cross: true }
+          - { target: x86_64-pc-windows-msvc, os: windows-2025 }
 
     steps:
       - uses: actions/checkout@v4
@@ -48,27 +42,27 @@ jobs:
       - name: Extract version
         shell: bash
         run: |
-          VERSION=$(sed -n 's/.*@version "\(.*\)"/\1/p' mix.exs | head -1)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "PROJECT_VERSION=$(sed -n 's/^  @version "\(.*\)"/\1/p' mix.exs | head -n1)" >> $GITHUB_ENV
 
       - name: Add target
-        run: rustup target add ${{ matrix.target }}
-        if: ${{ !matrix.cross }}
+        shell: bash
+        run: rustup target add ${{ matrix.job.target }}
 
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: native/dux
-          key: precomp-${{ matrix.target }}
+          key: precomp-${{ matrix.job.target }}-${{ matrix.nif }}
 
       - name: Build
         id: build
         uses: philss/rustler-precompiled-action@v1.1.4
         with:
           project-name: dux
-          project-version: ${{ env.VERSION }}
-          target: ${{ matrix.target }}
+          project-version: ${{ env.PROJECT_VERSION }}
+          target: ${{ matrix.job.target }}
           nif-version: ${{ matrix.nif }}
-          use-cross: ${{ matrix.cross || 'false' }}
+          use-cross: ${{ matrix.job.use-cross || false }}
+          cross-version: "from-source"
           project-dir: native/dux
 
       - name: Artifact attestation
