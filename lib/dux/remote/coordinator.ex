@@ -263,16 +263,32 @@ defmodule Dux.Remote.Coordinator do
       do_preprocess(rest, [op | processed], broadcast_names, workers, timeout, threshold)
     else
       # Non-worker-safe — compute right side and decide broadcast vs shuffle
+      conn = Dux.Connection.get_conn()
       right_computed = Dux.compute(right)
       {:table, right_ref} = right_computed.source
-      right_ipc = Dux.Backend.table_to_ipc(Dux.Connection.get_conn(), right_ref)
+      right_n_rows = Dux.Backend.table_n_rows(conn, right_ref)
 
-      route_non_safe_join(%{
-        right_ipc: right_ipc, right_computed: right_computed,
-        how: how, on_cols: on_cols, suffix: suffix,
-        rest: rest, processed: processed, broadcast_names: broadcast_names,
-        workers: workers, timeout: timeout, threshold: threshold
-      })
+      if right_n_rows == 0 do
+        # Empty right side — convert to worker-safe empty query preserving schema
+        {names, types} = describe_for_empty(conn, right_ref)
+
+        col_defs =
+          Enum.zip(names, types)
+          |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{Dux.SQL.Helpers.qi(n)}" end)
+
+        empty_right = Dux.from_query("SELECT #{col_defs} WHERE false")
+        new_op = {:join, empty_right, how, on_cols, suffix}
+        do_preprocess(rest, [new_op | processed], broadcast_names, workers, timeout, threshold)
+      else
+        right_ipc = Dux.Backend.table_to_ipc(conn, right_ref)
+
+        route_non_safe_join(%{
+          right_ipc: right_ipc, right_computed: right_computed,
+          how: how, on_cols: on_cols, suffix: suffix,
+          rest: rest, processed: processed, broadcast_names: broadcast_names,
+          workers: workers, timeout: timeout, threshold: threshold
+        })
+      end
     end
   end
 
@@ -300,6 +316,12 @@ defmodule Dux.Remote.Coordinator do
       {:shuffle, Enum.reverse(ctx.processed),
        {ctx.right_computed, ctx.how, ctx.on_cols, ctx.suffix}, ctx.rest, ctx.broadcast_names}
     end
+  end
+
+  defp describe_for_empty(conn, %Dux.TableRef{name: name}) do
+    result = Adbc.Connection.query!(conn, "DESCRIBE #{qi(name)}")
+    map = Adbc.Result.to_map(result)
+    {map["column_name"] || [], map["column_type"] || []}
   end
 
   defp do_broadcast(workers, name, ipc, timeout) do

@@ -181,23 +181,118 @@ defmodule Dux.Backend do
   # ---------------------------------------------------------------------------
 
   @doc false
-  def table_to_ipc(conn, %TableRef{name: name}) do
-    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(name)}")
+  def table_to_ipc(conn, %TableRef{} = ref) do
+    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
     materialized = Adbc.Result.materialize(result)
-    Adbc.Result.to_ipc_stream(materialized)
+
+    if materialized.data == [] do
+      # ADBC can't serialize zero-row results to IPC.
+      # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
+      {names, types} = describe_table(conn, ref.name)
+
+      if names == [] do
+        # No columns at all — return empty sentinel
+        <<0::32>>
+      else
+        # Create a single-row dummy, serialize, then the receiver knows to filter
+        col_defs =
+          Enum.zip(names, types)
+          |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
+
+        dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
+        dummy_mat = Adbc.Result.materialize(dummy)
+        ipc = Adbc.Result.to_ipc_stream(dummy_mat)
+        # Prefix with magic byte to signal "empty — strip the dummy row"
+        <<"DUX_EMPTY"::binary, ipc::binary>>
+      end
+    else
+      Adbc.Result.to_ipc_stream(materialized)
+    end
   end
 
   @doc false
-  def table_from_ipc(conn, binary) when is_binary(binary) do
-    result = Adbc.Result.from_ipc_stream!(binary)
+  def table_from_ipc(conn, <<0::32>>) do
+    # Empty sentinel — no columns
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
+    Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
+    %TableRef{name: name, gc_ref: nil, node: node()}
+  end
+
+  def table_from_ipc(conn, <<"DUX_EMPTY"::binary, ipc::binary>>) do
+    # Empty table with schema — ingest the dummy row then delete it
+    result = Adbc.Result.from_ipc_stream!(ipc)
     materialized = Adbc.Result.materialize(result)
     ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+    # Delete the dummy row
+    Adbc.Connection.query!(conn, "DELETE FROM #{qi(ingest_result.table)} WHERE true")
 
     %TableRef{
       name: ingest_result.table,
       gc_ref: ingest_result,
       node: node()
     }
+  end
+
+  def table_from_ipc(conn, binary) when is_binary(binary) do
+    result = Adbc.Result.from_ipc_stream!(binary)
+    materialized = Adbc.Result.materialize(result)
+
+    cond do
+      materialized.data == [] ->
+        name = "__dux_#{:erlang.unique_integer([:positive])}"
+        Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
+        %TableRef{name: name, gc_ref: nil, node: node()}
+
+      has_special_column_names?(materialized.data) ->
+        # Can't use ingest — DuckDB doesn't quote column names in DDL.
+        # Ingest to a temp name first, then copy with proper quoting.
+        ingest_result = ingest_safe(conn, materialized.data)
+        %TableRef{name: ingest_result.table, gc_ref: ingest_result, node: node()}
+
+      true ->
+        ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+        %TableRef{name: ingest_result.table, gc_ref: ingest_result, node: node()}
+    end
+  end
+
+  defp has_special_column_names?(columns) do
+    Enum.any?(columns, fn col ->
+      name = col.field.name
+      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "")
+    end)
+  end
+
+  # Ingest data that has special column names by renaming to safe names,
+  # ingesting, then renaming back via CREATE TABLE AS SELECT.
+  defp ingest_safe(conn, columns) do
+    # Rename columns to safe names for ingest
+    safe_columns =
+      columns
+      |> Enum.with_index()
+      |> Enum.map(fn {col, i} ->
+        %{col | field: %{col.field | name: "__col_#{i}"}}
+      end)
+
+    ingest_result = Adbc.Connection.ingest!(conn, safe_columns)
+
+    # Now create a new table with the original column names
+    original_names = Enum.map(columns, & &1.field.name)
+
+    select_cols =
+      original_names
+      |> Enum.with_index()
+      |> Enum.map_join(", ", fn {orig, i} -> "\"__col_#{i}\" AS #{qi(orig)}" end)
+
+    final_name = "__dux_#{:erlang.unique_integer([:positive])}"
+
+    Adbc.Connection.query!(
+      conn,
+      "CREATE TEMPORARY TABLE #{qi(final_name)} AS SELECT #{select_cols} FROM #{qi(ingest_result.table)}"
+    )
+
+    # Return an "IngestResult-like" with the final table name
+    # Note: gc_ref is the original ingest_result which keeps the source alive
+    %Adbc.IngestResult{ref: ingest_result.ref, table: final_name, num_rows: ingest_result.num_rows}
   end
 
   # ---------------------------------------------------------------------------
@@ -261,6 +356,20 @@ defmodule Dux.Backend do
         {:unknown, other}
     end
   end
+
+  # Map DuckDB SQL type strings to ADBC type atoms (for empty IPC generation).
+  defp duckdb_type_string_to_adbc_type("TINYINT"), do: :s8
+  defp duckdb_type_string_to_adbc_type("SMALLINT"), do: :s16
+  defp duckdb_type_string_to_adbc_type("INTEGER"), do: :s32
+  defp duckdb_type_string_to_adbc_type("BIGINT"), do: :s64
+  defp duckdb_type_string_to_adbc_type("FLOAT"), do: :f32
+  defp duckdb_type_string_to_adbc_type("DOUBLE"), do: :f64
+  defp duckdb_type_string_to_adbc_type("BOOLEAN"), do: :boolean
+  defp duckdb_type_string_to_adbc_type("VARCHAR"), do: :string
+  defp duckdb_type_string_to_adbc_type("BLOB"), do: :binary
+  defp duckdb_type_string_to_adbc_type("DATE"), do: :date32
+  defp duckdb_type_string_to_adbc_type("TIMESTAMP"), do: {:timestamp, :microsecond, nil}
+  defp duckdb_type_string_to_adbc_type(_), do: :string
 
   # Map ADBC column types (from result.data) to Dux dtype atoms.
   # Used for IPC deserialization where we get ADBC types, not SQL strings.
