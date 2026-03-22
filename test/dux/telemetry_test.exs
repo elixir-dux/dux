@@ -15,7 +15,11 @@ defmodule Dux.TelemetryTest do
     pid
   end
 
-  defp stop(w), do: if(Process.alive?(w), do: GenServer.stop(w))
+  defp stop(w) do
+    GenServer.stop(w)
+  catch
+    :exit, _ -> :ok
+  end
 
   defp attach(event_name, test_pid \\ self()) do
     ref = make_ref()

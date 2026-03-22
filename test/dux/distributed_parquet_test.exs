@@ -17,7 +17,11 @@ defmodule Dux.DistributedParquetTest do
     pid
   end
 
-  defp stop(w), do: if(Process.alive?(w), do: GenServer.stop(w))
+  defp stop(w) do
+    GenServer.stop(w)
+  catch
+    :exit, _ -> :ok
+  end
 
   defp tmp_path(name) do
     Path.join(@tmp_dir, "dux_parq_test_#{System.unique_integer([:positive])}_#{name}")

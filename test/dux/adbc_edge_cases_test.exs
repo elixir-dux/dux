@@ -15,7 +15,11 @@ defmodule Dux.AdbcEdgeCasesTest do
     pid
   end
 
-  defp stop(w), do: if(Process.alive?(w), do: GenServer.stop(w))
+  defp stop(w) do
+    GenServer.stop(w)
+  catch
+    :exit, _ -> :ok
+  end
 
   # ---------------------------------------------------------------------------
   # Decimal normalization

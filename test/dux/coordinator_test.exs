@@ -27,7 +27,9 @@ defmodule Dux.CoordinatorTest do
   end
 
   defp stop_worker(w) do
-    if Process.alive?(w), do: GenServer.stop(w)
+    GenServer.stop(w)
+  catch
+    :exit, _ -> :ok
   end
 
   # ---------------------------------------------------------------------------
