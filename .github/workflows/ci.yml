@@ -8,7 +8,6 @@ on:
 
 env:
   MIX_ENV: test
-  DUX_BUILD: "true"
 
 jobs:
   test:
@@ -31,13 +30,6 @@ jobs:
         with:
           otp-version: ${{ matrix.otp }}
           elixir-version: ${{ matrix.elixir }}
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/dux
-          key: nif-${{ runner.os }}
 
       - name: Install dependencies
         run: mix deps.get
@@ -68,24 +60,3 @@ jobs:
 
       - name: Check format
         run: mix format --check-formatted
-
-  rust-lint:
-    name: Rust lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: native/dux
-
-      - name: Check format
-        run: cargo fmt --manifest-path=native/dux/Cargo.toml --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --manifest-path=native/dux/Cargo.toml -- -Dwarnings

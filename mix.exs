@@ -47,18 +47,14 @@ defmodule Dux.MixProject do
 
   defp package do
     [
-      files:
-        [
-          "lib",
-          "native/dux/src",
-          "native/dux/Cargo.toml",
-          "native/dux/Cargo.lock",
-          "mix.exs",
-          "README.md",
-          "CHANGELOG.md",
-          "LICENSE-APACHE",
-          "LICENSE-MIT"
-        ] ++ checksum_files(),
+      files: [
+        "lib",
+        "mix.exs",
+        "README.md",
+        "CHANGELOG.md",
+        "LICENSE-APACHE",
+        "LICENSE-MIT"
+      ],
       licenses: ["Apache-2.0", "MIT"],
       links: %{
         "GitHub" => @source_url,
@@ -96,15 +92,7 @@ defmodule Dux.MixProject do
     ]
   end
 
-  # Include checksum files if they exist (generated during release)
-  defp checksum_files do
-    Path.wildcard("checksum-*.exs")
-  end
-
   defp aliases do
-    [
-      "rust.lint": ["cmd cargo clippy --manifest-path=native/dux/Cargo.toml -- -Dwarnings"],
-      "rust.fmt": ["cmd cargo fmt --manifest-path=native/dux/Cargo.toml --all"]
-    ]
+    []
   end
 end
