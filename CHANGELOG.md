@@ -74,6 +74,7 @@ All notable changes to Dux are documented here.
 - Clean up distributed graph — keep distributed PageRank, defer CC
 - Bump version
 - Mix format
+- Add git-cliff for automated changelog generation
 
 ### Refactoring
 
@@ -94,5 +95,3 @@ All notable changes to Dux are documented here.
 - :peer distributed correctness tests on real BEAM nodes
 - Distribute API verification tests + update distributed_test to new API
 - Peer-node integration test for auto-broadcast join routing
-
-
