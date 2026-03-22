@@ -62,7 +62,7 @@ defmodule Dux.Remote.Coordinator do
         try do
           result = execute_fan_out(worker_pipeline, workers, strategy, timeout)
           result = apply_avg_rewrites(result, rewrites)
-          apply_coordinator_ops(result, coord_ops)
+          finalize(result, coord_ops)
         after
           cleanup_broadcast_tables(workers, broadcast_tables)
         end
@@ -170,7 +170,7 @@ defmodule Dux.Remote.Coordinator do
       end
 
     result = apply_avg_rewrites(result, rewrites)
-    apply_coordinator_ops(result, coord_ops)
+    finalize(result, coord_ops)
   end
 
   defp fan_out(assignments, timeout) do
@@ -379,18 +379,18 @@ defmodule Dux.Remote.Coordinator do
     end
   end
 
-  # Apply coordinator-only ops to the merged result and compute locally.
-  # The result must be fully materialized — if we return a %Dux{} with pending ops
-  # and workers still set, compute() would re-distribute those ops.
-  defp apply_coordinator_ops(dux, []), do: dux
-
-  defp apply_coordinator_ops(dux, coord_ops) do
+  # Finalize the Coordinator result: apply coordinator-only ops and compute
+  # locally. The result must be fully materialized — if we return a %Dux{}
+  # with pending ops and workers still set, compute() would re-distribute them.
+  defp finalize(dux, coord_ops) do
     pipeline = Enum.reduce(coord_ops, dux, &apply_single_op(&2, &1))
 
-    # Compute locally to materialize the result — strip workers to prevent
-    # re-distribution of coordinator-only ops
-    local = %{pipeline | workers: nil}
-    Dux.compute(local)
+    if pipeline.ops == [] do
+      pipeline
+    else
+      local = %{pipeline | workers: nil}
+      Dux.compute(local)
+    end
   end
 
   defp apply_single_op(dux, {:slice, offset, length}), do: Dux.slice(dux, offset, length)

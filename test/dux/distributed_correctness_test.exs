@@ -2,7 +2,7 @@ defmodule Dux.DistributedCorrectnessTest do
   use ExUnit.Case, async: false
   require Dux
 
-  alias Dux.Remote.{Coordinator, PipelineSplitter, Worker}
+  alias Dux.Remote.{PipelineSplitter, Worker}
 
   defp start_workers(n) do
     workers = Enum.map(1..n, fn _ -> start_one() end)
@@ -28,7 +28,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 101) t(x)")
         |> Dux.summarise_with(minimum: "MIN(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       # Correct: MIN across all rows = 1
@@ -42,7 +42,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 101) t(x)")
         |> Dux.summarise_with(maximum: "MAX(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       assert hd(result)["maximum"] == 100
@@ -55,7 +55,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT x, x % 3 AS grp FROM range(1, 31) t(x)")
         |> Dux.group_by(:grp)
         |> Dux.summarise_with(min_x: "MIN(x)", max_x: "MAX(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.sort_by(:grp)
         |> Dux.to_rows()
 
@@ -74,7 +74,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(average: "AVG(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       # AVG of 1..10 = 5.5
@@ -88,7 +88,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT x, x % 2 AS grp FROM range(1, 11) t(x)")
         |> Dux.group_by(:grp)
         |> Dux.summarise_with(avg_x: "AVG(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.sort_by(:grp)
         |> Dux.to_rows()
 
@@ -110,7 +110,7 @@ defmodule Dux.DistributedCorrectnessTest do
           minimum: "MIN(x)",
           maximum: "MAX(x)"
         )
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       row = hd(result)
@@ -138,7 +138,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       # Should produce a positive number (not nil, not negative)
@@ -153,7 +153,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       local =
@@ -169,7 +169,7 @@ defmodule Dux.DistributedCorrectnessTest do
       result =
         Dux.from_query("SELECT * FROM range(1, 11) t(x)")
         |> Dux.summarise_with(v: "VARIANCE(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_rows()
 
       assert is_number(hd(result)["v"])
@@ -183,7 +183,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT x, x % 2 AS grp FROM range(1, 21) t(x)")
         |> Dux.group_by(:grp)
         |> Dux.summarise_with(sd: "STDDEV_SAMP(x)")
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.sort_by(:grp)
         |> Dux.to_rows()
 
@@ -208,7 +208,7 @@ defmodule Dux.DistributedCorrectnessTest do
         Dux.from_query("SELECT * FROM range(100) t(x)")
         |> Dux.sort_by(:x)
         |> Dux.slice(10, 5)
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.to_columns()
 
       # With 2 workers, each sorted value appears twice in merged result
@@ -245,7 +245,7 @@ defmodule Dux.DistributedCorrectnessTest do
           %{region: "EU", product: "Widget", sales: 150}
         ])
         |> Dux.pivot_wider(:product, :sales)
-        |> Coordinator.execute(workers: workers)
+        |> Dux.distribute(workers)
         |> Dux.sort_by(:region)
         |> Dux.to_rows()
 
@@ -334,7 +334,7 @@ defmodule Dux.DistributedCorrectnessTest do
         |> Dux.summarise_with(total: "SUM(x)", n: "COUNT(*)")
 
       local = pipeline |> Dux.to_rows()
-      dist = Coordinator.execute(pipeline, workers: workers) |> Dux.to_rows()
+      dist = pipeline |> Dux.distribute(workers) |> Dux.to_rows()
 
       # Replicated source: 2 workers each process all data → 2x totals
       assert hd(dist)["total"] == hd(local)["total"] * 2

@@ -2,7 +2,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
   use ExUnit.Case, async: false
   require Dux
 
-  alias Dux.Remote.{Broadcast, Coordinator, Shuffle, Worker}
+  alias Dux.Remote.{Broadcast, Shuffle, Worker}
 
   @moduletag :distributed
   @moduletag timeout: 120_000
@@ -55,7 +55,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         result =
           Dux.from_query("SELECT * FROM range(1, 101) t(x)")
           |> Dux.summarise_with(minimum: "MIN(x)", maximum: "MAX(x)")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_rows()
 
         row = hd(result)
@@ -79,7 +79,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         result =
           Dux.from_query("SELECT * FROM range(1, 11) t(x)")
           |> Dux.summarise_with(average: "AVG(x)")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_rows()
 
         # AVG(1..10) = 5.5 regardless of replication
@@ -107,7 +107,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
             min_x: "MIN(x)",
             max_x: "MAX(x)"
           )
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.sort_by(:grp)
           |> Dux.to_rows()
 
@@ -147,7 +147,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         result =
           Dux.from_query("SELECT * FROM range(1, 101) t(x)")
           |> Dux.summarise_with(sd: "STDDEV_SAMP(x)", v: "VARIANCE(x)")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_rows()
 
         row = hd(result)
@@ -183,7 +183,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           Dux.from_query("SELECT * FROM range(20) t(x)")
           |> Dux.sort_by(:x)
           |> Dux.slice(0, 5)
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_columns()
 
         # First 5 from sorted merged result (duplicated: [0,0,1,1,2,...])
@@ -215,7 +215,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
             %{region: "EU", product: "Gadget", sales: 200}
           ])
           |> Dux.pivot_wider(:product, :sales)
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.sort_by(:region)
           |> Dux.to_rows()
 
@@ -245,7 +245,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
             %{region: "EU", q1: 150, q2: 250}
           ])
           |> Dux.pivot_longer([:q1, :q2], names_to: "quarter", values_to: "sales")
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.n_rows()
 
         # 2 rows × 2 quarters × 2 workers (replicated) = 8
@@ -283,7 +283,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           )
           |> Dux.sort_by(desc: :total)
           |> Dux.head(3)
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_rows()
 
         # Should get top 3 groups by total
@@ -328,7 +328,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
             min_v: "MIN(value)",
             max_v: "MAX(value)"
           )
-          |> Coordinator.execute(workers: [w1, w2])
+          |> Dux.distribute([w1, w2])
           |> Dux.to_rows()
 
         row = hd(result)
@@ -461,10 +461,8 @@ defmodule Dux.DistributedCorrectnessPeerTest do
         result =
           left
           |> Dux.join(right, on: :id)
-          |> Dux.Remote.Coordinator.execute(
-            workers: [w1, w2],
-            broadcast_threshold: 0
-          )
+          |> Dux.distribute([w1, w2])
+          |> Dux.compute(broadcast_threshold: 0)
           |> Dux.sort_by(:id)
           |> Dux.to_rows()
 

@@ -703,28 +703,34 @@ defmodule Dux do
   Returns a new `%Dux{}` with `source: {:table, ref}` and empty ops.
   The ref is a NIF ResourceArc — when it's GC'd, the temp table is dropped.
 
+  ## Options (distributed only)
+
+    * `:broadcast_threshold` — max IPC size in bytes for broadcast joins
+      (default: 256MB). Right sides larger than this trigger shuffle joins.
+
+  ## Examples
+
       iex> df = Dux.from_query("SELECT 1 AS x") |> Dux.compute()
       iex> df.ops
       []
       iex> match?({:table, _}, df.source)
       true
   """
-  # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-  def compute(%Dux{workers: workers, source: {:table, _}, ops: []} = dux)
+  def compute(dux, opts \\ [])
+
+  def compute(%Dux{workers: workers, source: {:table, _}, ops: []} = dux, _opts)
       when is_list(workers) and workers != [] do
-    # Already computed — don't re-distribute
     dux
   end
 
-  # credo:disable-for-next-line Credo.Check.Design.AliasUsage
-  def compute(%Dux{workers: workers} = dux) when is_list(workers) and workers != [] do
-    # Distributed execution — delegate to Coordinator
-    result = Dux.Remote.Coordinator.execute(dux, workers: workers)
-    # Preserve workers so subsequent ops stay distributed
+  def compute(%Dux{workers: workers} = dux, opts) when is_list(workers) and workers != [] do
+    coordinator_opts = [workers: workers] ++ Keyword.take(opts, [:broadcast_threshold])
+    # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+    result = Dux.Remote.Coordinator.execute(dux, coordinator_opts)
     %{result | workers: workers}
   end
 
-  def compute(%Dux{} = dux) do
+  def compute(%Dux{} = dux, _opts) do
     # Local execution
     db = Dux.Connection.get_db()
 
