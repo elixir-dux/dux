@@ -357,20 +357,6 @@ defmodule Dux.Backend do
     end
   end
 
-  # Map DuckDB SQL type strings to ADBC type atoms (for empty IPC generation).
-  defp duckdb_type_string_to_adbc_type("TINYINT"), do: :s8
-  defp duckdb_type_string_to_adbc_type("SMALLINT"), do: :s16
-  defp duckdb_type_string_to_adbc_type("INTEGER"), do: :s32
-  defp duckdb_type_string_to_adbc_type("BIGINT"), do: :s64
-  defp duckdb_type_string_to_adbc_type("FLOAT"), do: :f32
-  defp duckdb_type_string_to_adbc_type("DOUBLE"), do: :f64
-  defp duckdb_type_string_to_adbc_type("BOOLEAN"), do: :boolean
-  defp duckdb_type_string_to_adbc_type("VARCHAR"), do: :string
-  defp duckdb_type_string_to_adbc_type("BLOB"), do: :binary
-  defp duckdb_type_string_to_adbc_type("DATE"), do: :date32
-  defp duckdb_type_string_to_adbc_type("TIMESTAMP"), do: {:timestamp, :microsecond, nil}
-  defp duckdb_type_string_to_adbc_type(_), do: :string
-
   # Map ADBC column types (from result.data) to Dux dtype atoms.
   # Used for IPC deserialization where we get ADBC types, not SQL strings.
   @doc false
