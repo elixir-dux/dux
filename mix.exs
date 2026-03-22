@@ -100,6 +100,7 @@ defmodule Dux.MixProject do
     [
       check: [
         "format --check-formatted",
+        "deps.compile",
         "compile --warnings-as-errors",
         "test --exclude distributed",
         "credo --strict"
