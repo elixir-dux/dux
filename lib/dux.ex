@@ -335,13 +335,20 @@ defmodule Dux do
   end
 
   @doc """
-  Take the first `n` rows.
+  Take the first `n` rows (default 10).
+
+  In IEx, the result is automatically displayed via the Inspect protocol.
+  Use `peek/2` for an explicit table preview.
+
+  ## Examples
 
       iex> Dux.from_query("SELECT * FROM range(100) t(x)")
       ...> |> Dux.head(3)
       ...> |> Dux.to_columns()
       %{"x" => [0, 1, 2]}
   """
+  def head(dux, n \\ 10)
+
   def head(%Dux{ops: ops} = dux, n) when is_integer(n) and n >= 0 do
     %{dux | ops: ops ++ [{:head, n}]}
   end
