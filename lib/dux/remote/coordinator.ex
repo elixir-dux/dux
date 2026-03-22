@@ -265,7 +265,7 @@ defmodule Dux.Remote.Coordinator do
       # Non-worker-safe — compute right side and decide broadcast vs shuffle
       right_computed = Dux.compute(right)
       {:table, right_ref} = right_computed.source
-      right_ipc = Dux.Native.table_to_ipc(right_ref)
+      right_ipc = Dux.Backend.table_to_ipc(Dux.Connection.get_conn(), right_ref)
 
       route_non_safe_join(%{
         right_ipc: right_ipc, right_computed: right_computed,

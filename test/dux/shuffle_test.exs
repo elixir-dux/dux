@@ -39,8 +39,8 @@ defmodule Dux.ShuffleTest do
         buckets
         |> Enum.reject(fn {_k, v} -> is_nil(v) end)
         |> Enum.map(fn {_k, ipc} ->
-          table = Dux.Native.table_from_ipc(ipc)
-          Dux.Native.table_n_rows(table)
+          table = Dux.Backend.table_from_ipc(Dux.Connection.get_conn(), ipc)
+          Dux.Backend.table_n_rows(Dux.Connection.get_conn(), table)
         end)
         |> Enum.sum()
 
@@ -64,8 +64,8 @@ defmodule Dux.ShuffleTest do
         buckets
         |> Enum.reject(fn {_k, v} -> is_nil(v) end)
         |> Enum.map(fn {_k, ipc} ->
-          table = Dux.Native.table_from_ipc(ipc)
-          Dux.Native.table_n_rows(table)
+          table = Dux.Backend.table_from_ipc(Dux.Connection.get_conn(), ipc)
+          Dux.Backend.table_n_rows(Dux.Connection.get_conn(), table)
         end)
 
       assert non_empty == [3]
@@ -81,10 +81,10 @@ defmodule Dux.ShuffleTest do
       workers = start_workers(1)
       worker = hd(workers)
 
-      db = Dux.Connection.get_db()
-      chunk1 = Dux.Native.df_query(db, "SELECT 1 AS x") |> Dux.Native.table_to_ipc()
-      chunk2 = Dux.Native.df_query(db, "SELECT 2 AS x") |> Dux.Native.table_to_ipc()
-      chunk3 = Dux.Native.df_query(db, "SELECT 3 AS x") |> Dux.Native.table_to_ipc()
+      conn = Dux.Connection.get_conn()
+      chunk1 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 1 AS x"))
+      chunk2 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 2 AS x"))
+      chunk3 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 3 AS x"))
 
       {:ok, _} = Worker.append_chunk(worker, "test_accum", chunk1)
       {:ok, _} = Worker.append_chunk(worker, "test_accum", chunk2)
@@ -94,8 +94,9 @@ defmodule Dux.ShuffleTest do
       {:ok, ipc} =
         Worker.execute(worker, Dux.from_query(~s(SELECT * FROM "test_accum" ORDER BY x)))
 
-      table = Dux.Native.table_from_ipc(ipc)
-      assert Dux.Native.table_to_columns(table) == %{"x" => [1, 2, 3]}
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      assert Dux.Backend.table_to_columns(conn, ref) == %{"x" => [1, 2, 3]}
     end
   end
 

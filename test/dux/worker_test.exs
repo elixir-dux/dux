@@ -44,8 +44,9 @@ defmodule Dux.WorkerTest do
       assert byte_size(ipc) > 0
 
       # Decode the IPC to verify
-      table = Dux.Native.table_from_ipc(ipc)
-      assert Dux.Native.table_to_columns(table) == %{"answer" => [42]}
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      assert Dux.Backend.table_to_columns(conn, ref) == %{"answer" => [42]}
     end
 
     test "executes pipeline with filter and mutate", %{worker: w} do
@@ -55,8 +56,9 @@ defmodule Dux.WorkerTest do
         |> Dux.mutate(doubled: x * 2)
 
       {:ok, ipc} = Worker.execute(w, pipeline)
-      table = Dux.Native.table_from_ipc(ipc)
-      columns = Dux.Native.table_to_columns(table)
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      columns = Dux.Backend.table_to_columns(conn, ref)
 
       assert columns["x"] == [6, 7, 8, 9, 10]
       assert columns["doubled"] == [12, 14, 16, 18, 20]
@@ -73,8 +75,9 @@ defmodule Dux.WorkerTest do
         |> Dux.summarise(total: sum(v))
 
       {:ok, ipc} = Worker.execute(w, pipeline)
-      table = Dux.Native.table_from_ipc(ipc)
-      rows = Dux.Native.table_to_rows(table)
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      rows = Dux.Backend.table_to_rows(conn, ref)
 
       totals = rows |> Enum.sort_by(& &1["g"]) |> Enum.map(& &1["total"])
       assert totals == [3, 3]
@@ -95,9 +98,9 @@ defmodule Dux.WorkerTest do
 
     test "registers an IPC binary as a named table", %{worker: w} do
       # Create some data and serialize to IPC
-      db = Dux.Connection.get_db()
-      table = Dux.Native.df_query(db, "SELECT 1 AS x, 2 AS y")
-      ipc = Dux.Native.table_to_ipc(table)
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.query(conn, "SELECT 1 AS x, 2 AS y")
+      ipc = Dux.Backend.table_to_ipc(conn, ref)
 
       # Register on worker
       {:ok, "broadcast_dim"} = Worker.register_table(w, "broadcast_dim", ipc)
@@ -105,14 +108,14 @@ defmodule Dux.WorkerTest do
       # Query it through a pipeline
       pipeline = Dux.from_query(~s(SELECT * FROM "broadcast_dim"))
       {:ok, result_ipc} = Worker.execute(w, pipeline)
-      result = Dux.Native.table_from_ipc(result_ipc)
-      assert Dux.Native.table_to_columns(result) == %{"x" => [1], "y" => [2]}
+      result = Dux.Backend.table_from_ipc(conn, result_ipc)
+      assert Dux.Backend.table_to_columns(conn, result) == %{"x" => [1], "y" => [2]}
     end
 
     test "drops a registered table", %{worker: w} do
-      db = Dux.Connection.get_db()
-      table = Dux.Native.df_query(db, "SELECT 1 AS x")
-      ipc = Dux.Native.table_to_ipc(table)
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.query(conn, "SELECT 1 AS x")
+      ipc = Dux.Backend.table_to_ipc(conn, ref)
 
       Worker.register_table(w, "to_drop", ipc)
       assert :ok = Worker.drop_table(w, "to_drop")
@@ -164,8 +167,9 @@ defmodule Dux.WorkerTest do
           Task.async(fn ->
             pipeline = Dux.from_query("SELECT #{i} AS val")
             {:ok, ipc} = Worker.execute(w, pipeline)
-            table = Dux.Native.table_from_ipc(ipc)
-            %{"val" => [val]} = Dux.Native.table_to_columns(table)
+            conn = Dux.Connection.get_conn()
+            ref = Dux.Backend.table_from_ipc(conn, ipc)
+            %{"val" => [val]} = Dux.Backend.table_to_columns(conn, ref)
             val
           end)
         end
@@ -184,8 +188,9 @@ defmodule Dux.WorkerTest do
 
       # Should still work
       {:ok, ipc} = Worker.execute(w, Dux.from_query("SELECT 1 AS x"))
-      table = Dux.Native.table_from_ipc(ipc)
-      assert Dux.Native.table_to_columns(table) == %{"x" => [1]}
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      assert Dux.Backend.table_to_columns(conn, ref) == %{"x" => [1]}
 
       GenServer.stop(w)
     end
@@ -200,12 +205,12 @@ defmodule Dux.WorkerTest do
       {:ok, w} = Worker.start_link()
 
       # Register dimension table
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
 
       dim =
-        Dux.Native.df_query(db, "SELECT 1 AS id, 'Widget' AS name UNION ALL SELECT 2, 'Gadget'")
+        Dux.Backend.query(conn, "SELECT 1 AS id, 'Widget' AS name UNION ALL SELECT 2, 'Gadget'")
 
-      dim_ipc = Dux.Native.table_to_ipc(dim)
+      dim_ipc = Dux.Backend.table_to_ipc(conn, dim)
       Worker.register_table(w, "products", dim_ipc)
 
       # Execute a pipeline that joins against the broadcast table
@@ -220,8 +225,8 @@ defmodule Dux.WorkerTest do
         )
 
       {:ok, result_ipc} = Worker.execute(w, pipeline)
-      result = Dux.Native.table_from_ipc(result_ipc)
-      rows = Dux.Native.table_to_rows(result) |> Enum.sort_by(& &1["product_id"])
+      result = Dux.Backend.table_from_ipc(conn, result_ipc)
+      rows = Dux.Backend.table_to_rows(conn, result) |> Enum.sort_by(& &1["product_id"])
 
       assert length(rows) == 2
       assert Enum.at(rows, 0)["name"] == "Widget"
@@ -235,8 +240,9 @@ defmodule Dux.WorkerTest do
 
       pipeline = Dux.from_query("SELECT x, x * 2 AS doubled FROM range(10000) t(x)")
       {:ok, ipc} = Worker.execute(w, pipeline)
-      table = Dux.Native.table_from_ipc(ipc)
-      assert Dux.Native.table_n_rows(table) == 10_000
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      assert Dux.Backend.table_n_rows(conn, ref) == 10_000
 
       GenServer.stop(w)
     end

@@ -15,15 +15,15 @@ defmodule Dux.Remote.Merger do
   Returns an Arrow IPC binary of the merged result.
   """
   def merge(ipc_results, %Dux{ops: ops}) do
-    db = Dux.Connection.get_db()
+    conn = Dux.Connection.get_conn()
 
     # Load each worker result as a temp table
     table_names =
       ipc_results
       |> Enum.with_index()
       |> Enum.map(fn {ipc, _idx} ->
-        table_ref = Dux.Native.table_from_ipc(ipc)
-        name = Dux.Native.table_ensure(db, table_ref)
+        table_ref = Dux.Backend.table_from_ipc(conn, ipc)
+        name = table_ref.name
         # Keep reference alive
         {name, table_ref}
       end)
@@ -37,10 +37,8 @@ defmodule Dux.Remote.Merger do
 
       final_sql = apply_merge_ops(union_sql, ops)
 
-      case Dux.Native.df_query(db, final_sql) do
-        {:error, reason} -> {:error, reason}
-        result_ref -> Dux.Native.table_to_ipc(result_ref)
-      end
+      result_ref = Dux.Backend.query(conn, final_sql)
+      Dux.Backend.table_to_ipc(conn, result_ref)
     end)
   end
 
@@ -48,15 +46,15 @@ defmodule Dux.Remote.Merger do
   Merge IPC results and return as a %Dux{} struct.
   """
   def merge_to_dux(ipc_results, pipeline) do
-    db = Dux.Connection.get_db()
+    conn = Dux.Connection.get_conn()
 
     # Load each worker result as a temp table.
     # Store refs in process dictionary to prevent GC — the BEAM compiler
     # can optimize away local variable references, but not process dict.
     input_refs =
       Enum.map(ipc_results, fn ipc ->
-        table_ref = Dux.Native.table_from_ipc(ipc)
-        name = Dux.Native.table_ensure(db, table_ref)
+        table_ref = Dux.Backend.table_from_ipc(conn, ipc)
+        name = table_ref.name
         {name, table_ref}
       end)
 
@@ -69,15 +67,10 @@ defmodule Dux.Remote.Merger do
 
       final_sql = apply_merge_ops(union_sql, pipeline.ops)
 
-      case Dux.Native.df_query(db, final_sql) do
-        {:error, reason} ->
-          raise ArgumentError, "Merge failed: #{reason}"
-
-        table_ref ->
-          names = Dux.Native.table_names(table_ref)
-          dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
-          %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
-      end
+      table_ref = Dux.Backend.query(conn, final_sql)
+      names = Dux.Backend.table_names(conn, table_ref)
+      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
     end)
   end
 

@@ -39,8 +39,9 @@ if Code.ensure_loaded?(FLAME) do
 
         pipeline = Dux.from_query("SELECT 42 AS answer")
         {:ok, ipc} = Worker.execute(worker, pipeline)
-        table = Dux.Native.table_from_ipc(ipc)
-        cols = Dux.Native.table_to_columns(table)
+        conn = Dux.Connection.get_conn()
+        ref = Dux.Backend.table_from_ipc(conn, ipc)
+        cols = Dux.Backend.table_to_columns(conn, ref)
         assert cols["answer"] == [42]
       end
     end

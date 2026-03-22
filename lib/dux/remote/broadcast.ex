@@ -65,7 +65,7 @@ defmodule Dux.Remote.Broadcast do
     # Step 1: Compute the small table on the coordinator and serialize to IPC
     right_computed = Dux.compute(right)
     {:table, right_ref} = right_computed.source
-    right_ipc = Dux.Native.table_to_ipc(right_ref)
+    right_ipc = Dux.Backend.table_to_ipc(Dux.Connection.get_conn(), right_ref)
 
     # Step 2: Broadcast to all workers
     broadcast_to_workers(workers, broadcast_name, right_ipc)
@@ -118,7 +118,7 @@ defmodule Dux.Remote.Broadcast do
   def should_broadcast?(%Dux{} = dux, threshold \\ @default_threshold) do
     computed = Dux.compute(dux)
     {:table, ref} = computed.source
-    ipc = Dux.Native.table_to_ipc(ref)
+    ipc = Dux.Backend.table_to_ipc(Dux.Connection.get_conn(), ref)
     byte_size(ipc) <= threshold
   end
 

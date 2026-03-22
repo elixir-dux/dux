@@ -183,13 +183,15 @@ defmodule Dux.Backend do
   @doc false
   def table_to_ipc(conn, %TableRef{name: name}) do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(name)}")
-    Adbc.Result.to_ipc_stream(result)
+    materialized = Adbc.Result.materialize(result)
+    Adbc.Result.to_ipc_stream(materialized)
   end
 
   @doc false
   def table_from_ipc(conn, binary) when is_binary(binary) do
-    stream = Adbc.Result.from_ipc_stream!(binary)
-    ingest_result = Adbc.Connection.ingest!(conn, stream)
+    result = Adbc.Result.from_ipc_stream!(binary)
+    materialized = Adbc.Result.materialize(result)
+    ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
 
     %TableRef{
       name: ingest_result.table,

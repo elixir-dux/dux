@@ -115,41 +115,39 @@ defmodule Dux.Remote.Worker do
 
   @impl true
   def init(opts) do
-    db =
+    Adbc.download_driver!(:duckdb)
+
+    driver_opts =
       case Keyword.get(opts, :path) do
-        nil -> Dux.Native.db_open()
-        path -> Dux.Native.db_open_path(path)
+        nil -> []
+        path -> [path: path]
       end
+
+    {:ok, db} = Adbc.Database.start_link(driver: :duckdb, process_options: driver_opts)
+    {:ok, conn} = Adbc.Connection.start_link(database: db)
 
     :pg.join(@pg_group, self())
 
-    {:ok, %{db: db, tables: %{}}}
+    {:ok, %{db: db, conn: conn, tables: %{}}}
   end
 
   @impl true
-  def handle_call({:execute, %Dux{} = pipeline}, _from, %{db: db} = state) do
+  def handle_call({:execute, %Dux{} = pipeline}, _from, %{conn: conn} = state) do
     result =
       try do
         # Keep source refs alive to prevent GC of temp tables during query
         source_ref = extract_source_ref(pipeline)
-        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, db)
+        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, conn)
 
         Enum.each(source_setup, fn setup_sql ->
-          Dux.Native.db_execute(db, setup_sql)
+          Dux.Backend.execute(conn, setup_sql)
         end)
 
-        query_result =
-          case Dux.Native.df_query(db, sql) do
-            {:error, reason} ->
-              {:error, reason}
-
-            table_ref ->
-              ipc = Dux.Native.table_to_ipc(table_ref)
-              {:ok, ipc}
-          end
+        table_ref = Dux.Backend.query(conn, sql)
+        ipc = Dux.Backend.table_to_ipc(conn, table_ref)
 
         :erlang.phash2(source_ref, 1)
-        query_result
+        {:ok, ipc}
       rescue
         e -> {:error, Exception.message(e)}
       end
@@ -158,16 +156,16 @@ defmodule Dux.Remote.Worker do
   end
 
   @impl true
-  def handle_call({:register_table, name, ipc_binary}, _from, %{db: db} = state) do
+  def handle_call({:register_table, name, ipc_binary}, _from, %{conn: conn} = state) do
     result =
       try do
-        table_ref = Dux.Native.table_from_ipc(ipc_binary)
+        table_ref = Dux.Backend.table_from_ipc(conn, ipc_binary)
         Process.put(:dux_register_ref, table_ref)
-        temp_name = Dux.Native.table_ensure(db, table_ref)
-        Dux.Native.db_execute(db, "DROP TABLE IF EXISTS #{qi(name)}")
+        temp_name = table_ref.name
+        Dux.Backend.execute(conn, "DROP TABLE IF EXISTS #{qi(name)}")
 
-        Dux.Native.db_execute(
-          db,
+        Dux.Backend.execute(
+          conn,
           "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM \"#{temp_name}\""
         )
 
@@ -187,19 +185,19 @@ defmodule Dux.Remote.Worker do
   end
 
   @impl true
-  def handle_call({:drop_table, name}, _from, %{db: db} = state) do
-    Dux.Native.db_execute(db, "DROP TABLE IF EXISTS #{qi(name)}")
+  def handle_call({:drop_table, name}, _from, %{conn: conn} = state) do
+    Dux.Backend.execute(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     {:reply, :ok, %{state | tables: Map.delete(state.tables, name)}}
   end
 
   @impl true
-  def handle_call({:hash_partition, pipeline, on_col, n_buckets}, _from, %{db: db} = state) do
+  def handle_call({:hash_partition, pipeline, on_col, n_buckets}, _from, %{conn: conn} = state) do
     result =
       try do
         # Build and execute the pipeline to get data
         source_ref = extract_source_ref(pipeline)
-        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, db)
-        Enum.each(source_setup, fn s -> Dux.Native.db_execute(db, s) end)
+        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, conn)
+        Enum.each(source_setup, fn s -> Dux.Backend.execute(conn, s) end)
 
         hash_expr = hash_expr_for(on_col)
 
@@ -209,18 +207,13 @@ defmodule Dux.Remote.Worker do
             bucket_sql =
               "SELECT * EXCLUDE (__bucket) FROM (SELECT *, #{hash_expr} % #{n_buckets} AS __bucket FROM (#{sql}) __src) WHERE __bucket = #{bucket_id}"
 
-            case Dux.Native.df_query(db, bucket_sql) do
-              {:error, _} ->
-                {bucket_id, nil}
+            table_ref = Dux.Backend.query(conn, bucket_sql)
+            n = Dux.Backend.table_n_rows(conn, table_ref)
 
-              table_ref ->
-                n = Dux.Native.table_n_rows(table_ref)
-
-                if n > 0 do
-                  {bucket_id, Dux.Native.table_to_ipc(table_ref)}
-                else
-                  {bucket_id, nil}
-                end
+            if n > 0 do
+              {bucket_id, Dux.Backend.table_to_ipc(conn, table_ref)}
+            else
+              {bucket_id, nil}
             end
           end
 
@@ -234,22 +227,22 @@ defmodule Dux.Remote.Worker do
   end
 
   @impl true
-  def handle_call({:append_chunk, table_name, ipc_binary}, _from, %{db: db} = state) do
+  def handle_call({:append_chunk, table_name, ipc_binary}, _from, %{conn: conn} = state) do
     result =
       try do
-        table_ref = Dux.Native.table_from_ipc(ipc_binary)
+        table_ref = Dux.Backend.table_from_ipc(conn, ipc_binary)
         Process.put(:dux_append_ref, table_ref)
-        temp = Dux.Native.table_ensure(db, table_ref)
+        temp = table_ref.name
 
         if Map.has_key?(state.tables, table_name) do
           # Append to existing table
-          Dux.Native.db_execute(db, "INSERT INTO #{qi(table_name)} SELECT * FROM \"#{temp}\"")
+          Dux.Backend.execute(conn, "INSERT INTO #{qi(table_name)} SELECT * FROM \"#{temp}\"")
         else
           # Create new table
-          Dux.Native.db_execute(db, "DROP TABLE IF EXISTS #{qi(table_name)}")
+          Dux.Backend.execute(conn, "DROP TABLE IF EXISTS #{qi(table_name)}")
 
-          Dux.Native.db_execute(
-            db,
+          Dux.Backend.execute(
+            conn,
             "CREATE TEMPORARY TABLE #{qi(table_name)} AS SELECT * FROM \"#{temp}\""
           )
         end

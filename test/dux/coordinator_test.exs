@@ -82,11 +82,11 @@ defmodule Dux.CoordinatorTest do
 
   describe "Merger.merge_to_dux/2" do
     test "merges simple concatenation" do
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
 
-      ipc1 = Dux.Native.df_query(db, "SELECT 1 AS x") |> Dux.Native.table_to_ipc()
-      ipc2 = Dux.Native.df_query(db, "SELECT 2 AS x") |> Dux.Native.table_to_ipc()
-      ipc3 = Dux.Native.df_query(db, "SELECT 3 AS x") |> Dux.Native.table_to_ipc()
+      ipc1 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 1 AS x"))
+      ipc2 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 2 AS x"))
+      ipc3 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 3 AS x"))
 
       pipeline = Dux.from_query("SELECT x FROM source")
       result = Merger.merge_to_dux([ipc1, ipc2, ipc3], pipeline)
@@ -97,11 +97,11 @@ defmodule Dux.CoordinatorTest do
     end
 
     test "merges with re-sort" do
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
 
-      ipc1 = Dux.Native.df_query(db, "SELECT 3 AS x") |> Dux.Native.table_to_ipc()
-      ipc2 = Dux.Native.df_query(db, "SELECT 1 AS x") |> Dux.Native.table_to_ipc()
-      ipc3 = Dux.Native.df_query(db, "SELECT 2 AS x") |> Dux.Native.table_to_ipc()
+      ipc1 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 3 AS x"))
+      ipc2 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 1 AS x"))
+      ipc3 = Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT 2 AS x"))
 
       pipeline =
         Dux.from_query("SELECT x FROM source")
@@ -113,13 +113,13 @@ defmodule Dux.CoordinatorTest do
     end
 
     test "merges with re-head" do
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
 
       ipc1 =
-        Dux.Native.df_query(db, "SELECT * FROM range(1, 4) t(x)") |> Dux.Native.table_to_ipc()
+        Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT * FROM range(1, 4) t(x)"))
 
       ipc2 =
-        Dux.Native.df_query(db, "SELECT * FROM range(4, 7) t(x)") |> Dux.Native.table_to_ipc()
+        Dux.Backend.table_to_ipc(conn, Dux.Backend.query(conn, "SELECT * FROM range(4, 7) t(x)"))
 
       pipeline =
         Dux.from_query("SELECT x FROM source")

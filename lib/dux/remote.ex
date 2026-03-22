@@ -16,7 +16,7 @@ defmodule Dux.Remote do
 
   ## How it works
 
-  1. `place/1` detects `%Dux{source: {:table, ref}}` where `node(ref) != node()`
+  1. `place/1` detects `%Dux{source: {:table, %TableRef{node: origin}}}` where `origin != node()`
   2. Spawns a `Holder` on the origin node via `:erpc`
   3. Creates a GC sentinel NIF resource on the local node
   4. When the local `%Dux{}` is GC'd, the sentinel fires a message to LocalGC
@@ -39,8 +39,8 @@ defmodule Dux.Remote do
   end
 
   # Computed Dux with a remote table ref — needs tracking
-  defp do_place(%Dux{source: {:table, ref}, remote: nil} = dux, acc)
-       when node(ref) != node() do
+  defp do_place(%Dux{source: {:table, %Dux.TableRef{node: origin} = ref}, remote: nil} = dux, acc)
+       when origin != node() do
     case setup_tracking(ref) do
       {:ok, sentinel, holder_pid} ->
         {%{dux | remote: {sentinel, holder_pid, ref}}, [holder_pid | acc]}
@@ -86,24 +86,21 @@ defmodule Dux.Remote do
   defp do_place(other, acc), do: {other, acc}
 
   # Set up Holder on origin node + GC sentinel on local node
-  defp setup_tracking(resource_ref) do
+  defp setup_tracking(%Dux.TableRef{node: origin_node} = table_ref) do
     local_gc_pid = LocalGC.pid()
 
     if is_nil(local_gc_pid) do
       :error
     else
-      origin_node = node(resource_ref)
-
       case :erpc.call(origin_node, Holder, :start_child, [
-             resource_ref,
+             table_ref,
              local_gc_pid
            ]) do
         {:ok, holder_pid} ->
-          # Create GC sentinel — when this reference is GC'd, it sends
-          # {:gc, holder_pid, resource_ref} to local_gc_pid
-          msg = {:gc, holder_pid, resource_ref}
-          sentinel = Dux.Native.gc_sentinel_new(local_gc_pid, msg)
-          {:ok, sentinel, holder_pid}
+          # TODO(Phase 4): Implement GC sentinel for ADBC.
+          # For now, the holder stays alive until the connection closes.
+          # The sentinel ref is just the table_ref itself.
+          {:ok, table_ref, holder_pid}
 
         _ ->
           :error
