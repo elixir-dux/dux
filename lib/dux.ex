@@ -731,8 +731,9 @@ defmodule Dux do
       # credo:disable-for-next-line Credo.Check.Design.AliasUsage
       result = Dux.Remote.Coordinator.execute(dux, coordinator_opts)
       result = %{result | workers: workers}
-      {:table, ref} = result.source
-      {result, Map.put(meta, :n_rows, Dux.Native.table_n_rows(ref))}
+      {:table, table_ref} = result.source
+      conn = Dux.Connection.get_conn()
+      {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
     end)
   end
 
@@ -740,31 +741,25 @@ defmodule Dux do
     meta = %{n_ops: length(dux.ops), distributed: false}
 
     :telemetry.span([:dux, :query], meta, fn ->
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
 
       source_ref = extract_source_ref(dux)
       Process.put(:dux_compute_ref, source_ref)
 
-      {sql, source_setup} = Dux.QueryBuilder.build(dux, db)
+      {sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
 
       Enum.each(source_setup, fn setup_sql ->
-        Dux.Native.db_execute(db, setup_sql)
+        Dux.Backend.execute(conn, setup_sql)
       end)
 
-      result =
-        case Dux.Native.df_query(db, sql) do
-          {:error, reason} ->
-            raise ArgumentError, "DuckDB query failed: #{reason}"
-
-          table_ref ->
-            names = Dux.Native.table_names(table_ref)
-            dtypes = table_ref |> Dux.Native.table_dtypes() |> Map.new()
-            %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
-        end
+      table_ref = Dux.Backend.query(conn, sql)
+      names = Dux.Backend.table_names(conn, table_ref)
+      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
 
       Process.delete(:dux_compute_ref)
-      {:table, ref} = result.source
-      {result, Map.put(meta, :n_rows, Dux.Native.table_n_rows(ref))}
+      {:table, table_ref} = result.source
+      {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
     end)
   end
 
@@ -810,8 +805,9 @@ defmodule Dux do
   """
   def to_rows(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
-    {:table, ref} = computed.source
-    rows = Dux.Native.table_to_rows(ref)
+    {:table, table_ref} = computed.source
+    conn = Dux.Connection.get_conn()
+    rows = Dux.Backend.table_to_rows(conn, table_ref)
 
     if Keyword.get(opts, :atom_keys, false) do
       Enum.map(rows, &atomize_keys/1)
@@ -841,8 +837,9 @@ defmodule Dux do
   """
   def to_columns(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
-    {:table, ref} = computed.source
-    columns = Dux.Native.table_to_columns(ref)
+    {:table, table_ref} = computed.source
+    conn = Dux.Connection.get_conn()
+    columns = Dux.Backend.table_to_columns(conn, table_ref)
 
     if Keyword.get(opts, :atom_keys, false) do
       atomize_keys(columns)
@@ -870,8 +867,8 @@ defmodule Dux do
       true
   """
   def sql_preview(%Dux{} = dux, opts \\ []) do
-    db = Dux.Connection.get_db()
-    {sql, _setup} = Dux.QueryBuilder.build(dux, db)
+    conn = Dux.Connection.get_conn()
+    {sql, _setup} = Dux.QueryBuilder.build(dux, conn)
 
     if Keyword.get(opts, :pretty, false) do
       pretty_sql(sql)
@@ -890,7 +887,8 @@ defmodule Dux do
   def n_rows(%Dux{} = dux) do
     computed = compute(dux)
     {:table, ref} = computed.source
-    Dux.Native.table_n_rows(ref)
+    conn = Dux.Connection.get_conn()
+    Dux.Backend.table_n_rows(conn, ref)
   end
 
   # ---------------------------------------------------------------------------
@@ -912,7 +910,7 @@ defmodule Dux do
       col_name = to_col_name(column)
       computed = compute(dux)
       {:table, ref} = computed.source
-      columns = Dux.Native.table_to_columns(ref)
+      columns = Dux.Backend.table_to_columns(Dux.Connection.get_conn(), ref)
 
       values = Map.fetch!(columns, col_name)
       dtype = Map.get(computed.dtypes, col_name)
@@ -960,8 +958,8 @@ defmodule Dux do
     computed = dux |> head(limit) |> compute()
     {:table, ref} = computed.source
 
-    names = Dux.Native.table_names(ref)
-    columns = Dux.Native.table_to_columns(ref)
+    names = Dux.Backend.table_names(Dux.Connection.get_conn(), ref)
+    columns = Dux.Backend.table_to_columns(Dux.Connection.get_conn(), ref)
     total_rows = n_rows(dux)
 
     # Calculate column widths
@@ -1147,26 +1145,22 @@ defmodule Dux do
     meta = %{format: fmt_atom, path: path}
 
     :telemetry.span([:dux, :io, :write], meta, fn ->
-      db = Dux.Connection.get_db()
+      conn = Dux.Connection.get_conn()
       Process.put(:dux_write_ref, extract_source_ref(dux))
-      {query_sql, source_setup} = Dux.QueryBuilder.build(dux, db)
+      {query_sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
 
       Enum.each(source_setup, fn setup_sql ->
-        Dux.Native.db_execute(db, setup_sql)
+        Dux.Backend.execute(conn, setup_sql)
       end)
 
       copy_opts = build_copy_options(format, opts)
       escaped_path = String.replace(path, "'", "''")
       sql = "COPY (#{query_sql}) TO '#{escaped_path}' (#{copy_opts})"
 
-      result =
-        case Dux.Native.db_execute(db, sql) do
-          {} -> :ok
-          {:error, reason} -> raise ArgumentError, "DuckDB write failed: #{reason}"
-        end
+      Dux.Backend.execute(conn, sql)
 
       Process.delete(:dux_write_ref)
-      {result, meta}
+      {:ok, meta}
     end)
   end
 

@@ -41,9 +41,8 @@ defmodule Dux.QueryBuilder do
     {sql, []}
   end
 
-  defp source_to_sql({:table, ref}, db) do
-    table_name = Dux.Native.table_ensure(db, ref)
-    {~s(SELECT * FROM "#{table_name}"), []}
+  defp source_to_sql({:table, %Dux.TableRef{name: table_name}}, _db) do
+    {~s(SELECT * FROM "#{escape_sql_string(table_name)}"), []}
   end
 
   defp source_to_sql({:list, rows}, _db) when is_list(rows) do
@@ -223,7 +222,7 @@ defmodule Dux.QueryBuilder do
 
   defp op_to_sql({:join, right, how, on_cols, _suffix}, prev, groups) do
     # The right side is inlined as a subquery
-    right_db = Dux.Connection.get_db()
+    right_db = Dux.Connection.get_conn()
     {right_sql, _setup} = source_to_sql(right.source, right_db)
     right_ref = "(#{right_sql}) __right"
 
@@ -240,7 +239,7 @@ defmodule Dux.QueryBuilder do
     # UNION ALL the current result with each other Dux
     union_parts =
       Enum.map(others, fn %Dux{source: source, ops: ops} ->
-        db = Dux.Connection.get_db()
+        db = Dux.Connection.get_conn()
         {sql, _setup} = source_to_sql(source, db)
 
         case ops do

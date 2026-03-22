@@ -1,9 +1,9 @@
 defmodule Dux.Connection do
   @moduledoc false
 
-  # GenServer managing a single DuckDB connection per node.
-  # Serializes all DuckDB access (mutex).
-  # DuckDB's morsel-driven parallelism saturates all cores internally.
+  # Manages the ADBC DuckDB connection for this node.
+  # ADBC's Connection is already a GenServer that serializes access,
+  # so this module just holds the pid and provides a lookup API.
 
   use GenServer
 
@@ -13,58 +13,48 @@ defmodule Dux.Connection do
   end
 
   @doc false
-  def get_db(server \\ __MODULE__) do
-    GenServer.call(server, :get_db)
+  def get_conn(server \\ __MODULE__) do
+    GenServer.call(server, :get_conn)
   end
 
+  # Legacy — some code still calls get_db. Alias to get_conn.
   @doc false
-  def execute(sql, server \\ __MODULE__) do
-    GenServer.call(server, {:execute, sql})
-  end
-
-  @doc false
-  def query(sql, server \\ __MODULE__) do
-    GenServer.call(server, {:query, sql}, :infinity)
-  end
+  def get_db(server \\ __MODULE__), do: get_conn(server)
 
   @doc false
   def load_extension(extension, server \\ __MODULE__) when is_atom(extension) do
+    conn = get_conn(server)
     ext = Atom.to_string(extension)
-    GenServer.call(server, {:execute, "INSTALL #{ext}; LOAD #{ext};"})
+    Adbc.Connection.query!(conn, "INSTALL #{ext}; LOAD #{ext};")
+    :ok
   end
 
   # --- Callbacks ---
 
   @impl true
   def init(opts) do
-    db =
+    # Ensure DuckDB driver is available
+    Adbc.download_driver!(:duckdb)
+
+    driver_opts =
       case Keyword.get(opts, :path) do
-        nil -> Dux.Native.db_open()
-        path -> Dux.Native.db_open_path(path)
+        nil -> []
+        path -> [path: path]
       end
 
-    case db do
-      {:ok, ref} -> {:ok, %{db: ref}}
-      {:error, reason} -> {:stop, reason}
-      ref -> {:ok, %{db: ref}}
-    end
+    {:ok, db} = Adbc.Database.start_link(driver: :duckdb, process_options: driver_opts)
+    {:ok, conn} = Adbc.Connection.start_link(database: db)
+    {:ok, %{db: db, conn: conn}}
   end
 
   @impl true
-  def handle_call(:get_db, _from, %{db: db} = state) do
-    {:reply, db, state}
+  def handle_call(:get_conn, _from, %{conn: conn} = state) do
+    {:reply, conn, state}
   end
 
+  # Legacy compatibility
   @impl true
-  def handle_call({:execute, sql}, _from, %{db: db} = state) do
-    case Dux.Native.db_execute(db, sql) do
-      {} -> {:reply, :ok, state}
-      {:error, _} = err -> {:reply, err, state}
-    end
-  end
-
-  @impl true
-  def handle_call({:query, sql}, _from, %{db: db} = state) do
-    {:reply, Dux.Native.df_query(db, sql), state}
+  def handle_call(:get_db, _from, %{conn: conn} = state) do
+    {:reply, conn, state}
   end
 end

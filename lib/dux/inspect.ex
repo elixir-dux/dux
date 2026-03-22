@@ -3,12 +3,13 @@ defimpl Inspect, for: Dux do
 
   @preview_limit 5
 
-  def inspect(%Dux{source: {:table, ref}} = dux, opts) do
-    names = Dux.Native.table_names(ref)
-    n_rows = Dux.Native.table_n_rows(ref)
+  def inspect(%Dux{source: {:table, table_ref}} = dux, opts) do
+    conn = Dux.Connection.get_conn()
+    names = Dux.Backend.table_names(conn, table_ref)
+    n_rows = Dux.Backend.table_n_rows(conn, table_ref)
     n_cols = length(names)
 
-    columns = Dux.Native.table_to_columns(ref)
+    columns = Dux.Backend.table_to_columns(conn, table_ref)
     dtypes = dux.dtypes
 
     # Header: DuckDB[rows x cols]

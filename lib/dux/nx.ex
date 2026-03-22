@@ -9,8 +9,9 @@ if Code.ensure_loaded?(Nx) do
 
     def traverse(%Dux{} = dux, acc, fun) do
       computed = Dux.compute(dux)
-      {:table, ref} = computed.source
-      columns = Dux.Native.table_to_columns(ref)
+      {:table, table_ref} = computed.source
+      conn = Dux.Connection.get_conn()
+      columns = Dux.Backend.table_to_columns(conn, table_ref)
       dtypes = computed.dtypes
 
       {pairs, acc} =

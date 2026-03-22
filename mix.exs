@@ -34,8 +34,7 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:rustler_precompiled, "~> 0.8"},
-      {:rustler, "~> 0.37.3", optional: true},
+      {:adbc, github: "livebook-dev/adbc"},
       {:telemetry, "~> 1.0"},
       {:flame, "~> 0.5", optional: true},
       {:nx, "~> 0.9", optional: true},
