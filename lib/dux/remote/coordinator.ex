@@ -195,10 +195,14 @@ defmodule Dux.Remote.Coordinator do
 
         case result do
           {:ok, ipc} ->
-            :telemetry.execute([:dux, :distributed, :worker, :stop], %{
-              duration: System.monotonic_time() - start_time,
-              ipc_bytes: byte_size(ipc)
-            }, %{worker: worker, worker_index: idx, n_workers: n_workers})
+            :telemetry.execute(
+              [:dux, :distributed, :worker, :stop],
+              %{
+                duration: System.monotonic_time() - start_time,
+                ipc_bytes: byte_size(ipc)
+              },
+              %{worker: worker, worker_index: idx, n_workers: n_workers}
+            )
 
           _ ->
             :ok
@@ -268,33 +272,65 @@ defmodule Dux.Remote.Coordinator do
       {:table, right_ref} = right_computed.source
       right_n_rows = Dux.Backend.table_n_rows(conn, right_ref)
 
-      if right_n_rows == 0 do
-        # Empty right side — convert to worker-safe empty query preserving schema
-        {names, types} = describe_for_empty(conn, right_ref)
-
-        col_defs =
-          Enum.zip(names, types)
-          |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{Dux.SQL.Helpers.qi(n)}" end)
-
-        empty_right = Dux.from_query("SELECT #{col_defs} WHERE false")
-        new_op = {:join, empty_right, how, on_cols, suffix}
-        do_preprocess(rest, [new_op | processed], broadcast_names, workers, timeout, threshold)
-      else
-        right_ipc = Dux.Backend.table_to_ipc(conn, right_ref)
-
-        route_non_safe_join(%{
-          right_ipc: right_ipc, right_computed: right_computed,
-          how: how, on_cols: on_cols, suffix: suffix,
-          rest: rest, processed: processed, broadcast_names: broadcast_names,
-          workers: workers, timeout: timeout, threshold: threshold
-        })
-      end
+      preprocess_non_safe_join(%{
+        conn: conn,
+        right_ref: right_ref,
+        right_computed: right_computed,
+        right_n_rows: right_n_rows,
+        how: how,
+        on_cols: on_cols,
+        suffix: suffix,
+        rest: rest,
+        processed: processed,
+        broadcast_names: broadcast_names,
+        workers: workers,
+        timeout: timeout,
+        threshold: threshold
+      })
     end
   end
 
   # Non-join op: pass through
   defp do_preprocess([op | rest], processed, broadcast_names, workers, timeout, threshold) do
     do_preprocess(rest, [op | processed], broadcast_names, workers, timeout, threshold)
+  end
+
+  defp preprocess_non_safe_join(%{right_n_rows: 0} = ctx) do
+    {names, types} = describe_for_empty(ctx.conn, ctx.right_ref)
+
+    col_defs =
+      Enum.zip(names, types)
+      |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
+
+    empty_right = Dux.from_query("SELECT #{col_defs} WHERE false")
+    new_op = {:join, empty_right, ctx.how, ctx.on_cols, ctx.suffix}
+
+    do_preprocess(
+      ctx.rest,
+      [new_op | ctx.processed],
+      ctx.broadcast_names,
+      ctx.workers,
+      ctx.timeout,
+      ctx.threshold
+    )
+  end
+
+  defp preprocess_non_safe_join(ctx) do
+    right_ipc = Dux.Backend.table_to_ipc(ctx.conn, ctx.right_ref)
+
+    route_non_safe_join(%{
+      right_ipc: right_ipc,
+      right_computed: ctx.right_computed,
+      how: ctx.how,
+      on_cols: ctx.on_cols,
+      suffix: ctx.suffix,
+      rest: ctx.rest,
+      processed: ctx.processed,
+      broadcast_names: ctx.broadcast_names,
+      workers: ctx.workers,
+      timeout: ctx.timeout,
+      threshold: ctx.threshold
+    })
   end
 
   defp route_non_safe_join(%{right_ipc: right_ipc, threshold: threshold} = ctx) do

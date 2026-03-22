@@ -21,9 +21,14 @@ defmodule Dux.TelemetryTest do
     ref = make_ref()
     handler_id = "test-#{inspect(ref)}"
 
-    :telemetry.attach(handler_id, event_name, fn event, measurements, metadata, _ ->
-      send(test_pid, {:telemetry, event, measurements, metadata})
-    end, nil)
+    :telemetry.attach(
+      handler_id,
+      event_name,
+      fn event, measurements, metadata, _ ->
+        send(test_pid, {:telemetry, event, measurements, metadata})
+      end,
+      nil
+    )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
   end
@@ -32,9 +37,14 @@ defmodule Dux.TelemetryTest do
     ref = make_ref()
     handler_id = "test-#{inspect(ref)}"
 
-    :telemetry.attach_many(handler_id, event_names, fn event, measurements, metadata, _ ->
-      send(test_pid, {:telemetry, event, measurements, metadata})
-    end, nil)
+    :telemetry.attach_many(
+      handler_id,
+      event_names,
+      fn event, measurements, metadata, _ ->
+        send(test_pid, {:telemetry, event, measurements, metadata})
+      end,
+      nil
+    )
 
     on_exit(fn -> :telemetry.detach(handler_id) end)
   end
@@ -49,7 +59,9 @@ defmodule Dux.TelemetryTest do
 
       Dux.from_list([%{x: 1}, %{x: 2}]) |> Dux.compute()
 
-      assert_receive {:telemetry, [:dux, :query, :start], %{system_time: _}, %{n_ops: 0, distributed: false}}
+      assert_receive {:telemetry, [:dux, :query, :start], %{system_time: _},
+                      %{n_ops: 0, distributed: false}}
+
       assert_receive {:telemetry, [:dux, :query, :stop], %{duration: d}, %{n_rows: 2}} when d > 0
     end
 
@@ -68,7 +80,8 @@ defmodule Dux.TelemetryTest do
         Dux.from_query("INVALID SQL GARBAGE") |> Dux.compute()
       end
 
-      assert_receive {:telemetry, [:dux, :query, :exception], %{duration: _}, %{kind: _, reason: _}}
+      assert_receive {:telemetry, [:dux, :query, :exception], %{duration: _},
+                      %{kind: _, reason: _}}
     end
 
     test "distributed compute emits with distributed: true" do
@@ -97,7 +110,9 @@ defmodule Dux.TelemetryTest do
       |> Dux.compute()
 
       assert_receive {:telemetry, [:dux, :distributed, :fan_out, :start], _, %{n_workers: 2}}
-      assert_receive {:telemetry, [:dux, :distributed, :fan_out, :stop], %{duration: _}, %{n_workers: 2}}
+
+      assert_receive {:telemetry, [:dux, :distributed, :fan_out, :stop], %{duration: _},
+                      %{n_workers: 2}}
     end
 
     test "per-worker stop events" do
@@ -108,10 +123,11 @@ defmodule Dux.TelemetryTest do
       |> Dux.distribute(workers)
       |> Dux.compute()
 
-      assert_receive {:telemetry, [:dux, :distributed, :worker, :stop], %{duration: _, ipc_bytes: _},
-                       %{worker_index: 0, n_workers: 2}}
-      assert_receive {:telemetry, [:dux, :distributed, :worker, :stop], %{duration: _, ipc_bytes: _},
-                       %{worker_index: 1, n_workers: 2}}
+      assert_receive {:telemetry, [:dux, :distributed, :worker, :stop],
+                      %{duration: _, ipc_bytes: _}, %{worker_index: 0, n_workers: 2}}
+
+      assert_receive {:telemetry, [:dux, :distributed, :worker, :stop],
+                      %{duration: _, ipc_bytes: _}, %{worker_index: 1, n_workers: 2}}
     end
 
     test "merge start/stop" do
@@ -128,7 +144,11 @@ defmodule Dux.TelemetryTest do
 
     test "broadcast event when joining local right" do
       workers = start_workers(1)
-      attach_many([[:dux, :distributed, :broadcast, :start], [:dux, :distributed, :broadcast, :stop]])
+
+      attach_many([
+        [:dux, :distributed, :broadcast, :start],
+        [:dux, :distributed, :broadcast, :stop]
+      ])
 
       left = Dux.from_list([%{id: 1}]) |> Dux.distribute(workers)
       right = Dux.from_list([%{id: 1, name: "x"}]) |> Dux.compute()
@@ -136,7 +156,8 @@ defmodule Dux.TelemetryTest do
       left |> Dux.join(right, on: :id) |> Dux.compute()
 
       assert_receive {:telemetry, [:dux, :distributed, :broadcast, :start], _,
-                       %{n_workers: 1, ipc_bytes: _}}
+                      %{n_workers: 1, ipc_bytes: _}}
+
       assert_receive {:telemetry, [:dux, :distributed, :broadcast, :stop], %{duration: _}, _}
     end
   end
@@ -159,9 +180,10 @@ defmodule Dux.TelemetryTest do
       Dux.Graph.pagerank(graph)
 
       assert_receive {:telemetry, [:dux, :graph, :algorithm, :start], _,
-                       %{algorithm: :pagerank, n_vertices: 3, n_edges: 3, distributed: false}}
+                      %{algorithm: :pagerank, n_vertices: 3, n_edges: 3, distributed: false}}
+
       assert_receive {:telemetry, [:dux, :graph, :algorithm, :stop], %{duration: _},
-                       %{algorithm: :pagerank}}
+                      %{algorithm: :pagerank}}
     end
 
     test "connected_components emits algorithm events", %{graph: graph} do
@@ -170,7 +192,7 @@ defmodule Dux.TelemetryTest do
       Dux.Graph.connected_components(graph)
 
       assert_receive {:telemetry, [:dux, :graph, :algorithm, :stop], _,
-                       %{algorithm: :connected_components}}
+                      %{algorithm: :connected_components}}
     end
 
     test "triangle_count emits algorithm events", %{graph: graph} do
@@ -179,7 +201,7 @@ defmodule Dux.TelemetryTest do
       Dux.Graph.triangle_count(graph)
 
       assert_receive {:telemetry, [:dux, :graph, :algorithm, :stop], _,
-                       %{algorithm: :triangle_count}}
+                      %{algorithm: :triangle_count}}
     end
 
     test "shortest_paths emits algorithm events", %{graph: graph} do
@@ -188,7 +210,7 @@ defmodule Dux.TelemetryTest do
       Dux.Graph.shortest_paths(graph, 1)
 
       assert_receive {:telemetry, [:dux, :graph, :algorithm, :stop], _,
-                       %{algorithm: :shortest_paths}}
+                      %{algorithm: :shortest_paths}}
     end
   end
 

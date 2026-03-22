@@ -100,7 +100,8 @@ defmodule Dux.TypesPropertyTest do
         ipc = Dux.Backend.table_to_ipc(conn, ref)
         restored = Dux.Backend.table_from_ipc(conn, ipc)
 
-        assert Dux.Backend.table_to_columns(conn, ref) == Dux.Backend.table_to_columns(conn, restored)
+        assert Dux.Backend.table_to_columns(conn, ref) ==
+                 Dux.Backend.table_to_columns(conn, restored)
       end
     end
   end

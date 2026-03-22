@@ -406,10 +406,11 @@ defmodule Dux.QueryBuilder do
       |> Enum.sort()
 
     Enum.map(col_names, fn name ->
-      values = Enum.map(rows, fn row ->
-        # Try both string and atom keys
-        Map.get(row, name) || Map.get(row, String.to_atom(name))
-      end)
+      values =
+        Enum.map(rows, fn row ->
+          # Try both string and atom keys
+          Map.get(row, name) || Map.get(row, String.to_atom(name))
+        end)
 
       %Adbc.Column{
         field: %Adbc.Field{name: name, type: infer_type(values), nullable: true, metadata: nil},
@@ -419,8 +420,10 @@ defmodule Dux.QueryBuilder do
   end
 
   defp infer_type([]), do: :string
+
   defp infer_type(values) do
-    sample = Enum.find(values, & &1 != nil)
+    sample = Enum.find(values, &(&1 != nil))
+
     case sample do
       nil -> :string
       v when is_integer(v) -> :s64

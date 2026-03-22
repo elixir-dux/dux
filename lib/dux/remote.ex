@@ -97,7 +97,7 @@ defmodule Dux.Remote do
              local_gc_pid
            ]) do
         {:ok, holder_pid} ->
-          # TODO(Phase 4): Implement GC sentinel for ADBC.
+          # NOTE: GC sentinel for ADBC not yet implemented (deferred to Phase 4).
           # For now, the holder stays alive until the connection closes.
           # The sentinel ref is just the table_ref itself.
           {:ok, table_ref, holder_pid}

@@ -42,9 +42,14 @@ defmodule Dux.Backend do
   def query(conn, sql) do
     result =
       case Adbc.Connection.query(conn, sql) do
-        {:ok, r} -> r
-        {:error, %Adbc.Error{} = err} -> raise ArgumentError, "DuckDB query failed: #{err.message}"
-        {:error, err} -> raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
+        {:ok, r} ->
+          r
+
+        {:error, %Adbc.Error{} = err} ->
+          raise ArgumentError, "DuckDB query failed: #{err.message}"
+
+        {:error, err} ->
+          raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
       end
 
     materialized = Adbc.Result.materialize(result)
@@ -164,15 +169,19 @@ defmodule Dux.Backend do
     if map == %{} do
       []
     else
-      col_names = Map.keys(map)
-      values = Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
-      n = values |> Map.values() |> hd() |> length()
+      build_rows_from_map(map)
+    end
+  end
 
-      for i <- 0..(n - 1) do
-        Map.new(col_names, fn col ->
-          {col, Enum.at(Map.fetch!(values, col), i)}
-        end)
-      end
+  defp build_rows_from_map(map) do
+    col_names = Map.keys(map)
+    values = Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+    n = values |> Map.values() |> hd() |> length()
+
+    for i <- 0..(n - 1) do
+      Map.new(col_names, fn col ->
+        {col, Enum.at(Map.fetch!(values, col), i)}
+      end)
     end
   end
 
@@ -188,25 +197,29 @@ defmodule Dux.Backend do
     if materialized.data == [] do
       # ADBC can't serialize zero-row results to IPC.
       # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
-      {names, types} = describe_table(conn, ref.name)
-
-      if names == [] do
-        # No columns at all — return empty sentinel
-        <<0::32>>
-      else
-        # Create a single-row dummy, serialize, then the receiver knows to filter
-        col_defs =
-          Enum.zip(names, types)
-          |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
-
-        dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
-        dummy_mat = Adbc.Result.materialize(dummy)
-        ipc = Adbc.Result.to_ipc_stream(dummy_mat)
-        # Prefix with magic byte to signal "empty — strip the dummy row"
-        <<"DUX_EMPTY"::binary, ipc::binary>>
-      end
+      build_empty_table_ipc(conn, ref.name)
     else
       Adbc.Result.to_ipc_stream(materialized)
+    end
+  end
+
+  defp build_empty_table_ipc(conn, table_name) do
+    {names, types} = describe_table(conn, table_name)
+
+    if names == [] do
+      # No columns at all — return empty sentinel
+      <<0::32>>
+    else
+      # Create a single-row dummy, serialize, then the receiver knows to filter
+      col_defs =
+        Enum.zip(names, types)
+        |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
+
+      dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
+      dummy_mat = Adbc.Result.materialize(dummy)
+      ipc = Adbc.Result.to_ipc_stream(dummy_mat)
+      # Prefix with magic byte to signal "empty — strip the dummy row"
+      <<"DUX_EMPTY"::binary, ipc::binary>>
     end
   end
 
@@ -292,7 +305,11 @@ defmodule Dux.Backend do
 
     # Return an "IngestResult-like" with the final table name
     # Note: gc_ref is the original ingest_result which keeps the source alive
-    %Adbc.IngestResult{ref: ingest_result.ref, table: final_name, num_rows: ingest_result.num_rows}
+    %Adbc.IngestResult{
+      ref: ingest_result.ref,
+      table: final_name,
+      num_rows: ingest_result.num_rows
+    }
   end
 
   # ---------------------------------------------------------------------------
@@ -336,7 +353,10 @@ defmodule Dux.Backend do
   defp duckdb_type_string_to_dtype("DATE"), do: :date
   defp duckdb_type_string_to_dtype("TIME"), do: :time
   defp duckdb_type_string_to_dtype("TIMESTAMP"), do: {:naive_datetime, :microsecond}
-  defp duckdb_type_string_to_dtype("TIMESTAMP WITH TIME ZONE"), do: {:datetime, :microsecond, "UTC"}
+
+  defp duckdb_type_string_to_dtype("TIMESTAMP WITH TIME ZONE"),
+    do: {:datetime, :microsecond, "UTC"}
+
   defp duckdb_type_string_to_dtype("INTERVAL"), do: {:duration, :microsecond}
 
   defp duckdb_type_string_to_dtype("DECIMAL" <> rest) do
@@ -347,13 +367,11 @@ defmodule Dux.Backend do
   end
 
   defp duckdb_type_string_to_dtype(other) do
-    cond do
-      String.ends_with?(other, "[]") ->
-        inner = String.slice(other, 0..-3//1)
-        {:list, duckdb_type_string_to_dtype(inner)}
-
-      true ->
-        {:unknown, other}
+    if String.ends_with?(other, "[]") do
+      inner = String.slice(other, 0..-3//1)
+      {:list, duckdb_type_string_to_dtype(inner)}
+    else
+      {:unknown, other}
     end
   end
 

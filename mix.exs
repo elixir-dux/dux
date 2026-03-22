@@ -18,7 +18,8 @@ defmodule Dux.MixProject do
       package: package(),
       docs: docs(),
       source_url: @source_url,
-      homepage_url: @source_url
+      homepage_url: @source_url,
+      preferred_cli_env: [check: :test]
     ]
   end
 
@@ -93,6 +94,13 @@ defmodule Dux.MixProject do
   end
 
   defp aliases do
-    []
+    [
+      check: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "test --exclude distributed",
+        "credo --strict"
+      ]
+    ]
   end
 end
