@@ -4,6 +4,29 @@ All notable changes to Dux are documented here.
 
 ## [Unreleased]
 
+### Documentation
+
+- Comprehensive documentation uplift (#3)
+
+### Features
+
+- Telemetry instrumentation across all layers
+- FLAME elastic compute integration
+- Migrate to ADBC (#2)
+- Distributed & graph algorithm improvements (#4)
+- Shuffle skew detection + bloom filter pre-filtering (#5)
+- Lattice framework for distributed aggregate merging (8b Phase A) (#6)
+- Approximate betweenness centrality (Brandes' algorithm) (#7)
+- Streaming merger for lattice-compatible distributed aggregation (#8)
+- ASOF JOIN + JSON processing verbs (#9)
+- Cross-source joins via ATTACH (#10)
+
+### Miscellaneous
+
+- Bump to dev version
+
+## [0.1.1] - 2026-03-22
+
 ### Bug Fixes
 
 - SQL injection hardening — escape identifiers and options
@@ -15,7 +38,11 @@ All notable changes to Dux are documented here.
 - GC race in Worker.register_table + distributed PageRank
 - Distributed parquet partitioning — Merger re-aggregation + compute idempotency
 - Make rustler dep unconditionally optional for Hex
-- Credo issues — reduce arity, replace length > 0
+- Release workflow — use cross-version: from-source
+- Add NIF version features to Cargo.toml for precompilation
+- NIF features — default to 2_16, pass through to rustler crate
+- Drop x86_64-unknown-linux-musl target
+- Link rstrtmgr.lib on Windows for DuckDB Restart Manager APIs
 
 ### Documentation
 
@@ -61,8 +88,6 @@ All notable changes to Dux are documented here.
 - Multi-column join support for Shuffle + peer tests for join routing
 - Show distribution info in Inspect display
 - Embedded test datasets + data-driven E2E tests
-- Color-coded Inspect display using Inspect.Algebra
-- Head/1 defaults to 10 rows
 
 ### Miscellaneous
 
@@ -73,8 +98,7 @@ All notable changes to Dux are documented here.
 - Fix all credo issues — alias, nesting, TODO tag
 - Clean up distributed graph — keep distributed PageRank, defer CC
 - Bump version
-- Mix format
-- Add git-cliff for automated changelog generation
+- Prepare for v0.1.1 release (#1)
 
 ### Refactoring
 
@@ -95,3 +119,5 @@ All notable changes to Dux are documented here.
 - :peer distributed correctness tests on real BEAM nodes
 - Distribute API verification tests + update distributed_test to new API
 - Peer-node integration test for auto-broadcast join routing
+
+
