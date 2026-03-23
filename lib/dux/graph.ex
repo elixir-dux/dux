@@ -420,14 +420,15 @@ defmodule Dux.Graph do
   @doc """
   Find the shortest path distance from a source vertex to all reachable vertices.
 
-  Uses DuckDB's recursive CTEs for efficient graph traversal.
-  Returns a `%Dux{}` with columns `[node, dist]`.
+  Uses DuckDB's `USING KEY` recursive CTEs for efficient graph traversal with
+  automatic deduplication — only the shortest distance per node is kept. Returns
+  a `%Dux{}` with columns `[node, dist]`.
 
   ## Options
 
-    * `:max_depth` - maximum BFS depth (default: `1000`)
-    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local).
-      When provided, broadcasts edges to a worker and runs the recursive CTE there.
+    * `:max_depth` — maximum traversal depth (default: `1000`)
+    * `:weight` — edge column to use as weight (default: `nil` for unweighted BFS).
+      When set, computes weighted shortest paths (Bellman-Ford via SQL).
 
   ## Examples
 
@@ -444,6 +445,7 @@ defmodule Dux.Graph do
   def shortest_paths(%__MODULE__{} = graph, from_vertex, opts \\ []) do
     workers = graph.workers
     max_depth = Keyword.get(opts, :max_depth, 1000)
+    weight = Keyword.get(opts, :weight)
 
     meta = %{
       algorithm: :shortest_paths,
@@ -455,34 +457,45 @@ defmodule Dux.Graph do
     :telemetry.span([:dux, :graph, :algorithm], meta, fn ->
       result =
         if workers do
-          shortest_paths_distributed(graph, from_vertex, max_depth, workers)
+          shortest_paths_distributed(graph, from_vertex, max_depth, weight, workers)
         else
-          shortest_paths_local(graph, from_vertex, max_depth)
+          shortest_paths_local(graph, from_vertex, max_depth, weight)
         end
 
       {result, meta}
     end)
   end
 
-  defp shortest_paths_local(graph, from_vertex, max_depth) do
+  defp shortest_paths_local(graph, from_vertex, max_depth, weight) do
     src = graph.edge_src
     dst = graph.edge_dst
 
     conn = Dux.Connection.get_conn()
     {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
+    # Cost expression: +1 for unweighted, +weight column for weighted
+    cost_expr =
+      if weight do
+        "p.dist + e.#{qi(to_string(weight))}"
+      else
+        "p.dist + 1"
+      end
+
+    # USING KEY eliminates duplicate rows by keeping the shortest distance.
+    # No GROUP BY needed — DuckDB deduplicates automatically.
     sql = """
     WITH RECURSIVE
       edges_cte AS (#{edges_sql}),
-      paths AS (
+      paths(node, dist) USING KEY (node) AS (
         SELECT #{from_vertex} AS node, 0 AS dist
         UNION
-        SELECT e.#{qi(dst)} AS node, p.dist + 1
-        FROM paths p
-        JOIN edges_cte e ON p.node = e.#{qi(src)}
-        WHERE p.dist < #{max_depth}
+        (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
+         FROM paths p
+         JOIN edges_cte e ON p.node = e.#{qi(src)}
+         LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
+         WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth}))
       )
-    SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
+    SELECT * FROM paths
     """
 
     Dux.from_query(sql)
@@ -490,7 +503,7 @@ defmodule Dux.Graph do
 
   # Distributed: broadcast edges to one worker, run recursive CTE there.
   # BFS needs the full edge set visible, so we offload to a worker's DuckDB.
-  defp shortest_paths_distributed(graph, from_vertex, max_depth, workers) do
+  defp shortest_paths_distributed(graph, from_vertex, max_depth, weight, workers) do
     src = graph.edge_src
     dst = graph.edge_dst
     worker = hd(workers)
@@ -502,16 +515,24 @@ defmodule Dux.Graph do
 
     Worker.register_table(worker, "__bfs_edges", edges_ipc)
 
+    cost_expr =
+      if weight do
+        "p.dist + e.#{qi(to_string(weight))}"
+      else
+        "p.dist + 1"
+      end
+
     sql = """
-    WITH RECURSIVE paths AS (
+    WITH RECURSIVE paths(node, dist) USING KEY (node) AS (
         SELECT #{from_vertex} AS node, 0 AS dist
         UNION
-        SELECT e.#{qi(dst)} AS node, p.dist + 1
-        FROM paths p
-        JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
-        WHERE p.dist < #{max_depth}
+        (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
+         FROM paths p
+         JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
+         LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
+         WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth}))
       )
-    SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
+    SELECT * FROM paths
     """
 
     {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
@@ -582,59 +603,38 @@ defmodule Dux.Graph do
     end)
   end
 
-  defp cc_local(graph, max_iterations) do
+  defp cc_local(graph, _max_iterations) do
     vid = graph.vertex_id
     src = graph.edge_src
     dst = graph.edge_dst
     conn = Dux.Connection.get_conn()
 
-    labels =
-      graph.vertices
-      |> Dux.select([String.to_atom(vid)])
-      |> Dux.mutate_with(component: ~s(#{qi(vid)}))
-      |> Dux.compute()
+    {verts_sql, _} = Dux.QueryBuilder.build(graph.vertices, conn)
+    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
-    {final, _history} =
-      Enum.reduce_while(1..max_iterations, {labels, [labels]}, fn _i, {labels, history} ->
-        Process.put(:dux_compute_ref, labels.source)
-        {:table, labels_ref} = labels.source
-        labels_table = labels_ref.name
-        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
+    # USING KEY eliminates the Elixir iteration loop — DuckDB handles
+    # convergence internally. Each vertex keeps the minimum component ID
+    # seen through any neighbor.
+    sql = """
+    WITH RECURSIVE
+      bidir_edges AS (
+        SELECT #{qi(src)} AS a, #{qi(dst)} AS b FROM (#{edges_sql}) __e
+        UNION
+        SELECT #{qi(dst)} AS a, #{qi(src)} AS b FROM (#{edges_sql}) __e2
+      ),
+      cc(#{qi(vid)}, component) USING KEY (#{qi(vid)}) AS (
+        SELECT #{qi(vid)}, #{qi(vid)} AS component FROM (#{verts_sql}) __v
+        UNION
+        (SELECT e.b AS #{qi(vid)}, cc.component
+         FROM cc
+         JOIN bidir_edges e ON cc.#{qi(vid)} = e.a
+         LEFT JOIN recurring.cc AS rec ON rec.#{qi(vid)} = e.b
+         WHERE cc.component < COALESCE(rec.component, cc.component + 1))
+      )
+    SELECT * FROM cc
+    """
 
-        sql = """
-          WITH
-            edges AS (#{edges_sql}),
-            bidir_edges AS (
-              SELECT #{qi(src)} AS a, #{qi(dst)} AS b FROM edges
-              UNION
-              SELECT #{qi(dst)} AS a, #{qi(src)} AS b FROM edges
-            ),
-            neighbor_labels AS (
-              SELECT be.b AS #{qi(vid)}, l.component
-              FROM bidir_edges be
-              JOIN "#{labels_table}" l ON be.a = l.#{qi(vid)}
-            ),
-            all_labels AS (
-              SELECT #{qi(vid)}, component FROM "#{labels_table}"
-              UNION ALL
-              SELECT #{qi(vid)}, component FROM neighbor_labels
-            )
-          SELECT #{qi(vid)}, MIN(component) AS component
-          FROM all_labels
-          GROUP BY #{qi(vid)}
-        """
-
-        new_labels = Dux.from_query(sql) |> Dux.compute()
-        Process.delete(:dux_compute_ref)
-
-        if converged?(labels, new_labels, vid) do
-          {:halt, {new_labels, [new_labels | history]}}
-        else
-          {:cont, {new_labels, [new_labels | history]}}
-        end
-      end)
-
-    final
+    Dux.from_query(sql)
   end
 
   defp cc_distributed(graph, max_iterations, workers) do
