@@ -31,18 +31,12 @@ Dux.from_parquet("s3://data/sales/**/*.parquet")
 ```elixir
 def deps do
   [
-    {:dux, "~> 0.1.1"}
+    {:dux, github: "elixir-dux/dux"}
   ]
 end
 ```
 
-Precompiled NIF binaries are available for macOS (arm64, x86_64), Linux (gnu, musl), and Windows. No Rust or DuckDB compilation needed.
-
-To force a local build (requires Rust toolchain):
-
-```bash
-DUX_BUILD=true mix deps.compile dux --force
-```
+Dux is a pure Elixir project. The DuckDB engine is provided via ADBC — a precompiled driver downloaded automatically at compile time. No Rust, C++, or DuckDB compilation needed.
 
 ## Quick start
 

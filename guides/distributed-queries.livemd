@@ -1,138 +1,153 @@
 # Distributed Queries
 
 ```elixir
-Mix.install([{:dux, "~> 0.1.1"}])
+Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-## Section
+## The Concept
+
+Mark a pipeline for distributed execution with `distribute/2`. The same verbs
+work — Dux automatically partitions, fans out to workers, and merges results:
 
 ```elixir
 require Dux
+
+# workers = Dux.Remote.Worker.list()
+#
+# Dux.from_parquet("s3://data-lake/events/**/*.parquet")
+# |> Dux.distribute(workers)
+# |> Dux.filter(amount > 100)
+# |> Dux.group_by(:region)
+# |> Dux.summarise(total: sum(amount))
+# |> Dux.to_rows()
 ```
 
-Dux distributes analytical workloads across a BEAM cluster. Each node runs its own DuckDB instance. The coordinator partitions data, fans out pipelines, and merges results. No JVM, no YARN, no Spark — just BEAM processes and message passing.
+> #### How it works {: .info}
+>
+> 1. **Partition** — the Partitioner splits parquet globs across workers (each
+>    worker reads its own files directly from S3)
+> 2. **Fan out** — each worker compiles and executes its partition independently
+> 3. **Merge** — the Coordinator re-aggregates partial results (SUM→SUM, MIN→MIN, AVG→SUM/COUNT)
 
 ## Architecture
 
 ```mermaid
-graph TD
-    C[Coordinator] -->|partition| W1[Worker Node 1<br/>DuckDB]
-    C -->|partition| W2[Worker Node 2<br/>DuckDB]
-    C -->|partition| W3[Worker Node 3<br/>DuckDB]
-    W1 -->|Arrow IPC| C
-    W2 -->|Arrow IPC| C
-    W3 -->|Arrow IPC| C
-    C -->|merge| R[Result]
+graph LR
+    P[Pipeline] -->|distribute| C[Coordinator]
+    C -->|partition| W1[Worker 1<br/>DuckDB]
+    C -->|partition| W2[Worker 2<br/>DuckDB]
+    C -->|partition| W3[Worker 3<br/>DuckDB]
+    W1 -->|IPC| M[Merger]
+    W2 -->|IPC| M
+    W3 -->|IPC| M
+    M -->|result| R[%Dux{}]
 ```
 
-## Starting workers
+Each worker owns its own DuckDB connection. Data transfers between nodes use
+Arrow IPC — a compact binary format. For S3/parquet sources, workers read
+directly from S3, so **no data flows through the coordinator**.
 
-Each BEAM node in your cluster runs a `Dux.Remote.Worker`. Workers open a local DuckDB connection and register themselves via `:pg` for automatic discovery.
+## Starting Workers
+
+Workers are GenServers with their own DuckDB connections, discoverable via `:pg`:
 
 ```elixir
-# On each node:
-{:ok, _pid} = Dux.Remote.Worker.start_link()
+{:ok, w1} = Dux.Remote.Worker.start_link()
+{:ok, w2} = Dux.Remote.Worker.start_link()
+
+# In production, workers run on separate BEAM nodes:
+# {:ok, w} = :erpc.call(remote_node, Dux.Remote.Worker, :start_link, [[]])
 ```
 
-Workers auto-register in the `:dux_workers` process group. The coordinator discovers them automatically:
+## Distributing a Pipeline
 
 ```elixir
-Dux.Remote.Worker.list()
-```
-
-## Executing distributed queries
-
-The coordinator handles everything — partition the source, fan out, merge:
-
-```elixir
-Dux.from_parquet("data/**/*.parquet")
-|> Dux.distribute(workers)
-|> Dux.filter(amount > 100)
-|> Dux.group_by(:region)
-|> Dux.summarise(total: sum(amount), n: count(amount))
-|> Dux.to_rows()
-```
-
-> #### No function serialization
-> 
-> `%Dux{}` is plain Elixir data — a source, a list of operations, column names.
-> The coordinator ships this struct to each worker. The worker compiles it to SQL
-> locally and executes against its own DuckDB. No lambdas cross the wire.
-
-## How it works
-
-1. **Partition** — For Parquet globs, files are split across workers round-robin. For other sources, each worker gets the full pipeline (useful for replicated data or database scans).
-
-2. **Fan out** — Each worker receives a `%Dux{}` pipeline, compiles it to SQL, executes against its local DuckDB, and returns the result as Arrow IPC binary.
-
-3. **Merge** — The coordinator collects Arrow IPC results, loads them into its local DuckDB, and runs a merge query (UNION ALL, re-sort, re-aggregate as needed).
-
-## Broadcast joins
-
-Star-schema analytics: broadcast a small dimension table to all workers, then each worker joins its partition of the fact table locally.
-
-```elixir
-fact = Dux.from_parquet("data/orders/**/*.parquet") |> Dux.distribute(workers)
-dim = Dux.from_csv("data/regions.csv")
-
-# Small table is broadcast to all workers automatically
-Dux.join(fact, dim, on: :region_id)
-|> Dux.to_rows()
-```
-
-The broadcast flow:
-
-1. Coordinator computes the small table and serializes to Arrow IPC
-2. IPC binary is sent to all workers in parallel
-3. Workers register it as a local temp table
-4. Pipeline is rewritten to join against the broadcast table
-5. Fan out, merge, cleanup
-
-> #### Automatic join routing
->
-> When you `Dux.join/3` a distributed pipeline with a local table, Dux
-> automatically broadcasts it to all workers (if under 256MB) or triggers
-> a distributed shuffle join (if larger). No manual intervention needed.
-
-## Why not Spark?
-
-|                     | Spark                                  | Dux                                  |
-| ------------------- | -------------------------------------- | ------------------------------------ |
-| **Startup**         | JVM cold start (seconds)               | BEAM instant (already running)       |
-| **Serialization**   | Lambda serialization (fragile, opaque) | Ship `%Dux{}` data (plain tuples)    |
-| **Cluster manager** | YARN / K8s / Mesos                     | libcluster + `:pg`                   |
-| **RPC**             | Custom shuffle protocol                | `:erpc.multicall`                    |
-| **Fault tolerance** | Lineage graph replay                   | Supervisor restart + re-read from S3 |
-| **Per-core perf**   | Tungsten engine                        | DuckDB (5-10x faster)                |
-
-## Remote GC
-
-When a computed `%Dux{}` crosses node boundaries, the underlying DuckDB temp table must stay alive on the origin node. Dux handles this automatically with a distributed garbage collector:
-
-* A GC sentinel NIF resource on the consumer node fires when collected
-* The notification propagates to a Holder process on the origin node
-* The Holder releases the DuckDB resource when no consumers remain
-* Node disconnection triggers immediate cleanup
-
-You don't need to think about this — it happens transparently.
-
-## Example: multi-node aggregation
-
-```elixir
-# Assuming 3 worker nodes are connected
-workers = Dux.Remote.Worker.list()
-
-# Each worker processes its partition independently
 result =
-  Dux.from_parquet("s3://datalake/events/**/*.parquet")
-  |> Dux.distribute(workers)
-  |> Dux.filter(event_type == "purchase")
-  |> Dux.group_by(:product_category)
-  |> Dux.summarise(
-    revenue: sum(amount),
-    orders: count(id),
-    avg_order: avg(amount)
-  )
-  |> Dux.sort_by(desc: :revenue)
+  Dux.from_list([
+    %{region: "US", amount: 100},
+    %{region: "EU", amount: 200},
+    %{region: "US", amount: 150},
+    %{region: "EU", amount: 300}
+  ])
+  |> Dux.distribute([w1, w2])
+  |> Dux.group_by(:region)
+  |> Dux.summarise_with(total: "SUM(amount)")
+  |> Dux.sort_by(:region)
   |> Dux.to_rows()
 ```
+
+> #### Replicated sources {: .warning}
+>
+> When distributing `from_list` or `from_query` (non-partitioned sources),
+> each worker gets the full dataset. The merger re-aggregates, so SUM
+> results will be correct, but raw row counts will be multiplied by the
+> number of workers. Use parquet globs for true partitioning.
+
+## Broadcast Joins
+
+When joining a distributed pipeline with a small local table, Dux automatically
+broadcasts the small table to all workers:
+
+```elixir
+left = Dux.from_list(Enum.map(1..100, &%{id: &1, region: rem(&1, 3)}))
+       |> Dux.distribute([w1, w2])
+
+dim = Dux.from_list([%{region: 0, name: "US"}, %{region: 1, name: "EU"}, %{region: 2, name: "APAC"}])
+      |> Dux.compute()
+
+left
+|> Dux.join(dim, on: :region)
+|> Dux.group_by(:name)
+|> Dux.summarise_with(n: "COUNT(*)")
+|> Dux.sort_by(:name)
+|> Dux.to_rows()
+```
+
+## FLAME: Elastic Cloud Compute
+
+With [FLAME](https://github.com/phoenixframework/flame), spin up ephemeral
+cloud machines with DuckDB on demand:
+
+```elixir
+# Dux.Flame.start_pool(
+#   backend: {FLAME.FlyBackend, token: "...", cpus: 4, memory_mb: 16_384},
+#   max: 10
+# )
+#
+# workers = Dux.Flame.spin_up(5)
+#
+# Dux.from_parquet("s3://data-lake/events/**/*.parquet")
+# |> Dux.distribute(workers)
+# |> Dux.filter(amount > 100)
+# |> Dux.to_rows()
+#
+# # Machines auto-terminate after 5 minutes idle
+```
+
+## Telemetry
+
+Dux emits `:telemetry` events for distributed operations:
+
+```elixir
+:telemetry.attach("dist-log", [:dux, :distributed, :worker, :stop],
+  fn _event, measures, meta, _ ->
+    IO.puts("Worker #{meta.worker_index}/#{meta.n_workers} done in #{div(measures.duration, 1_000_000)}ms")
+  end, nil)
+
+Dux.from_list(Enum.map(1..100, &%{x: &1}))
+|> Dux.distribute([w1, w2])
+|> Dux.summarise_with(total: "SUM(x)")
+|> Dux.to_rows()
+```
+
+```elixir
+# Cleanup
+:telemetry.detach("dist-log")
+GenServer.stop(w1)
+GenServer.stop(w2)
+```
+
+## What's Next
+
+- [Getting Started](getting-started.livemd) — core concepts
+- [Graph Analytics](graph-analytics.livemd) — distributed graph algorithms

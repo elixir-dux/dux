@@ -1,7 +1,141 @@
-# data-io
+# Data IO
 
 ```elixir
 Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-Coming soon.
+## Setup
+
+```elixir
+require Dux
+
+data_dir =
+  [:code.priv_dir(:dux), "..", "test", "data"]
+  |> Path.join()
+  |> Path.expand()
+
+tmp_dir = System.tmp_dir!()
+```
+
+## Reading CSV
+
+```elixir
+penguins = Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+penguins |> Dux.head(3) |> Dux.to_rows()
+```
+
+> #### CSV options {: .info}
+>
+> - `:delimiter` — field delimiter (default `","`)
+> - `:header` — whether file has a header row (default `true`)
+> - `:nullstr` — string to treat as NULL (e.g., `"NA"`)
+> - `:skip` — rows to skip at the start
+> - `:null_padding` — pad missing columns with NULL
+
+## Reading Parquet
+
+Parquet is a columnar format — fast and compact. DuckDB reads it natively:
+
+```elixir
+path = Path.join(tmp_dir, "demo.parquet")
+
+Dux.from_list(Enum.map(1..1000, &%{id: &1, value: :rand.uniform(100)}))
+|> Dux.to_parquet(path)
+
+Dux.from_parquet(path)
+|> Dux.summarise_with(n: "COUNT(*)", avg_val: "AVG(value)")
+|> Dux.to_rows()
+```
+
+## Glob Patterns
+
+Read multiple files at once. DuckDB handles the UNION:
+
+```elixir
+for i <- 1..3 do
+  rows = Enum.map(1..100, &%{part: i, value: (i - 1) * 100 + &1})
+  Dux.from_list(rows) |> Dux.to_parquet(Path.join(tmp_dir, "part_#{i}.parquet"))
+end
+
+Dux.from_parquet(Path.join(tmp_dir, "part_*.parquet"))
+|> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+|> Dux.to_rows()
+```
+
+## Reading NDJSON
+
+```elixir
+ndjson_path = Path.join(tmp_dir, "events.ndjson")
+
+File.write!(ndjson_path, """
+{"event":"click","ts":"2024-01-01","user":1}
+{"event":"view","ts":"2024-01-01","user":2}
+{"event":"click","ts":"2024-01-02","user":1}
+""")
+
+Dux.from_ndjson(ndjson_path) |> Dux.to_rows()
+```
+
+## Writing Files
+
+### CSV
+
+```elixir
+csv_path = Path.join(tmp_dir, "output.csv")
+
+Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+|> Dux.filter_with("species = 'Gentoo'")
+|> Dux.select([:species, :island, :body_mass_g])
+|> Dux.to_csv(csv_path)
+
+File.read!(csv_path) |> String.split("\n") |> Enum.take(3)
+```
+
+### Parquet with Compression
+
+```elixir
+parquet_path = Path.join(tmp_dir, "compressed.parquet")
+
+Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+|> Dux.to_parquet(parquet_path, compression: :zstd)
+
+"#{div(File.stat!(parquet_path).size, 1024)} KB"
+```
+
+## The SQL Escape Hatch
+
+`from_query/1` lets you write raw DuckDB SQL for anything the verbs don't cover:
+
+```elixir
+Dux.from_query("SELECT range AS n, n * n AS square FROM range(1, 11)")
+|> Dux.to_rows()
+```
+
+```elixir
+Dux.from_query("""
+  SELECT
+    i AS id,
+    ['US', 'EU', 'APAC'][1 + (i % 3)] AS region,
+    round(random() * 1000, 2) AS amount
+  FROM range(1, 101) t(i)
+""")
+|> Dux.group_by(:region)
+|> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
+|> Dux.to_rows()
+```
+
+## Cleanup
+
+```elixir
+for f <- Path.wildcard(Path.join(tmp_dir, "*.{csv,parquet,ndjson}")) do
+  File.rm(f)
+end
+
+:ok
+```
+
+## What's Next
+
+- [Getting Started](getting-started.livemd) — core concepts
+- [Transformations](transformations.livemd) — filter, mutate, window functions
+- [Joins & Reshape](joins-and-reshape.livemd) — star schema joins

@@ -1,7 +1,153 @@
-# joins-and-reshape
+# Joins & Reshape
 
 ```elixir
 Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-Coming soon.
+## NYC Flights: A Star Schema
+
+The nycflights13 dataset is a classic star schema — a fact table (`flights`) joined
+to dimension tables (`airlines`, `airports`, `planes`). It ships with Dux's test data.
+
+```elixir
+require Dux
+
+data_dir =
+  [:code.priv_dir(:dux), "..", "test", "data"]
+  |> Path.join()
+  |> Path.expand()
+
+flights = Dux.from_csv(Path.join(data_dir, "flights.csv"), nullstr: "NA")
+airlines = Dux.from_csv(Path.join(data_dir, "airlines.csv"))
+airports = Dux.from_csv(Path.join(data_dir, "airports.csv"))
+planes = Dux.from_csv(Path.join(data_dir, "planes.csv"), nullstr: "NA")
+```
+
+```elixir
+# 6,099 flights from the first week of January 2013
+Dux.n_rows(flights)
+```
+
+## Inner Join: Carrier Name Lookup
+
+Join flights with airlines to get the full carrier name. When both tables
+share a column name, pass it as an atom:
+
+```elixir
+flights
+|> Dux.join(airlines, on: :carrier)
+|> Dux.group_by(:name)
+|> Dux.summarise_with(n_flights: "COUNT(*)")
+|> Dux.sort_by(desc: :n_flights)
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+## Different Column Names
+
+When join keys have different names, use a tuple:
+
+```elixir
+flights
+|> Dux.join(airports, on: [{:origin, :faa}])
+|> Dux.group_by(:name)
+|> Dux.summarise_with(n: "COUNT(*)")
+|> Dux.sort_by(desc: :n)
+|> Dux.to_rows()
+```
+
+## Left Join: Keep All Flights
+
+A left join keeps all rows from the left table, filling NULLs where
+there's no match on the right:
+
+```elixir
+flights
+|> Dux.drop_nil([:tailnum])
+|> Dux.join(planes, on: :tailnum, how: :left)
+|> Dux.group_by(:manufacturer)
+|> Dux.summarise_with(n: "COUNT(*)", avg_seats: "AVG(seats)")
+|> Dux.sort_by(desc: :n)
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+## Anti Join: Missing Records
+
+An anti join finds rows in the left that have *no* match on the right.
+Which flights have tail numbers not in the planes table?
+
+```elixir
+flights
+|> Dux.drop_nil([:tailnum])
+|> Dux.join(planes, on: :tailnum, how: :anti)
+|> Dux.select([:tailnum])
+|> Dux.distinct()
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+> #### All join types {: .info}
+>
+> Dux supports `:inner` (default), `:left`, `:right`, `:cross`, `:anti`, and `:semi`.
+
+## Star Schema: Multi-Table Join
+
+Chain joins to build a denormalized view:
+
+```elixir
+flights
+|> Dux.join(airlines, on: :carrier)
+|> Dux.join(airports, on: [{:dest, :faa}])
+|> Dux.select([:carrier, :name, :dest])
+|> Dux.head(10)
+|> Dux.to_rows()
+```
+
+## Pivot Wider: Long to Wide
+
+Spread values across columns. Count flights per origin airport per carrier:
+
+```elixir
+flights
+|> Dux.group_by([:origin, :carrier])
+|> Dux.summarise_with(n: "COUNT(*)")
+|> Dux.pivot_wider(:carrier, :n)
+|> Dux.sort_by(:origin)
+|> Dux.to_rows()
+```
+
+## Pivot Longer: Wide to Long
+
+Melt columns back into rows:
+
+```elixir
+wide = Dux.from_list([
+  %{region: "US", q1: 100, q2: 200, q3: 150, q4: 300},
+  %{region: "EU", q1: 80, q2: 120, q3: 90, q4: 250}
+])
+
+wide
+|> Dux.pivot_longer([:q1, :q2, :q3, :q4], names_to: "quarter", values_to: "revenue")
+|> Dux.sort_by([:region, :quarter])
+|> Dux.to_rows()
+```
+
+## Concat Rows: UNION ALL
+
+Stack dataframes vertically:
+
+```elixir
+jan1 = Dux.from_list([%{day: 1, temp: 30}])
+jan2 = Dux.from_list([%{day: 2, temp: 28}])
+jan3 = Dux.from_list([%{day: 3, temp: 32}])
+
+Dux.concat_rows([jan1, jan2, jan3])
+|> Dux.to_rows()
+```
+
+## What's Next
+
+- [Getting Started](getting-started.livemd) — core Dux concepts
+- [Transformations](transformations.livemd) — filter, mutate, window functions
+- [Distributed Queries](distributed-queries.livemd) — distribute joins across workers

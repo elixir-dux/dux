@@ -1,7 +1,213 @@
-# transformations
+# Transformations
 
 ```elixir
 Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-Coming soon.
+## Setup
+
+```elixir
+require Dux
+
+data_dir =
+  [:code.priv_dir(:dux), "..", "test", "data"]
+  |> Path.join()
+  |> Path.expand()
+
+penguins = Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+```
+
+## Filter: Selecting Rows
+
+### Expression Syntax
+
+Bare identifiers are column names. Standard comparison and boolean operators work:
+
+```elixir
+penguins
+|> Dux.filter(species == "Adelie" and island == "Torgersen")
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+### Interpolation with `^`
+
+Use `^` to inject Elixir values safely (parameter bindings, not string interpolation):
+
+```elixir
+target_species = "Gentoo"
+min_mass = 5000
+
+penguins
+|> Dux.filter(species == ^target_species and body_mass_g > ^min_mass)
+|> Dux.head(3)
+|> Dux.to_rows()
+```
+
+### Raw SQL with `filter_with`
+
+For complex DuckDB expressions:
+
+```elixir
+penguins
+|> Dux.filter_with("bill_length_mm BETWEEN 40 AND 45")
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+## Mutate: Computing New Columns
+
+### Expression Syntax
+
+```elixir
+penguins
+|> Dux.drop_nil([:bill_length_mm, :bill_depth_mm, :body_mass_g])
+|> Dux.mutate(
+  bill_ratio: bill_length_mm / bill_depth_mm,
+  mass_kg: body_mass_g / 1000.0
+)
+|> Dux.select([:species, :bill_ratio, :mass_kg])
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+### Raw SQL with `mutate_with`
+
+Access DuckDB string functions, CASE expressions, and more:
+
+```elixir
+penguins
+|> Dux.mutate_with(
+  species_upper: "UPPER(species)",
+  size_category: "CASE WHEN body_mass_g > 4500 THEN 'large' ELSE 'small' END"
+)
+|> Dux.select([:species_upper, :size_category, :body_mass_g])
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+### Window Functions
+
+Use `mutate_with` for window functions — they compute values relative to other rows:
+
+```elixir
+penguins
+|> Dux.drop_nil([:body_mass_g])
+|> Dux.mutate_with(
+  rank_in_species: "ROW_NUMBER() OVER (PARTITION BY species ORDER BY body_mass_g DESC)",
+  species_avg: "AVG(body_mass_g) OVER (PARTITION BY species)"
+)
+|> Dux.select([:species, :body_mass_g, :rank_in_species, :species_avg])
+|> Dux.sort_by([:species, :rank_in_species])
+|> Dux.head(6)
+|> Dux.to_rows()
+```
+
+## Select & Discard
+
+```elixir
+# Keep specific columns
+penguins
+|> Dux.select([:species, :island, :body_mass_g])
+|> Dux.head(3)
+|> Dux.to_rows()
+```
+
+```elixir
+# Drop specific columns
+penguins
+|> Dux.discard([:year])
+|> Dux.head(3)
+|> Dux.to_rows()
+```
+
+## Rename
+
+```elixir
+penguins
+|> Dux.rename(body_mass_g: :weight, bill_length_mm: :bill_length)
+|> Dux.select([:species, :weight, :bill_length])
+|> Dux.head(3)
+|> Dux.to_rows()
+```
+
+## Drop Nil: Null Handling
+
+Remove rows where specific columns are nil:
+
+```elixir
+IO.puts("All rows: #{Dux.n_rows(penguins)}")
+
+clean = penguins |> Dux.drop_nil([:sex, :body_mass_g])
+IO.puts("After drop_nil: #{Dux.n_rows(clean)}")
+```
+
+## Sorting
+
+```elixir
+# Ascending (default)
+penguins |> Dux.sort_by(:body_mass_g) |> Dux.head(3) |> Dux.to_rows()
+```
+
+```elixir
+# Descending
+penguins |> Dux.sort_by(desc: :body_mass_g) |> Dux.head(3) |> Dux.to_rows()
+```
+
+```elixir
+# Multi-column
+penguins
+|> Dux.drop_nil([:body_mass_g])
+|> Dux.sort_by(asc: :species, desc: :body_mass_g)
+|> Dux.head(6)
+|> Dux.to_rows()
+```
+
+## Head, Slice, Distinct
+
+```elixir
+# First N rows (default 10)
+penguins |> Dux.head(3) |> Dux.to_rows()
+```
+
+```elixir
+# Offset + limit
+penguins |> Dux.slice(5, 3) |> Dux.to_rows()
+```
+
+```elixir
+# Unique combinations
+penguins
+|> Dux.select([:species, :island])
+|> Dux.distinct()
+|> Dux.sort_by([:species, :island])
+|> Dux.to_rows()
+```
+
+## A Complex Pipeline
+
+```elixir
+penguins
+|> Dux.drop_nil([:body_mass_g, :bill_length_mm, :sex])
+|> Dux.filter(sex == "female")
+|> Dux.mutate(bill_ratio: bill_length_mm / bill_depth_mm)
+|> Dux.group_by(:species)
+|> Dux.summarise(
+  n: count(species),
+  avg_mass: avg(body_mass_g),
+  avg_bill_ratio: avg(bill_ratio)
+)
+|> Dux.sort_by(desc: :avg_mass)
+|> Dux.to_rows()
+```
+
+> #### See the SQL {: .tip}
+>
+> Replace `to_rows()` with `sql_preview(pretty: true) |> IO.puts()` to see
+> the SQL DuckDB will execute for any pipeline.
+
+## What's Next
+
+- [Joins & Reshape](joins-and-reshape.livemd) — star schema joins, pivot_wider/longer
+- [Data IO](data-io.livemd) — CSV, Parquet, NDJSON, S3
+- [Getting Started](getting-started.livemd) — core concepts

@@ -1,156 +1,159 @@
 # Graph Analytics
 
 ```elixir
-Mix.install([{:dux, "~> 0.1.1"}])
+Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-## Creating a graph
+## Graphs Are Two DataFrames
+
+In Dux, a graph is two `%Dux{}` structs — one for vertices, one for edges. Graph algorithms are verb compositions that compile to SQL, just like everything else.
+
+Let's explore with Zachary's Karate Club — a famous social network dataset from a 1977 study of friendships in a university karate club that eventually split into two factions.
 
 ```elixir
 require Dux
-```
 
-`Dux.Graph` provides graph algorithms as compositions of Dux verbs. A graph is just two dataframes — vertices and edges. Every algorithm reduces to joins, aggregations, and iterations that DuckDB executes.
+data_dir =
+  [:code.priv_dir(:dux), "..", "test", "data"]
+  |> Path.join()
+  |> Path.expand()
 
-```elixir
-vertices = Dux.from_list([
-  %{id: 1, name: "Alice"},
-  %{id: 2, name: "Bob"},
-  %{id: 3, name: "Carol"}
-])
+# Load edges (undirected — we need both directions)
+edges =
+  Dux.from_query("""
+    SELECT src, dst FROM read_csv('#{data_dir}/karate_club.csv')
+    UNION ALL
+    SELECT dst AS src, src AS dst FROM read_csv('#{data_dir}/karate_club.csv')
+  """)
 
-edges = Dux.from_list([
-  %{src: 1, dst: 2},
-  %{src: 2, dst: 3},
-  %{src: 3, dst: 1}
-])
+vertices = Dux.from_list(Enum.map(1..34, &%{id: &1}))
 
 graph = Dux.Graph.new(vertices: vertices, edges: edges)
 ```
 
-Custom column names:
-
 ```elixir
-Dux.Graph.new(
-  vertices: v,
-  edges: e,
-  vertex_id: :node_id,
-  edge_src: :from,
-  edge_dst: :to
-)
+IO.puts("Vertices: #{Dux.Graph.vertex_count(graph)}")
+IO.puts("Edges: #{Dux.Graph.edge_count(graph)} (directed, both directions)")
 ```
 
-Or infer vertices from edges:
+## Who Has the Most Connections?
 
-```elixir
-graph = Dux.Graph.from_edgelist(edges)
-```
-
-## Algorithms
-
-### PageRank
-
-Iterative join-aggregate. Each iteration joins edges with current ranks, computes contributions, and updates.
+Degree functions count edges per vertex:
 
 ```elixir
 graph
-|> Dux.Graph.pagerank(iterations: 20, damping: 0.85)
+|> Dux.Graph.out_degree()
+|> Dux.sort_by(desc: :out_degree)
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+> #### Graph results are DataFrames {: .info}
+>
+> Every graph algorithm returns a `%Dux{}` struct. You can pipe results
+> into any Dux verb — filter, join, sort, export.
+
+## PageRank: Who Is Most Influential?
+
+PageRank identifies important vertices based on the structure of incoming edges,
+not just the count:
+
+```elixir
+graph
+|> Dux.Graph.pagerank(iterations: 20)
 |> Dux.sort_by(desc: :rank)
 |> Dux.head(10)
-|> Dux.collect()
+|> Dux.to_rows()
 ```
 
-Returns a `%Dux{}` with columns `[vertex_id, rank]`.
+Node 34 (the club "Officer") and node 1 (the "Instructor") are the two leaders
+who eventually caused the club to split.
 
-> #### Composability
-> 
-> Every graph algorithm returns a `%Dux{}` struct. Pipe it into any Dux verb —
-> filter, join with other data, write to Parquet, whatever you need.
+## Shortest Paths
 
-### Shortest paths
-
-Uses DuckDB recursive CTEs for efficient BFS from a source vertex:
+Find the distance from any node to all reachable nodes via BFS:
 
 ```elixir
-Dux.Graph.shortest_paths(graph, 1)
+# Distances from node 1 (the Instructor)
+graph
+|> Dux.Graph.shortest_paths(1)
 |> Dux.sort_by(:dist)
-|> Dux.collect()
+|> Dux.head(10)
+|> Dux.to_rows()
 ```
 
-### Connected components
+## Connected Components
 
-Iterative label propagation — each vertex takes the minimum label in its neighborhood until convergence:
+Label each vertex with its component ID. The karate club is a single
+connected component:
 
 ```elixir
-Dux.Graph.connected_components(graph)
-|> Dux.group_by(:component)
-|> Dux.summarise_with(size: "COUNT(*)")
-|> Dux.sort_by(desc: :size)
-|> Dux.collect()
+graph
+|> Dux.Graph.connected_components()
+|> Dux.to_columns()
+|> then(fn cols -> cols["component"] |> Enum.uniq() |> length() end)
 ```
 
-### Triangle counting
+## Triangle Counting
 
-Triple self-join with canonical ordering:
+Count the number of triangles (three mutually connected nodes) in the network.
+This measures clustering density:
 
 ```elixir
-count = Dux.Graph.triangle_count(graph)
-# 1
+Dux.Graph.triangle_count(graph)
 ```
 
-> #### Bidirectional edges required
-> 
-> Triangle counting expects edges in both directions. If your graph is
-> directed, add reverse edges before counting.
+The karate club has 45 triangles — a tightly knit social network.
 
-### Degree functions
-
-Simple group-by + count:
-
-```elixir
-Dux.Graph.out_degree(graph)  # → %Dux{} with [id, out_degree]
-Dux.Graph.in_degree(graph)   # → %Dux{} with [id, in_degree]
-Dux.Graph.degree(graph)      # → %Dux{} with [id, degree] (in + out)
-```
-
-## Enriching graph results
+## Composability: Graph Results Meet Verbs
 
 Since graph algorithms return `%Dux{}` structs, you can join them with other data:
 
 ```elixir
-# PageRank + user details
+# Create faction labels (from the known split)
+factions = Dux.from_list([
+  %{id: 1, faction: "Instructor"},
+  %{id: 34, faction: "Officer"}
+])
+
+# Join PageRank with faction labels
 graph
-|> Dux.Graph.pagerank()
-|> Dux.join(user_details, on: :id)
-|> Dux.filter(rank > 0.01)
-|> Dux.select([:name, :email, :rank])
+|> Dux.Graph.pagerank(iterations: 20)
+|> Dux.join(factions, on: :id)
 |> Dux.sort_by(desc: :rank)
-|> Dux.to_csv("influential_users.csv")
+|> Dux.to_rows()
 ```
 
-## How it works under the hood
+## Building Graphs from Scratch
 
-Graph algorithms compile to DuckDB SQL. For example, PageRank becomes:
+You can create graphs from any edge list:
 
-```sql
-WITH
-  edges AS (...),
-  ranks AS (...),
-  outdeg AS (...),
-  contributions AS (
-    SELECT e.dst AS id, SUM(r.rank / od.out_degree) AS incoming
-    FROM edges e
-    JOIN ranks r ON e.src = r.id
-    JOIN outdeg od ON e.src = od.id
-    GROUP BY e.dst
-  )
-SELECT v.id, COALESCE(base_rank + damping * c.incoming, base_rank) AS rank
-FROM vertices v
-LEFT JOIN contributions c ON v.id = c.id
+```elixir
+# A simple directed graph
+edges = Dux.from_list([
+  %{from: "A", to: "B"},
+  %{from: "B", to: "C"},
+  %{from: "C", to: "A"},
+  %{from: "A", to: "D"}
+])
+
+vertices = Dux.from_list([%{name: "A"}, %{name: "B"}, %{name: "C"}, %{name: "D"}])
+
+small_graph = Dux.Graph.new(
+  vertices: vertices,
+  edges: edges,
+  vertex_id: :name,
+  edge_src: :from,
+  edge_dst: :to
+)
+
+small_graph
+|> Dux.Graph.pagerank(iterations: 10)
+|> Dux.sort_by(desc: :rank)
+|> Dux.to_rows()
 ```
 
-DuckDB's columnar engine, morsel-driven parallelism, and vectorized execution make this fast — even for graphs with millions of edges.
+## What's Next
 
-## Future: DuckPGQ
-
-DuckDB's SQL/PGQ extension (ISO SQL:2023) will provide native graph pattern matching. This is planned for a future Dux release.
+- [Getting Started](getting-started.livemd) — core Dux concepts
+- [Distributed Queries](distributed-queries.livemd) — distribute graph algorithms across workers

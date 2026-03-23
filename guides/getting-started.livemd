@@ -1,166 +1,183 @@
 # Getting Started
 
 ```elixir
-Mix.install([{:dux, "~> 0.1.1"}])
+Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```
 
-## Your first pipeline
+## Meet the Penguins
+
+Dux is a DuckDB-native dataframe library for Elixir. Let's explore it with a real dataset — 344 penguins from Palmer Station, Antarctica.
 
 ```elixir
 require Dux
+
+# The penguins dataset ships with Dux's test data
+penguins_path =
+  [:code.priv_dir(:dux), "..", "test", "data", "penguins.csv"]
+  |> Path.join()
+  |> Path.expand()
+
+penguins = Dux.from_csv(penguins_path, nullstr: "NA")
 ```
 
-Dux is a DuckDB-native dataframe library for Elixir. Pipelines are lazy — operations accumulate until you call `to_rows/1`.
+> #### Lazy by default {: .info}
+>
+> Nothing has hit DuckDB yet. `penguins` is a `%Dux{}` struct holding a
+> source and zero operations. Everything is lazy until you call `compute/1`,
+> `to_rows/1`, or `to_columns/1`.
+
+## Your First Pipeline
+
+Pipelines chain verbs — each returns a new `%Dux{}`. The `require Dux` above
+unlocks expression macros where bare identifiers become column names.
 
 ```elixir
-Dux.from_list([
-  %{name: "Alice", department: "Engineering", salary: 120_000},
-  %{name: "Bob", department: "Engineering", salary: 110_000},
-  %{name: "Carol", department: "Sales", salary: 95_000},
-  %{name: "Dave", department: "Sales", salary: 105_000}
-])
-|> Dux.filter(salary > 100_000)
-|> Dux.sort_by(desc: :salary)
-|> Dux.to_rows()
+penguins
+|> Dux.filter(species == "Gentoo" and body_mass_g > 5000)
+|> Dux.select([:species, :island, :body_mass_g, :sex])
+|> Dux.sort_by(desc: :body_mass_g)
+|> Dux.head(5)
 ```
 
-## Everything is lazy
+## Materialization
 
-Operations accumulate in the `%Dux{}` struct. Nothing hits DuckDB until you materialize:
-
-```elixir
-df =
-  Dux.from_query("SELECT * FROM range(1, 101) t(x)")
-  |> Dux.filter(x > 50)
-  |> Dux.mutate(doubled: x * 2)
-
-df.ops
-```
+Call `to_rows/1` to get a list of maps, or `to_columns/1` for a column-oriented map:
 
 ```elixir
-Dux.to_rows(df)
-```
-
-## Expressions compile to SQL
-
-Bare identifiers become column names. Use `^` to interpolate Elixir values as parameter bindings:
-
-```elixir
-min_price = 50
-
-Dux.from_list([
-  %{name: "Widget", price: 25, category: "Tools"},
-  %{name: "Gadget", price: 75, category: "Electronics"},
-  %{name: "Doohickey", price: 100, category: "Electronics"}
-])
-|> Dux.filter(price > ^min_price)
-|> Dux.mutate(with_tax: price * 1.08)
-|> Dux.to_rows()
-```
-
-The `_with` variants accept raw SQL strings for programmatic use:
-
-```elixir
-Dux.from_query("SELECT * FROM range(1, 11) t(x)")
-|> Dux.filter_with("x > 5")
-|> Dux.mutate_with(squared: "x * x")
-|> Dux.to_rows()
-```
-
-## Reading and writing data
-
-```elixir
-path = Path.join(System.tmp_dir!(), "dux_guide.csv")
-
-Dux.from_list([
-  %{name: "Alice", score: 85},
-  %{name: "Bob", score: 92},
-  %{name: "Carol", score: 78}
-])
-|> Dux.to_csv(path)
-
-Dux.from_csv(path)
-|> Dux.filter(score > 80)
+penguins
+|> Dux.filter(species == "Adelie")
+|> Dux.select([:island, :bill_length_mm])
+|> Dux.head(3)
 |> Dux.to_rows()
 ```
 
 ```elixir
-parquet_path = Path.join(System.tmp_dir!(), "dux_guide.parquet")
-
-Dux.from_query("SELECT x AS id, x * 10 AS value FROM range(1000) t(x)")
-|> Dux.to_parquet(parquet_path, compression: :zstd)
-
-Dux.from_parquet(parquet_path)
-|> Dux.filter(value > 5000)
-|> Dux.summarise(total: sum(value), n: count(id))
-|> Dux.to_rows()
+penguins
+|> Dux.filter(species == "Chinstrap")
+|> Dux.select([:species, :body_mass_g])
+|> Dux.head(5)
+|> Dux.to_columns()
 ```
 
 ## Aggregation
 
+Group rows and compute summaries. The expression syntax lets you write
+`sum(body_mass_g)` directly:
+
 ```elixir
-Dux.from_list([
-  %{region: "US", product: "Widget", amount: 100},
-  %{region: "US", product: "Gadget", amount: 200},
-  %{region: "EU", product: "Widget", amount: 150},
-  %{region: "EU", product: "Gadget", amount: 300},
-  %{region: "US", product: "Widget", amount: 175}
-])
-|> Dux.group_by([:region, :product])
+penguins
+|> Dux.drop_nil([:body_mass_g, :sex])
+|> Dux.group_by([:species, :sex])
 |> Dux.summarise(
-  total: sum(amount),
-  orders: count(amount),
-  avg_order: avg(amount)
+  count: count(body_mass_g),
+  avg_mass: avg(body_mass_g),
+  max_mass: max(body_mass_g)
 )
-|> Dux.sort_by(desc: :total)
+|> Dux.sort_by([:species, :sex])
 |> Dux.to_rows()
+```
+
+> #### Raw SQL alternative {: .tip}
+>
+> Every expression verb has a `_with` variant that accepts raw DuckDB SQL strings:
+>
+> ```elixir
+> Dux.summarise_with(df, avg_mass: "AVG(body_mass_g)")
+> ```
+>
+> Use this for DuckDB functions the expression macro doesn't cover.
+
+## Computed Columns
+
+`mutate/2` adds or replaces columns:
+
+```elixir
+penguins
+|> Dux.drop_nil([:bill_length_mm, :bill_depth_mm])
+|> Dux.mutate(bill_ratio: bill_length_mm / bill_depth_mm)
+|> Dux.select([:species, :bill_length_mm, :bill_depth_mm, :bill_ratio])
+|> Dux.sort_by(desc: :bill_ratio)
+|> Dux.head(5)
+|> Dux.to_rows()
+```
+
+## Interpolation
+
+Use `^` to interpolate Elixir values into expressions as parameter bindings
+(safe from SQL injection):
+
+```elixir
+min_mass = 4500
+
+penguins
+|> Dux.filter(body_mass_g > ^min_mass)
+|> Dux.group_by(:species)
+|> Dux.summarise(n: count(species))
+|> Dux.sort_by(desc: :n)
+|> Dux.to_rows()
+```
+
+## See the SQL
+
+Every pipeline compiles to SQL CTEs. Use `sql_preview/1` to inspect
+what DuckDB will execute:
+
+```elixir
+penguins
+|> Dux.filter(species == "Gentoo")
+|> Dux.mutate(mass_kg: body_mass_g / 1000.0)
+|> Dux.group_by(:island)
+|> Dux.summarise(avg_kg: avg(mass_kg))
+|> Dux.sql_preview(pretty: true)
+|> IO.puts()
+```
+
+## Reading & Writing Files
+
+Dux reads CSV, Parquet, and NDJSON via DuckDB — including S3 and HTTP URLs:
+
+```elixir
+# Write the filtered penguins to Parquet
+path = Path.join(System.tmp_dir!(), "gentoo.parquet")
+
+penguins
+|> Dux.filter(species == "Gentoo")
+|> Dux.to_parquet(path)
+
+# Read it back
+Dux.from_parquet(path)
+|> Dux.head(3)
+|> Dux.to_rows()
+```
+
+```elixir
+# Cleanup
+File.rm(path)
 ```
 
 ## Joins
 
+Combine datasets by matching on shared columns:
+
 ```elixir
-orders =
-  Dux.from_list([
-    %{order_id: 1, customer_id: 10, product_id: 100, qty: 5},
-    %{order_id: 2, customer_id: 10, product_id: 101, qty: 3},
-    %{order_id: 3, customer_id: 11, product_id: 100, qty: 2}
-  ])
+# Create a small lookup table
+habitat = Dux.from_list([
+  %{island: "Biscoe", climate: "maritime"},
+  %{island: "Dream", climate: "maritime"},
+  %{island: "Torgersen", climate: "polar"}
+])
 
-customers =
-  Dux.from_list([
-    %{customer_id: 10, name: "Alice"},
-    %{customer_id: 11, name: "Bob"}
-  ])
-
-products =
-  Dux.from_list([
-    %{product_id: 100, product_name: "Widget", unit_price: 25},
-    %{product_id: 101, product_name: "Gadget", unit_price: 50}
-  ])
-
-orders
-|> Dux.join(customers, on: :customer_id)
-|> Dux.join(products, on: :product_id)
-|> Dux.mutate(total: qty * unit_price)
-|> Dux.group_by(:name)
-|> Dux.summarise(spend: sum(total), orders: count(order_id))
-|> Dux.sort_by(:name)
+penguins
+|> Dux.join(habitat, on: :island)
+|> Dux.group_by(:climate)
+|> Dux.summarise(n: count(species))
 |> Dux.to_rows()
 ```
 
-## See the generated SQL
+## What's Next
 
-```elixir
-Dux.from_query("SELECT * FROM range(100) t(x)")
-|> Dux.filter(x > 50)
-|> Dux.mutate(doubled: x * 2)
-|> Dux.group_by(:doubled)
-|> Dux.summarise(n: count(x))
-|> Dux.sql_preview()
-```
-
-## Next steps
-
-* [Distributed Queries](distributed-queries.livemd) — run Dux across a BEAM cluster
-* [Graph Analytics](graph-analytics.livemd) — PageRank, shortest paths, and more
-* [API Reference](https://hexdocs.pm/dux/Dux.html) — full module documentation
+- [Data IO](data-io.livemd) — CSV, Parquet, NDJSON, S3, glob patterns
+- [Transformations](transformations.livemd) — deep dive on filter, mutate, window functions
+- [Joins & Reshape](joins-and-reshape.livemd) — star schema joins, pivot_wider/longer
+- [Distributed Queries](distributed-queries.livemd) — scale across BEAM nodes with `distribute/2`
+- [Graph Analytics](graph-analytics.livemd) — PageRank, shortest paths, connected components
