@@ -834,14 +834,130 @@ defmodule Dux.Graph do
     result
   end
 
-  defp converged?(old_labels, new_labels, vid) do
+  defp converged?(old_labels, new_labels, vid, label_col \\ "component") do
     old_cols = Dux.to_columns(old_labels)
     new_cols = Dux.to_columns(new_labels)
 
-    old_sorted = Enum.zip(old_cols[vid], old_cols["component"]) |> Enum.sort()
-    new_sorted = Enum.zip(new_cols[vid], new_cols["component"]) |> Enum.sort()
+    old_sorted = Enum.zip(old_cols[vid], old_cols[label_col]) |> Enum.sort()
+    new_sorted = Enum.zip(new_cols[vid], new_cols[label_col]) |> Enum.sort()
 
     old_sorted == new_sorted
+  end
+
+  # ---------------------------------------------------------------------------
+  # Community detection (label propagation)
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Detect communities using label propagation.
+
+  Each vertex starts with its own label. In each iteration, vertices adopt
+  the most frequent label among their neighbors (tie-broken by smallest label).
+  Converges when labels stabilize.
+
+  Returns a `%Dux{}` with columns `[vertex_id, community]`.
+
+  ## Options
+
+    * `:max_iterations` — maximum iterations (default: `20`)
+
+  ## Examples
+
+      iex> edges = Dux.from_list([
+      ...>   %{"src" => 1, "dst" => 2}, %{"src" => 2, "dst" => 1},
+      ...>   %{"src" => 2, "dst" => 3}, %{"src" => 3, "dst" => 2},
+      ...>   %{"src" => 4, "dst" => 5}, %{"src" => 5, "dst" => 4}
+      ...> ])
+      iex> vertices = Dux.from_list([%{"id" => 1}, %{"id" => 2}, %{"id" => 3}, %{"id" => 4}, %{"id" => 5}])
+      iex> graph = Dux.Graph.new(vertices: vertices, edges: edges)
+      iex> result = Dux.Graph.communities(graph) |> Dux.sort_by(:id) |> Dux.to_columns()
+      iex> [c1, c2, c3, c4, c5] = result["community"]
+      iex> c1 == c2 and c2 == c3
+      true
+      iex> c4 == c5
+      true
+      iex> c1 != c4
+      true
+  """
+  @doc group: :algorithms
+  def communities(%__MODULE__{} = graph, opts \\ []) do
+    max_iterations = Keyword.get(opts, :max_iterations, 20)
+
+    meta = %{
+      algorithm: :communities,
+      n_vertices: vertex_count(graph),
+      n_edges: edge_count(graph),
+      distributed: graph.workers != nil
+    }
+
+    :telemetry.span([:dux, :graph, :algorithm], meta, fn ->
+      result = communities_local(graph, max_iterations)
+      {result, meta}
+    end)
+  end
+
+  defp communities_local(graph, max_iterations) do
+    vid = graph.vertex_id
+    src = graph.edge_src
+    dst = graph.edge_dst
+    conn = Dux.Connection.get_conn()
+
+    labels =
+      graph.vertices
+      |> Dux.select([String.to_atom(vid)])
+      |> Dux.mutate_with(community: ~s(#{qi(vid)}))
+      |> Dux.compute()
+
+    {final, _} =
+      Enum.reduce_while(1..max_iterations, {labels, nil}, fn _i, {labels, _} ->
+        Process.put(:dux_compute_ref, labels.source)
+        {:table, labels_ref} = labels.source
+        labels_table = labels_ref.name
+        {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
+
+        sql = """
+          WITH
+            edges AS (#{edges_sql}),
+            bidir_edges AS (
+              SELECT #{qi(src)} AS a, #{qi(dst)} AS b FROM edges
+              UNION
+              SELECT #{qi(dst)} AS a, #{qi(src)} AS b FROM edges
+            ),
+            -- Include own label + neighbor labels for frequency voting
+            all_votes AS (
+              SELECT be.b AS #{qi(vid)}, l.community
+              FROM bidir_edges be
+              JOIN "#{labels_table}" l ON be.a = l.#{qi(vid)}
+              UNION ALL
+              SELECT #{qi(vid)}, community FROM "#{labels_table}"
+            ),
+            neighbor_labels AS (
+              SELECT #{qi(vid)}, community, COUNT(*) AS freq
+              FROM all_votes
+              GROUP BY #{qi(vid)}, community
+            ),
+            best AS (
+              SELECT #{qi(vid)}, community FROM neighbor_labels
+              QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY #{qi(vid)} ORDER BY freq DESC, community ASC
+              ) = 1
+            )
+          SELECT l.#{qi(vid)}, COALESCE(b.community, l.community) AS community
+          FROM "#{labels_table}" l
+          LEFT JOIN best b ON l.#{qi(vid)} = b.#{qi(vid)}
+        """
+
+        new_labels = Dux.from_query(sql) |> Dux.compute()
+        Process.delete(:dux_compute_ref)
+
+        if converged?(labels, new_labels, vid, "community") do
+          {:halt, {new_labels, nil}}
+        else
+          {:cont, {new_labels, nil}}
+        end
+      end)
+
+    final
   end
 
   # ---------------------------------------------------------------------------

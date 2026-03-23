@@ -421,6 +421,87 @@ defmodule Dux.GraphImprovementsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Community detection (label propagation)
+  # ---------------------------------------------------------------------------
+
+  describe "community detection" do
+    test "two distinct communities" do
+      vertices = Dux.from_list(Enum.map(1..6, &%{id: &1}))
+
+      # Two cliques: {1,2,3} and {4,5,6} connected by one bridge 3→4
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 2, dst: 3},
+          %{src: 3, dst: 2},
+          %{src: 1, dst: 3},
+          %{src: 3, dst: 1},
+          %{src: 4, dst: 5},
+          %{src: 5, dst: 4},
+          %{src: 5, dst: 6},
+          %{src: 6, dst: 5},
+          %{src: 4, dst: 6},
+          %{src: 6, dst: 4},
+          %{src: 3, dst: 4},
+          %{src: 4, dst: 3}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+      result = graph |> Dux.Graph.communities() |> Dux.sort_by(:id) |> Dux.to_columns()
+
+      [c1, c2, c3, c4, c5, c6] = result["community"]
+      # Clique 1
+      assert c1 == c2 and c2 == c3
+      # Clique 2
+      assert c4 == c5 and c5 == c6
+      # Different communities
+      assert c1 != c4
+    end
+
+    test "disconnected components become separate communities" do
+      vertices = Dux.from_list(Enum.map(1..4, &%{id: &1}))
+
+      edges =
+        Dux.from_list([
+          %{src: 1, dst: 2},
+          %{src: 2, dst: 1},
+          %{src: 3, dst: 4},
+          %{src: 4, dst: 3}
+        ])
+
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+      result = graph |> Dux.Graph.communities() |> Dux.sort_by(:id) |> Dux.to_columns()
+
+      [c1, c2, c3, c4] = result["community"]
+      assert c1 == c2
+      assert c3 == c4
+      assert c1 != c3
+    end
+
+    test "karate club converges without error" do
+      graph = Datasets.karate_club()
+      result = graph |> Dux.Graph.communities(max_iterations: 30) |> Dux.to_columns()
+
+      # All 34 vertices should have a community label
+      assert length(result["community"]) == 34
+      # At least 1 community (standard label propagation on dense graphs
+      # may converge to 1 community — this tests correctness, not quality)
+      assert Enum.uniq(result["community"]) != []
+    end
+
+    test "single vertex is its own community" do
+      vertices = Dux.from_list([%{id: 1}])
+      edges = Dux.from_query("SELECT 1 AS src, 2 AS dst WHERE false")
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+
+      result = graph |> Dux.Graph.communities() |> Dux.to_rows()
+      assert length(result) == 1
+      assert hd(result)["community"] == 1
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Adversarial graph tests
   # ---------------------------------------------------------------------------
 
