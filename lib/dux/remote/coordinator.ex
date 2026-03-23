@@ -320,7 +320,9 @@ defmodule Dux.Remote.Coordinator do
 
     route_non_safe_join(%{
       right_ipc: right_ipc,
+      right_ref: ctx.right_ref,
       right_computed: ctx.right_computed,
+      conn: ctx.conn,
       how: ctx.how,
       on_cols: ctx.on_cols,
       suffix: ctx.suffix,
@@ -337,13 +339,31 @@ defmodule Dux.Remote.Coordinator do
     if byte_size(right_ipc) <= threshold do
       broadcast_name = "__bcast_#{:erlang.unique_integer([:positive])}"
       do_broadcast(ctx.workers, broadcast_name, right_ipc, ctx.timeout)
+
+      # Bloom filter pre-filtering: broadcast distinct join keys so workers
+      # can pre-filter their left partition before the join.
+      # Only for inner/left joins — anti/semi joins need the unfiltered left.
+      {filter_op, extra_tables} =
+        if ctx.how in [:inner, :left] do
+          maybe_broadcast_keys(ctx, broadcast_name)
+        else
+          {nil, []}
+        end
+
       broadcast_right = Dux.from_query("SELECT * FROM #{qi(broadcast_name)}")
       new_op = {:join, broadcast_right, ctx.how, ctx.on_cols, ctx.suffix}
 
+      # Insert filter before join if applicable
+      new_processed =
+        case filter_op do
+          nil -> [new_op | ctx.processed]
+          op -> [new_op, op | ctx.processed]
+        end
+
       do_preprocess(
         ctx.rest,
-        [new_op | ctx.processed],
-        [broadcast_name | ctx.broadcast_names],
+        new_processed,
+        extra_tables ++ [broadcast_name | ctx.broadcast_names],
         ctx.workers,
         ctx.timeout,
         threshold
@@ -351,6 +371,50 @@ defmodule Dux.Remote.Coordinator do
     else
       {:shuffle, Enum.reverse(ctx.processed),
        {ctx.right_computed, ctx.how, ctx.on_cols, ctx.suffix}, ctx.rest, ctx.broadcast_names}
+    end
+  end
+
+  # Broadcast distinct join keys from the right side so workers can pre-filter.
+  # DuckDB optimizes `IN (SELECT ...)` as a semi-join internally.
+  # Skip if the right side has too many distinct keys (>10K — filter wouldn't help).
+  defp maybe_broadcast_keys(ctx, broadcast_name) do
+    conn = ctx.conn
+
+    # Extract distinct join keys from right side
+    right_key_cols =
+      Enum.map_join(ctx.on_cols, ", ", fn {_l, r} -> qi(r) end)
+
+    n_keys =
+      Dux.Backend.query(
+        conn,
+        "SELECT COUNT(*) AS n FROM (SELECT DISTINCT #{right_key_cols} FROM #{qi(ctx.right_ref.name)}) __dk"
+      )
+      |> then(&Dux.Backend.table_to_rows(conn, &1))
+      |> hd()
+      |> Map.get("n")
+
+    if n_keys <= 10_000 do
+      keys_name = "#{broadcast_name}_keys"
+
+      keys_ref =
+        Dux.Backend.query(
+          conn,
+          "SELECT DISTINCT #{right_key_cols} FROM #{qi(ctx.right_ref.name)}"
+        )
+
+      keys_ipc = Dux.Backend.table_to_ipc(conn, keys_ref)
+      do_broadcast(ctx.workers, keys_name, keys_ipc, ctx.timeout)
+
+      # Build a filter expression: left_key IN (SELECT right_key FROM keys_table)
+      filter_conditions =
+        Enum.map_join(ctx.on_cols, " AND ", fn {l, r} ->
+          "#{qi(l)} IN (SELECT #{qi(r)} FROM #{qi(keys_name)})"
+        end)
+
+      filter_op = {:filter, filter_conditions}
+      {filter_op, [keys_name]}
+    else
+      {nil, []}
     end
   end
 
