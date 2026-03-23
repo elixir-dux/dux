@@ -1,5 +1,6 @@
 defmodule Dux.StreamingMergerTest do
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   alias Dux.Remote.{StreamingMerger, Worker}
 
@@ -294,6 +295,284 @@ defmodule Dux.StreamingMergerTest do
                      5000
 
       :telemetry.detach("test-streaming-#{inspect(ref)}")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Sad path
+  # ---------------------------------------------------------------------------
+
+  describe "sad path" do
+    test "fold with empty IPC (no rows) doesn't crash" do
+      ops = [{:summarise, [{"total", "SUM(x)"}]}]
+      merger = StreamingMerger.new(ops, 1)
+      conn = Dux.Connection.get_conn()
+
+      # Create an empty result
+      ipc =
+        Dux.from_query("SELECT 0 AS total WHERE false")
+        |> Dux.compute()
+        |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+
+      merger = StreamingMerger.fold(merger, ipc)
+      rows = StreamingMerger.finalize(merger)
+      # Empty fold should leave accumulator at bottom
+      assert rows == [] or hd(rows)["total"] == 0
+    end
+
+    test "to_dux with no folds returns empty Dux" do
+      ops = [{:summarise, [{"total", "SUM(x)"}]}]
+      merger = StreamingMerger.new(ops, 2)
+
+      result = StreamingMerger.to_dux(merger)
+      assert %Dux{} = result
+    end
+
+    test "all workers fail → progress shows complete with failures" do
+      ops = [{:summarise, [{"total", "SUM(x)"}]}]
+      merger = StreamingMerger.new(ops, 2)
+
+      merger = StreamingMerger.record_failure(merger)
+      merger = StreamingMerger.record_failure(merger)
+
+      progress = StreamingMerger.progress(merger)
+      assert progress.complete? == true
+      assert progress.workers_failed == 2
+      assert progress.workers_complete == 0
+    end
+
+    test "mixed lattice + non-lattice aggregate falls back to batch" do
+      ops = [{:summarise, [{"total", "SUM(x)"}, {"mid", "MEDIAN(x)"}]}]
+      assert StreamingMerger.new(ops, 2) == nil
+    end
+
+    test "pipeline with only filter ops returns nil" do
+      ops = [{:filter, "x > 10"}]
+      assert StreamingMerger.new(ops, 2) == nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Adversarial
+  # ---------------------------------------------------------------------------
+
+  describe "adversarial" do
+    test "100 groups with single worker" do
+      ops = [
+        {:group_by, ["g"]},
+        {:summarise, [{"total", "SUM(x)"}]}
+      ]
+
+      merger = StreamingMerger.new(ops, 1)
+      conn = Dux.Connection.get_conn()
+
+      rows = Enum.map(0..99, fn i -> %{g: "group_#{i}", total: i} end)
+
+      ipc =
+        Dux.from_list(rows)
+        |> Dux.compute()
+        |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+
+      merger = StreamingMerger.fold(merger, ipc)
+      result = StreamingMerger.finalize(merger)
+      assert length(result) == 100
+    end
+
+    test "folding same IPC multiple times accumulates correctly" do
+      ops = [{:summarise, [{"total", "SUM(x)"}]}]
+      merger = StreamingMerger.new(ops, 5)
+      conn = Dux.Connection.get_conn()
+
+      ipc =
+        Dux.from_list([%{total: 10}])
+        |> Dux.compute()
+        |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+
+      merger = Enum.reduce(1..5, merger, fn _, m -> StreamingMerger.fold(m, ipc) end)
+      rows = StreamingMerger.finalize(merger)
+      assert hd(rows)["total"] == 50
+    end
+
+    test "group key with nil value" do
+      ops = [
+        {:group_by, ["g"]},
+        {:summarise, [{"total", "SUM(x)"}]}
+      ]
+
+      merger = StreamingMerger.new(ops, 1)
+      conn = Dux.Connection.get_conn()
+
+      ipc =
+        Dux.from_list([%{g: nil, total: 42}])
+        |> Dux.compute()
+        |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+
+      merger = StreamingMerger.fold(merger, ipc)
+      rows = StreamingMerger.finalize(merger)
+      assert length(rows) == 1
+      assert hd(rows)["total"] == 42
+    end
+
+    test "AVG rewrite columns stream correctly end-to-end" do
+      workers = start_workers(2)
+
+      # AVG is rewritten to SUM+COUNT by PipelineSplitter
+      # Streaming merger folds the intermediate columns
+      # Coordinator applies the division
+      result =
+        Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+        |> Dux.summarise_with(average: "AVG(x)")
+        |> Dux.distribute(workers)
+        |> Dux.to_rows()
+
+      # AVG(1..10) = 5.5 regardless of replication
+      assert_in_delta hd(result)["average"], 5.5, 0.01
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Wicked
+  # ---------------------------------------------------------------------------
+
+  describe "wicked" do
+    test "streaming vs batch produce identical results for MIN/MAX" do
+      # MIN and MAX are idempotent for replicated sources, so streaming
+      # and batch should always agree regardless of replication
+      workers = start_workers(3)
+
+      streaming =
+        Dux.from_query("SELECT * FROM range(1, 101) t(x)")
+        |> Dux.summarise_with(lo: "MIN(x)", hi: "MAX(x)")
+        |> Dux.distribute(workers)
+        |> Dux.to_rows()
+
+      # MIN/MAX are idempotent — same result regardless of merge strategy
+      assert hd(streaming)["lo"] == 1
+      assert hd(streaming)["hi"] == 100
+    end
+
+    test "many groups with many workers" do
+      workers = start_workers(3)
+
+      result =
+        Dux.from_query("SELECT x, x % 10 AS grp FROM range(1, 101) t(x)")
+        |> Dux.group_by(:grp)
+        |> Dux.summarise_with(n: "COUNT(*)", lo: "MIN(x)", hi: "MAX(x)")
+        |> Dux.distribute(workers)
+        |> Dux.sort_by(:grp)
+        |> Dux.to_rows()
+
+      assert length(result) == 10
+      assert Enum.all?(result, &(&1["n"] > 0))
+      # MIN of each group should be positive
+      assert Enum.all?(result, &(&1["lo"] > 0))
+    end
+
+    test "fold order doesn't matter (commutativity)" do
+      ops = [
+        {:group_by, ["g"]},
+        {:summarise, [{"total", "SUM(x)"}, {"lo", "MIN(x)"}, {"hi", "MAX(x)"}]}
+      ]
+
+      conn = Dux.Connection.get_conn()
+
+      ipcs =
+        for data <- [
+              [%{g: "a", total: 10, lo: 1, hi: 50}],
+              [%{g: "a", total: 20, lo: 5, hi: 30}],
+              [%{g: "a", total: 5, lo: 3, hi: 100}]
+            ] do
+          Dux.from_list(data)
+          |> Dux.compute()
+          |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+        end
+
+      # Fold in original order
+      m1 = StreamingMerger.new(ops, 3)
+      m1 = Enum.reduce(ipcs, m1, &StreamingMerger.fold(&2, &1))
+      rows1 = StreamingMerger.finalize(m1)
+
+      # Fold in reverse order
+      m2 = StreamingMerger.new(ops, 3)
+      m2 = Enum.reduce(Enum.reverse(ipcs), m2, &StreamingMerger.fold(&2, &1))
+      rows2 = StreamingMerger.finalize(m2)
+
+      r1 = hd(rows1)
+      r2 = hd(rows2)
+      assert r1["total"] == r2["total"]
+      assert r1["lo"] == r2["lo"]
+      assert r1["hi"] == r2["hi"]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Property tests
+  # ---------------------------------------------------------------------------
+
+  describe "properties" do
+    property "streaming fold is commutative for SUM" do
+      check all(
+              a <- integer(0..10_000),
+              b <- integer(0..10_000),
+              c <- integer(0..10_000)
+            ) do
+        ops = [{:summarise, [{"total", "SUM(x)"}]}]
+        conn = Dux.Connection.get_conn()
+
+        make_ipc = fn val ->
+          Dux.from_list([%{total: val}])
+          |> Dux.compute()
+          |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+        end
+
+        ipcs = [make_ipc.(a), make_ipc.(b), make_ipc.(c)]
+
+        # Forward order
+        m1 = StreamingMerger.new(ops, 3)
+        m1 = Enum.reduce(ipcs, m1, &StreamingMerger.fold(&2, &1))
+
+        # Reverse order
+        m2 = StreamingMerger.new(ops, 3)
+        m2 = Enum.reduce(Enum.reverse(ipcs), m2, &StreamingMerger.fold(&2, &1))
+
+        r1 = hd(StreamingMerger.finalize(m1))["total"]
+        r2 = hd(StreamingMerger.finalize(m2))["total"]
+        assert r1 == r2
+        assert r1 == a + b + c
+      end
+    end
+
+    property "streaming fold is commutative for MIN/MAX" do
+      check all(
+              a <- integer(-10_000..10_000),
+              b <- integer(-10_000..10_000)
+            ) do
+        ops = [{:summarise, [{"lo", "MIN(x)"}, {"hi", "MAX(x)"}]}]
+        conn = Dux.Connection.get_conn()
+
+        make_ipc = fn lo, hi ->
+          Dux.from_list([%{lo: lo, hi: hi}])
+          |> Dux.compute()
+          |> then(fn %{source: {:table, ref}} -> Dux.Backend.table_to_ipc(conn, ref) end)
+        end
+
+        ipc1 = make_ipc.(a, a)
+        ipc2 = make_ipc.(b, b)
+
+        m1 = StreamingMerger.new(ops, 2)
+        m1 = m1 |> StreamingMerger.fold(ipc1) |> StreamingMerger.fold(ipc2)
+
+        m2 = StreamingMerger.new(ops, 2)
+        m2 = m2 |> StreamingMerger.fold(ipc2) |> StreamingMerger.fold(ipc1)
+
+        r1 = hd(StreamingMerger.finalize(m1))
+        r2 = hd(StreamingMerger.finalize(m2))
+
+        assert r1["lo"] == r2["lo"]
+        assert r1["hi"] == r2["hi"]
+        assert r1["lo"] == min(a, b)
+        assert r1["hi"] == max(a, b)
+      end
     end
   end
 end

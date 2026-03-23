@@ -128,6 +128,33 @@ Benchee.run(
 )
 
 # ---------------------------------------------------------------------------
+# Streaming vs batch merge benchmark
+# ---------------------------------------------------------------------------
+
+IO.puts("\n--- Streaming vs batch merge ---\n")
+
+# SUM pipeline → streaming merge (lattice-compatible)
+# The distributed path now auto-selects streaming for SUM/COUNT/MIN/MAX
+Benchee.run(
+  %{
+    "streaming merge (SUM + COUNT, 2 workers)" => fn ->
+      Dux.from_query(medium_sql)
+      |> Dux.group_by(:grp)
+      |> Dux.summarise_with(total: "SUM(value)", n: "COUNT(*)")
+      |> Dux.Remote.Coordinator.execute(workers: [w1, w2])
+    end,
+    "streaming merge (MIN + MAX, 2 workers)" => fn ->
+      Dux.from_query(medium_sql)
+      |> Dux.summarise_with(lo: "MIN(value)", hi: "MAX(value)")
+      |> Dux.Remote.Coordinator.execute(workers: [w1, w2])
+    end
+  },
+  warmup: 1,
+  time: 5,
+  print: [configuration: false]
+)
+
+# ---------------------------------------------------------------------------
 # Shuffle join benchmark
 # ---------------------------------------------------------------------------
 

@@ -384,4 +384,148 @@ defmodule Dux.AdbcPeerTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # Streaming merger across peer nodes
+  # ---------------------------------------------------------------------------
+
+  describe "streaming merger across peer nodes" do
+    test "SUM + COUNT streams correctly across 2 peers" do
+      {peer1, node1} = start_peer(:stream_sum1)
+      {peer2, node2} = start_peer(:stream_sum2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        result =
+          Dux.from_query("SELECT * FROM range(1, 101) t(x)")
+          |> Dux.distribute([w1, w2])
+          |> Dux.summarise_with(total: "SUM(x)", n: "COUNT(*)")
+          |> Dux.to_rows()
+
+        # Replicated source: each worker sees all 100 rows
+        assert hd(result)["total"] > 0
+        assert hd(result)["n"] > 0
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+
+    test "MIN + MAX are idempotent across peers" do
+      {peer1, node1} = start_peer(:stream_minmax1)
+      {peer2, node2} = start_peer(:stream_minmax2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        result =
+          Dux.from_query("SELECT * FROM range(1, 101) t(x)")
+          |> Dux.distribute([w1, w2])
+          |> Dux.summarise_with(lo: "MIN(x)", hi: "MAX(x)")
+          |> Dux.to_rows()
+
+        # MIN/MAX are idempotent — correct regardless of replication
+        assert hd(result)["lo"] == 1
+        assert hd(result)["hi"] == 100
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+
+    test "grouped aggregation streams across peers" do
+      {peer1, node1} = start_peer(:stream_grp1)
+      {peer2, node2} = start_peer(:stream_grp2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        result =
+          Dux.from_list([
+            %{region: "US", amount: 100},
+            %{region: "EU", amount: 200},
+            %{region: "US", amount: 150}
+          ])
+          |> Dux.distribute([w1, w2])
+          |> Dux.group_by(:region)
+          |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
+          |> Dux.sort_by(:region)
+          |> Dux.to_rows()
+
+        assert length(result) == 2
+        regions = Enum.map(result, & &1["region"]) |> Enum.sort()
+        assert regions == ["EU", "US"]
+        assert Enum.all?(result, &(&1["total"] > 0))
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+
+    test "AVG rewrite streams correctly across 3 peers" do
+      {peer1, node1} = start_peer(:stream_avg1)
+      {peer2, node2} = start_peer(:stream_avg2)
+      {peer3, node3} = start_peer(:stream_avg3)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        {:ok, w3} = start_worker_on(node3)
+        Process.sleep(200)
+
+        result =
+          Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+          |> Dux.distribute([w1, w2, w3])
+          |> Dux.summarise_with(average: "AVG(x)")
+          |> Dux.to_rows()
+
+        # AVG(1..10) = 5.5 regardless of replication
+        assert_in_delta hd(result)["average"], 5.5, 0.01
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        :peer.stop(peer3)
+      end
+    end
+
+    test "penguins dataset: grouped streaming across peers" do
+      {peer1, node1} = start_peer(:stream_peng1)
+      {peer2, node2} = start_peer(:stream_peng2)
+
+      try do
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        result =
+          Datasets.penguins()
+          |> Dux.drop_nil([:body_mass_g])
+          |> Dux.distribute([w1, w2])
+          |> Dux.group_by(:species)
+          |> Dux.summarise_with(
+            n: "COUNT(*)",
+            min_mass: "MIN(body_mass_g)",
+            max_mass: "MAX(body_mass_g)"
+          )
+          |> Dux.sort_by(:species)
+          |> Dux.to_rows()
+
+        species = Enum.map(result, & &1["species"]) |> Enum.sort()
+        assert species == ["Adelie", "Chinstrap", "Gentoo"]
+        # MIN/MAX should be correct (idempotent)
+        assert Enum.all?(result, &(&1["min_mass"] > 0))
+        assert Enum.all?(result, &(&1["max_mass"] > &1["min_mass"]))
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+      end
+    end
+  end
 end
