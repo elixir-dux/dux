@@ -374,4 +374,62 @@ defmodule Dux.IOTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # insert_into
+  # ---------------------------------------------------------------------------
+
+  describe "insert_into" do
+    test "create: true creates a new table from pipeline" do
+      require Dux
+
+      Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}])
+      |> Dux.filter(x > 1)
+      |> Dux.insert_into("__dux_insert_test_create", create: true)
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_test_create ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result == %{"x" => [2, 3]}
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_test_create")
+    end
+
+    test "inserts into an existing table" do
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query!(conn, "CREATE TABLE __dux_insert_test_existing (x BIGINT)")
+      Adbc.Connection.query!(conn, "INSERT INTO __dux_insert_test_existing VALUES (0)")
+
+      Dux.from_list([%{"x" => 1}, %{"x" => 2}])
+      |> Dux.insert_into("__dux_insert_test_existing")
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_test_existing ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result == %{"x" => [0, 1, 2]}
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_test_existing")
+    end
+
+    test "insert_into with attached DuckDB database" do
+      path = tmp_path("insert_attached.duckdb")
+
+      try do
+        Dux.attach(:insert_test_db, path, type: :duckdb, read_only: false)
+
+        Dux.from_list([%{"a" => 10, "b" => "hello"}])
+        |> Dux.insert_into("insert_test_db.main.insert_target", create: true)
+
+        result = Dux.from_attached(:insert_test_db, "insert_target") |> Dux.to_rows()
+        assert result == [%{"a" => 10, "b" => "hello"}]
+      after
+        Dux.detach(:insert_test_db)
+        File.rm(path)
+      end
+    end
+  end
 end

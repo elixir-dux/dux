@@ -119,6 +119,12 @@ defmodule Dux.QueryBuilder do
     {"SELECT * FROM read_parquet([#{file_list}]#{options})", []}
   end
 
+  # DuckLake files — resolved by coordinator from DuckLake file manifest
+  defp source_to_sql({:ducklake_files, files}, _db) do
+    file_list = Enum.map_join(files, ", ", &"'#{escape_sql_string(&1)}'")
+    {"SELECT * FROM read_parquet([#{file_list}])", []}
+  end
+
   defp source_to_sql({:csv, path, opts}, _db) do
     escaped = escape_sql_string(path)
     options = csv_read_options(opts)

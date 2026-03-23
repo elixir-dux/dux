@@ -78,6 +78,63 @@ defmodule Dux.CoordinatorTest do
     end
   end
 
+  describe "Partitioner.assign/3 with ducklake_files" do
+    test "distributes DuckLake file list across workers as parquet sources" do
+      files = [
+        "s3://bucket/data/file1.parquet",
+        "s3://bucket/data/file2.parquet",
+        "s3://bucket/data/file3.parquet",
+        "s3://bucket/data/file4.parquet",
+        "s3://bucket/data/file5.parquet",
+        "s3://bucket/data/file6.parquet"
+      ]
+
+      pipeline = %Dux{
+        source: {:ducklake_files, files},
+        ops: [],
+        names: [],
+        dtypes: %{},
+        groups: []
+      }
+
+      workers = [:w1, :w2, :w3]
+      assignments = Partitioner.assign(pipeline, workers)
+
+      assert length(assignments) == 3
+
+      total_files =
+        Enum.flat_map(assignments, fn {_w, p} ->
+          case p.source do
+            {:parquet_list, f, _} -> f
+            {:parquet, f, _} -> [f]
+          end
+        end)
+
+      assert length(total_files) == 6
+      assert Enum.sort(total_files) == Enum.sort(files)
+    end
+
+    test "single DuckLake file goes to one worker as parquet source" do
+      files = ["s3://bucket/data/file1.parquet"]
+
+      pipeline = %Dux{
+        source: {:ducklake_files, files},
+        ops: [],
+        names: [],
+        dtypes: %{},
+        groups: []
+      }
+
+      workers = [:w1, :w2]
+      assignments = Partitioner.assign(pipeline, workers)
+
+      # Only 1 assignment — workers with no files are filtered out
+      assert length(assignments) == 1
+      [{_worker, assigned}] = assignments
+      assert assigned.source == {:parquet, "s3://bucket/data/file1.parquet", []}
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Merger unit tests
   # ---------------------------------------------------------------------------

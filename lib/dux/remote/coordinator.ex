@@ -49,6 +49,10 @@ defmodule Dux.Remote.Coordinator do
       raise ArgumentError, "no workers available for distributed execution"
     end
 
+    # Resolve sources that can be partitioned at the coordinator level.
+    # DuckLake attached sources → file manifest for direct parquet reads.
+    pipeline = resolve_ducklake_source(pipeline)
+
     # Split pipeline: worker ops push down, coordinator ops apply post-merge
     %{
       worker_ops: worker_ops,
@@ -545,10 +549,83 @@ defmodule Dux.Remote.Coordinator do
     end)
   end
 
+  # ---------------------------------------------------------------------------
+  # DuckLake source resolution
+  # ---------------------------------------------------------------------------
+
+  # Resolve a DuckLake attached source into a list of backing Parquet file paths.
+  # The coordinator queries the DuckLake catalog's file manifest and replaces
+  # the {:attached, ...} source with {:ducklake_files, paths} so workers can
+  # read the underlying Parquet files directly — no DuckLake extension needed.
+  defp resolve_ducklake_source(%Dux{source: {:attached, db_name, table_name}} = pipeline) do
+    try_resolve_ducklake(pipeline, db_name, table_name)
+  end
+
+  defp resolve_ducklake_source(%Dux{source: {:attached, db_name, table_name, _opts}} = pipeline) do
+    try_resolve_ducklake(pipeline, db_name, table_name)
+  end
+
+  defp resolve_ducklake_source(pipeline), do: pipeline
+
+  defp try_resolve_ducklake(pipeline, db_name, table_name) do
+    conn = Dux.Connection.get_conn()
+    db_str = to_string(db_name)
+
+    case attached_db_type(conn, db_str) do
+      "ducklake" -> resolve_ducklake_files(pipeline, conn, db_str, table_name)
+      _ -> pipeline
+    end
+  end
+
+  defp attached_db_type(conn, db_name) do
+    sql = "SELECT type FROM pragma_database_list() WHERE name = '#{db_name}'"
+
+    case Adbc.Connection.query(conn, sql) do
+      {:ok, result} -> extract_first_value(Adbc.Result.materialize(result))
+      {:error, _} -> nil
+    end
+  end
+
+  defp resolve_ducklake_files(pipeline, conn, catalog, table_name) do
+    case list_ducklake_files(conn, catalog, table_name) do
+      [] -> pipeline
+      files -> %{pipeline | source: {:ducklake_files, files}}
+    end
+  end
+
+  defp list_ducklake_files(conn, catalog, table_name) do
+    sql = "SELECT data_file FROM ducklake_list_files('#{catalog}', '#{table_name}')"
+
+    case Adbc.Connection.query(conn, sql) do
+      {:ok, result} -> extract_column(Adbc.Result.materialize(result), "data_file")
+      {:error, _} -> []
+    end
+  end
+
+  defp extract_first_value(%{data: [col | _]}) do
+    case Enum.to_list(col) do
+      [val | _] -> val
+      _ -> nil
+    end
+  end
+
+  defp extract_first_value(_), do: nil
+
+  defp extract_column(%{data: columns}, name) do
+    Enum.find_value(columns, [], fn col ->
+      if col.field.name == name, do: Enum.to_list(col)
+    end)
+  end
+
+  # ---------------------------------------------------------------------------
+
   # A source is worker-safe if every worker can independently resolve it.
   # File paths, SQL queries, and inline lists are worker-safe.
   # Table refs ({:table, ResourceArc}) are node-local — only the coordinator has them.
   defp worker_safe_source?({:parquet, _}), do: true
+  defp worker_safe_source?({:parquet, _, _}), do: true
+  defp worker_safe_source?({:parquet_list, _, _}), do: true
+  defp worker_safe_source?({:ducklake_files, _}), do: true
   defp worker_safe_source?({:csv, _, _}), do: true
   defp worker_safe_source?({:ndjson, _, _}), do: true
   defp worker_safe_source?({:sql, _}), do: true

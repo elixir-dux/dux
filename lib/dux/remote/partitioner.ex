@@ -28,6 +28,33 @@ defmodule Dux.Remote.Partitioner do
     end
   end
 
+  # DuckLake — resolve the file manifest and distribute as parquet reads.
+  # The coordinator resolves the DuckLake catalog into a {:ducklake_files, ...} source
+  # containing the list of backing Parquet paths. Workers read these directly.
+  defp assign_strategy(
+         %Dux{source: {:ducklake_files, files}} = pipeline,
+         workers,
+         :round_robin
+       ) do
+    partitions = chunk_round_robin(files, length(workers))
+
+    Enum.zip(workers, partitions)
+    |> Enum.map(fn {worker, file_group} ->
+      source =
+        case file_group do
+          [] -> {:parquet_list, [], []}
+          [single] -> {:parquet, single, []}
+          multiple -> {:parquet_list, multiple, []}
+        end
+
+      {worker, %{pipeline | source: source}}
+    end)
+    |> Enum.reject(fn
+      {_worker, %{source: {:parquet_list, [], _}}} -> true
+      _ -> false
+    end)
+  end
+
   # CSV with glob-like path — no splitting (CSV globs less common)
   defp assign_strategy(pipeline, workers, :round_robin) do
     replicate(pipeline, workers)
