@@ -1086,6 +1086,285 @@ defmodule Dux.Graph do
   end
 
   # ---------------------------------------------------------------------------
+  # Betweenness centrality
+  # ---------------------------------------------------------------------------
+
+  @doc """
+  Compute approximate betweenness centrality via Brandes' algorithm.
+
+  Betweenness centrality measures how often a vertex lies on shortest paths
+  between other vertices. High-BC vertices are "bridges" in the network.
+
+  Uses a sample of source vertices for efficiency. The result is normalized
+  by `2 / ((n-1)(n-2))` for undirected graphs so values fall in [0, 1].
+
+  Returns a `%Dux{}` with columns `[vertex_id, bc]`.
+
+  ## Options
+
+    * `:sample` — number of source vertices to sample (default: `min(n, 100)`)
+    * `:seed` — random seed for reproducible sampling (default: random)
+    * `:normalize` — whether to normalize scores (default: `true`)
+
+  ## Examples
+
+      vertices = Dux.from_list([%{"id" => 1}, %{"id" => 2}, %{"id" => 3}])
+      edges = Dux.from_list([
+        %{"src" => 1, "dst" => 2}, %{"src" => 2, "dst" => 1},
+        %{"src" => 2, "dst" => 3}, %{"src" => 3, "dst" => 2}
+      ])
+      graph = Dux.Graph.new(vertices: vertices, edges: edges)
+      Dux.Graph.betweenness_centrality(graph) |> Dux.sort_by(desc: :bc) |> Dux.to_rows()
+  """
+  def betweenness_centrality(%__MODULE__{} = graph, opts \\ []) do
+    workers = graph.workers
+
+    meta = %{
+      algorithm: :betweenness_centrality,
+      n_vertices: vertex_count(graph),
+      n_edges: edge_count(graph),
+      distributed: workers != nil
+    }
+
+    :telemetry.span([:dux, :graph, :algorithm], meta, fn ->
+      result =
+        if workers do
+          bc_distributed(graph, opts, workers)
+        else
+          bc_local(graph, opts)
+        end
+
+      {result, meta}
+    end)
+  end
+
+  defp bc_local(graph, opts) do
+    conn = Dux.Connection.get_conn()
+    vid = graph.vertex_id
+    src = graph.edge_src
+    dst = graph.edge_dst
+    normalize = Keyword.get(opts, :normalize, true)
+
+    # Get all vertex IDs
+    vertex_ids = get_vertex_ids(graph, conn, vid)
+    n = length(vertex_ids)
+
+    # Sample source vertices
+    sample_size = Keyword.get(opts, :sample, min(n, 100))
+    seed = Keyword.get(opts, :seed)
+
+    sources =
+      if seed do
+        :rand.seed(:exsss, {seed, seed, seed})
+        Enum.take_random(vertex_ids, sample_size)
+      else
+        Enum.take_random(vertex_ids, sample_size)
+      end
+
+    # Build bidirectional adjacency list once
+    adj = build_adjacency(graph, conn, src, dst)
+
+    # Run Brandes from each source, accumulate BC scores
+    bc_scores =
+      Enum.reduce(sources, %{}, fn source, acc ->
+        brandes_from_source(conn, source, adj, acc)
+      end)
+
+    # Normalize: BC(v) = bc_scores(v) * (n / sample_size) * normalization_factor
+    # For undirected: normalize by 2/((n-1)(n-2))
+    scale = n / max(sample_size, 1)
+
+    norm_factor =
+      if normalize and n > 2 do
+        scale * 2.0 / ((n - 1) * (n - 2))
+      else
+        scale
+      end
+
+    rows =
+      Enum.map(vertex_ids, fn v ->
+        %{String.to_atom(vid) => v, bc: Map.get(bc_scores, v, 0.0) * norm_factor}
+      end)
+
+    Dux.from_list(rows)
+  end
+
+  defp get_vertex_ids(graph, conn, vid) do
+    {v_sql, _} = Dux.QueryBuilder.build(graph.vertices, conn)
+    ref = Dux.Backend.query(conn, "SELECT #{qi(vid)} FROM (#{v_sql}) __v ORDER BY #{qi(vid)}")
+    cols = Dux.Backend.table_to_columns(conn, ref)
+    cols[vid] || []
+  end
+
+  defp build_adjacency(graph, conn, src_col, dst_col) do
+    {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
+    edges_ref = Dux.Backend.query(conn, edges_sql)
+    edge_cols = Dux.Backend.table_to_columns(conn, edges_ref)
+    srcs = edge_cols[src_col] || []
+    dsts = edge_cols[dst_col] || []
+
+    (Enum.zip(srcs, dsts) ++ Enum.zip(dsts, srcs))
+    |> Enum.reduce(%{}, fn {s, d}, a ->
+      Map.update(a, s, MapSet.new([d]), &MapSet.put(&1, d))
+    end)
+    |> Map.new(fn {k, v} -> {k, MapSet.to_list(v)} end)
+  end
+
+  # Brandes' algorithm from a single source vertex, entirely in Elixir.
+  # Phase 1: BFS level-by-level to get (node, dist, sigma).
+  # Phase 2: Back-propagation to accumulate dependency scores.
+  #
+  # We avoid recursive CTEs here because UNION ALL BFS explodes
+  # exponentially, and USING KEY doesn't accumulate sigma.
+  # Instead we load the adjacency list once and do BFS in Elixir.
+  defp brandes_from_source(_conn, source, adj, acc) do
+    initial = %{source => {0, 1}}
+    {node_data, max_dist} = bfs_levels(adj, [source], initial, 0)
+
+    if max_dist == 0, do: acc, else: accumulate_bc(source, node_data, adj, max_dist, acc)
+  end
+
+  defp accumulate_bc(source, node_data, adj, max_dist, acc) do
+    delta = bc_backpropagate(node_data, adj, max_dist)
+
+    Enum.reduce(delta, acc, fn {v, d}, a ->
+      if v == source, do: a, else: Map.update(a, v, d, &(&1 + d))
+    end)
+  end
+
+  # Back-propagation phase of Brandes: process levels in reverse order.
+  defp bc_backpropagate(node_data, adj, max_dist) do
+    Enum.reduce(max_dist..1//-1, %{}, fn d, delta ->
+      nodes_at_d = for {n, {dd, _}} <- node_data, dd == d, do: n
+
+      Enum.reduce(nodes_at_d, delta, fn w, delta ->
+        bc_propagate_from(w, d, node_data, adj, delta)
+      end)
+    end)
+  end
+
+  defp bc_propagate_from(w, d, node_data, adj, delta) do
+    {_dw, sigma_w} = Map.fetch!(node_data, w)
+    delta_w = Map.get(delta, w, 0.0)
+
+    predecessors =
+      Map.get(adj, w, [])
+      |> Enum.filter(&(elem(Map.get(node_data, &1, {nil, nil}), 0) == d - 1))
+
+    Enum.reduce(predecessors, delta, fn v, delta ->
+      {_dv, sigma_v} = Map.fetch!(node_data, v)
+      contribution = sigma_v / sigma_w * (1 + delta_w)
+      Map.update(delta, v, contribution, &(&1 + contribution))
+    end)
+  end
+
+  # BFS level-by-level. Returns {node_data, max_dist} where
+  # node_data is %{node => {dist, sigma}}.
+  defp bfs_levels(_adj, [], visited, dist), do: {visited, dist}
+
+  defp bfs_levels(adj, frontier, visited, dist) do
+    next_dist = dist + 1
+
+    {next_frontier_map, visited} =
+      Enum.reduce(frontier, {%{}, visited}, fn node, {nf, vis} ->
+        {_d, sigma} = Map.fetch!(vis, node)
+        expand_neighbors(Map.get(adj, node, []), sigma, next_dist, nf, vis)
+      end)
+
+    # Commit frontier to visited
+    visited =
+      Enum.reduce(next_frontier_map, visited, fn {node, sigma}, vis ->
+        case Map.get(vis, node) do
+          {^next_dist, existing} -> Map.put(vis, node, {next_dist, existing + sigma})
+          nil -> Map.put(vis, node, {next_dist, sigma})
+          _ -> vis
+        end
+      end)
+
+    next_frontier = Map.keys(next_frontier_map)
+
+    if next_frontier == [] do
+      {visited, dist}
+    else
+      bfs_levels(adj, next_frontier, visited, next_dist)
+    end
+  end
+
+  defp expand_neighbors(neighbors, sigma, next_dist, nf, vis) do
+    Enum.reduce(neighbors, {nf, vis}, fn neighbor, {nf, vis} ->
+      case Map.get(vis, neighbor) do
+        nil ->
+          {Map.update(nf, neighbor, sigma, &(&1 + sigma)), vis}
+
+        {^next_dist, _} ->
+          {Map.update(nf, neighbor, sigma, &(&1 + sigma)), vis}
+
+        {existing_dist, _} when existing_dist < next_dist ->
+          {nf, vis}
+
+        _ ->
+          {nf, vis}
+      end
+    end)
+  end
+
+  # Distributed: partition source vertices across workers.
+  # BFS + back-propagation is pure Elixir, so we build adjacency once
+  # on the coordinator and partition the source vertices across tasks.
+  # The adjacency is shared (read-only) — no need to send to workers.
+  defp bc_distributed(graph, opts, _workers) do
+    conn = Dux.Connection.get_conn()
+    vid = graph.vertex_id
+    src = graph.edge_src
+    dst = graph.edge_dst
+    normalize = Keyword.get(opts, :normalize, true)
+
+    vertex_ids = get_vertex_ids(graph, conn, vid)
+    n = length(vertex_ids)
+
+    sample_size = Keyword.get(opts, :sample, min(n, 100))
+    seed = Keyword.get(opts, :seed)
+
+    sources =
+      if seed do
+        :rand.seed(:exsss, {seed, seed, seed})
+        Enum.take_random(vertex_ids, sample_size)
+      else
+        Enum.take_random(vertex_ids, sample_size)
+      end
+
+    adj = build_adjacency(graph, conn, src, dst)
+
+    # Parallel Brandes across source vertices using Task.async_stream
+    bc_scores =
+      sources
+      |> Task.async_stream(
+        fn source -> brandes_from_source(conn, source, adj, %{}) end,
+        max_concurrency: System.schedulers_online(),
+        timeout: 60_000
+      )
+      |> Enum.reduce(%{}, fn {:ok, partial}, acc ->
+        Map.merge(acc, partial, fn _k, v1, v2 -> v1 + v2 end)
+      end)
+
+    scale = n / max(sample_size, 1)
+
+    norm_factor =
+      if normalize and n > 2 do
+        scale * 2.0 / ((n - 1) * (n - 2))
+      else
+        scale
+      end
+
+    rows =
+      Enum.map(vertex_ids, fn v ->
+        %{String.to_atom(vid) => v, bc: Map.get(bc_scores, v, 0.0) * norm_factor}
+      end)
+
+    Dux.from_list(rows)
+  end
+
+  # ---------------------------------------------------------------------------
   # Counts
   # ---------------------------------------------------------------------------
 
