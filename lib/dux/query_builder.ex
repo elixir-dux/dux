@@ -259,6 +259,20 @@ defmodule Dux.QueryBuilder do
     {"SELECT * FROM #{left_ref} #{join_clause}", groups}
   end
 
+  defp op_to_sql({:json_unnest, column, path, as_col}, prev, groups) do
+    json_expr =
+      if path do
+        "json_extract(#{quote_ident(column)}, '#{String.replace(path, "'", "''")}')"
+      else
+        quote_ident(column)
+      end
+
+    sql =
+      "SELECT __src.*, je.value AS #{quote_ident(as_col)} FROM (SELECT * FROM #{prev}) __src, json_each(#{json_expr}) AS je"
+
+    {sql, groups}
+  end
+
   defp op_to_sql({:asof_join, right, how, on_cols, {by_col, by_op}, _suffix}, prev, groups) do
     right_db = Dux.Connection.get_conn()
     {right_sql, _setup} = source_to_sql(right.source, right_db)
