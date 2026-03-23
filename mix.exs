@@ -53,6 +53,7 @@ defmodule Dux.MixProject do
     [
       files: [
         "lib",
+        "priv/datasets",
         "mix.exs",
         "README.md",
         "CHANGELOG.md",

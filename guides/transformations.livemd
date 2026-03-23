@@ -9,12 +9,7 @@ Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```elixir
 require Dux
 
-data_dir =
-  [:code.priv_dir(:dux), "..", "test", "data"]
-  |> Path.join()
-  |> Path.expand()
-
-penguins = Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+penguins = Dux.Datasets.penguins()
 ```
 
 ## Filter: Selecting Rows

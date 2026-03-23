@@ -11,13 +11,7 @@ Dux is a DuckDB-native dataframe library for Elixir. Let's explore it with a rea
 ```elixir
 require Dux
 
-# The penguins dataset ships with Dux's test data
-penguins_path =
-  [:code.priv_dir(:dux), "..", "test", "data", "penguins.csv"]
-  |> Path.join()
-  |> Path.expand()
-
-penguins = Dux.from_csv(penguins_path, nullstr: "NA")
+penguins = Dux.Datasets.penguins()
 ```
 
 > #### Lazy by default {: .info}

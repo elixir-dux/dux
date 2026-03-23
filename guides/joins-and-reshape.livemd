@@ -12,15 +12,10 @@ to dimension tables (`airlines`, `airports`, `planes`). It ships with Dux's test
 ```elixir
 require Dux
 
-data_dir =
-  [:code.priv_dir(:dux), "..", "test", "data"]
-  |> Path.join()
-  |> Path.expand()
-
-flights = Dux.from_csv(Path.join(data_dir, "flights.csv"), nullstr: "NA")
-airlines = Dux.from_csv(Path.join(data_dir, "airlines.csv"))
-airports = Dux.from_csv(Path.join(data_dir, "airports.csv"))
-planes = Dux.from_csv(Path.join(data_dir, "planes.csv"), nullstr: "NA")
+flights = Dux.Datasets.flights()
+airlines = Dux.Datasets.airlines()
+airports = Dux.Datasets.airports()
+planes = Dux.Datasets.planes()
 ```
 
 ```elixir

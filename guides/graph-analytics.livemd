@@ -13,17 +13,14 @@ Let's explore with Zachary's Karate Club — a famous social network dataset fro
 ```elixir
 require Dux
 
-data_dir =
-  [:code.priv_dir(:dux), "..", "test", "data"]
-  |> Path.join()
-  |> Path.expand()
+datasets_dir = Application.app_dir(:dux, "priv/datasets")
 
 # Load edges (undirected — we need both directions)
 edges =
   Dux.from_query("""
-    SELECT src, dst FROM read_csv('#{data_dir}/karate_club.csv')
+    SELECT src, dst FROM read_csv('#{datasets_dir}/karate_club.csv')
     UNION ALL
-    SELECT dst AS src, src AS dst FROM read_csv('#{data_dir}/karate_club.csv')
+    SELECT dst AS src, src AS dst FROM read_csv('#{datasets_dir}/karate_club.csv')
   """)
 
 vertices = Dux.from_list(Enum.map(1..34, &%{id: &1}))

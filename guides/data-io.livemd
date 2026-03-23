@@ -9,18 +9,13 @@ Mix.install([{:dux, github: "elixir-dux/dux"}])
 ```elixir
 require Dux
 
-data_dir =
-  [:code.priv_dir(:dux), "..", "test", "data"]
-  |> Path.join()
-  |> Path.expand()
-
 tmp_dir = System.tmp_dir!()
 ```
 
 ## Reading CSV
 
 ```elixir
-penguins = Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+penguins = Dux.Datasets.penguins()
 penguins |> Dux.head(3) |> Dux.to_rows()
 ```
 
@@ -83,7 +78,7 @@ Dux.from_ndjson(ndjson_path) |> Dux.to_rows()
 ```elixir
 csv_path = Path.join(tmp_dir, "output.csv")
 
-Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+Dux.Datasets.penguins()
 |> Dux.filter_with("species = 'Gentoo'")
 |> Dux.select([:species, :island, :body_mass_g])
 |> Dux.to_csv(csv_path)
@@ -96,7 +91,7 @@ File.read!(csv_path) |> String.split("\n") |> Enum.take(3)
 ```elixir
 parquet_path = Path.join(tmp_dir, "compressed.parquet")
 
-Dux.from_csv(Path.join(data_dir, "penguins.csv"), nullstr: "NA")
+Dux.Datasets.penguins()
 |> Dux.to_parquet(parquet_path, compression: :zstd)
 
 "#{div(File.stat!(parquet_path).size, 1024)} KB"
