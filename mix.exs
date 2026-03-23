@@ -85,13 +85,14 @@ defmodule Dux.MixProject do
         "CHANGELOG.md"
       ],
       groups_for_modules: [
-        "Core API": [Dux, Dux.Query],
+        "Core API": [Dux, Dux.Query, Dux.Datasets],
         Graph: [Dux.Graph],
         Distribution: [
           Dux.Remote,
           Dux.Remote.Coordinator,
           Dux.Remote.Worker,
-          Dux.Remote.Broadcast
+          Dux.Remote.Broadcast,
+          Dux.Remote.Shuffle
         ],
         Integrations: [Dux.Telemetry, Dux.Flame]
       ],

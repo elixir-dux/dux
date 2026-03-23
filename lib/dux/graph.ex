@@ -63,8 +63,23 @@ defmodule Dux.Graph do
   end
 
   @doc """
-  Create a graph from an edge list. Vertices are inferred from unique
-  source and destination nodes.
+  Create a graph from an edge list, inferring vertices from unique source and destination nodes.
+
+  This is a convenience constructor when you only have edges. Vertices are
+  derived by taking the union of all distinct `src` and `dst` values.
+
+  ## Options
+
+    * `:edge_src` - column name for edge source (default: `:src`)
+    * `:edge_dst` - column name for edge destination (default: `:dst`)
+    * `:vertex_id` - column name for the inferred vertex ID (default: `:id`)
+
+  ## Examples
+
+      iex> edges = Dux.from_list([%{"src" => 1, "dst" => 2}, %{"src" => 2, "dst" => 3}])
+      iex> graph = Dux.Graph.from_edgelist(edges)
+      iex> Dux.Graph.vertex_count(graph)
+      3
   """
   def from_edgelist(%Dux{} = edges, opts \\ []) do
     src_col = to_string(Keyword.get(opts, :edge_src, :src))
@@ -148,9 +163,17 @@ defmodule Dux.Graph do
   end
 
   @doc """
-  Compute the total degree (in + out) of each vertex.
+  Compute the total degree (in-degree + out-degree) of each vertex.
 
-  Returns a `%Dux{}` with columns `[vertex_id, degree]`.
+  Returns a `%Dux{}` with columns `[vertex_id, degree]`. Each edge contributes
+  1 to both the source vertex's degree and the destination vertex's degree.
+
+  ## Examples
+
+      iex> edges = Dux.from_list([%{"src" => 1, "dst" => 2}, %{"src" => 2, "dst" => 3}])
+      iex> graph = Dux.Graph.new(vertices: Dux.from_list([%{"id" => 1}, %{"id" => 2}, %{"id" => 3}]), edges: edges)
+      iex> Dux.Graph.degree(graph) |> Dux.sort_by(:id) |> Dux.to_columns()
+      %{"degree" => [1, 2, 1], "id" => [1, 2, 3]}
   """
   def degree(%__MODULE__{} = graph) do
     vid = graph.vertex_id
@@ -767,13 +790,13 @@ defmodule Dux.Graph do
   Count the number of triangles in the graph.
 
   A triangle is a set of three vertices where each pair is connected by an edge.
-  Edges must be bidirectional for triangle detection.
+  Edges must be bidirectional for triangle detection (i.e., if vertex A connects
+  to B, there must also be an edge from B to A).
   Returns an integer count.
 
-  ## Options
-
-    * `:workers` - list of worker PIDs for distributed execution (default: `nil` for local).
-      When provided, broadcasts edges to a worker and runs the triple self-join there.
+  When the graph has workers set via `distribute/2`, the computation runs on a
+  remote worker node. The full edge set is broadcast to one worker and the
+  triple self-join executes there, keeping the coordinator free.
 
   ## Examples
 
@@ -889,14 +912,26 @@ defmodule Dux.Graph do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Return the number of vertices.
+  Return the number of vertices in the graph. Triggers computation.
+
+  ## Examples
+
+      iex> graph = Dux.Graph.new(vertices: Dux.from_list([%{"id" => 1}, %{"id" => 2}]), edges: Dux.from_list([%{"src" => 1, "dst" => 2}]))
+      iex> Dux.Graph.vertex_count(graph)
+      2
   """
   def vertex_count(%__MODULE__{} = graph) do
     Dux.n_rows(graph.vertices)
   end
 
   @doc """
-  Return the number of edges.
+  Return the number of edges in the graph. Triggers computation.
+
+  ## Examples
+
+      iex> graph = Dux.Graph.new(vertices: Dux.from_list([%{"id" => 1}, %{"id" => 2}]), edges: Dux.from_list([%{"src" => 1, "dst" => 2}]))
+      iex> Dux.Graph.edge_count(graph)
+      1
   """
   def edge_count(%__MODULE__{} = graph) do
     Dux.n_rows(graph.edges)

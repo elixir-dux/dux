@@ -7,9 +7,9 @@ defmodule Dux do
   DuckDB handles all the heavy lifting: columnar execution, parallel scans,
   predicate pushdown, and vectorized aggregation.
 
-  This module is the entire public API. Every operation is a verb on a `%Dux{}`
-  struct. Verbs compose via pipes and nothing hits DuckDB until you ask for
-  results.
+  This module contains the core dataframe verbs. For graph analytics, see
+  `Dux.Graph`. For distributed execution, see `Dux.Remote`. For embedded
+  datasets, see `Dux.Datasets`.
 
   ## Quick start
 
@@ -165,7 +165,18 @@ defmodule Dux do
 
   @doc group: :distribution
   @doc """
-  Return to local execution (remove distributed workers).
+  Return to local execution, removing any distributed workers from the pipeline.
+
+  This is the inverse of `distribute/2`. After calling `local/1`, all subsequent
+  operations execute on the local node's DuckDB instance.
+
+  ## Examples
+
+      iex> df = Dux.from_list([%{x: 1}]) |> Dux.distribute([:fake])
+      iex> df.workers
+      [:fake]
+      iex> Dux.local(df).workers
+      nil
   """
   def local(%Dux{} = dux) do
     %{dux | workers: nil}
@@ -177,7 +188,7 @@ defmodule Dux do
 
   @doc group: :constructors
   @doc """
-  Read a CSV file.
+  Read a CSV file into a lazy Dux pipeline.
 
   All options are passed through to DuckDB's `read_csv()`.
 
@@ -193,7 +204,10 @@ defmodule Dux do
 
   ## Examples
 
-      df = Dux.from_csv("data/sales.csv")
+      iex> path = Path.join(Application.app_dir(:dux, "priv/datasets"), "airlines.csv")
+      iex> Dux.from_csv(path) |> Dux.to_rows() |> length()
+      16
+
       df = Dux.from_csv("data/sales.csv", delimiter: "\\t", skip: 1)
   """
   def from_csv(path, opts \\ []) when is_binary(path) do
@@ -202,7 +216,7 @@ defmodule Dux do
 
   @doc group: :constructors
   @doc """
-  Read a Parquet file or glob pattern.
+  Read a Parquet file or glob pattern into a lazy Dux pipeline.
 
   Supports local files, globs, and remote URLs (S3, HTTP) when the
   appropriate DuckDB extension is loaded (httpfs).
@@ -212,6 +226,13 @@ defmodule Dux do
       df = Dux.from_parquet("data/sales.parquet")
       df = Dux.from_parquet("data/**/*.parquet")
       df = Dux.from_parquet("s3://bucket/data/*.parquet")
+
+  Write a Parquet file and read it back:
+
+      iex> path = Path.join(System.tmp_dir!(), "dux_doctest_#{:erlang.unique_integer([:positive])}.parquet")
+      iex> Dux.from_list([%{x: 1}, %{x: 2}, %{x: 3}]) |> Dux.to_parquet(path)
+      iex> Dux.from_parquet(path) |> Dux.to_columns()
+      %{"x" => [1, 2, 3]}
   """
   def from_parquet(path, opts \\ []) when is_binary(path) do
     %Dux{source: {:parquet, path, opts}}
@@ -219,11 +240,26 @@ defmodule Dux do
 
   @doc group: :constructors
   @doc """
-  Read a newline-delimited JSON file.
+  Read a newline-delimited JSON (NDJSON) file into a lazy Dux pipeline.
+
+  Each line in the file must be a valid JSON object. This is a common format
+  for log files, streaming exports, and data interchange.
 
   ## Examples
 
       df = Dux.from_ndjson("events.ndjson")
+
+  NDJSON files look like this (one JSON object per line):
+
+      {"name": "Alice", "age": 30}
+      {"name": "Bob", "age": 25}
+
+  Write an NDJSON file and read it back:
+
+      iex> path = Path.join(System.tmp_dir!(), "dux_doctest_#{:erlang.unique_integer([:positive])}.ndjson")
+      iex> Dux.from_list([%{x: 1}, %{x: 2}]) |> Dux.to_ndjson(path)
+      iex> Dux.from_ndjson(path) |> Dux.to_columns()
+      %{"x" => [1, 2]}
   """
   def from_ndjson(path, opts \\ []) when is_binary(path) do
     %Dux{source: {:ndjson, path, opts}}
@@ -237,6 +273,9 @@ defmodule Dux do
   @doc """
   Write a Dux to a CSV file. Triggers computation.
 
+  Returns `:ok` on success. The file is written atomically by DuckDB's
+  `COPY ... TO` statement.
+
   ## Options
 
     * `:delimiter` - field delimiter (default: `","`)
@@ -246,6 +285,10 @@ defmodule Dux do
 
       Dux.from_query("SELECT * FROM range(10) t(x)")
       |> Dux.to_csv("/tmp/output.csv")
+
+      # With custom delimiter
+      Dux.from_list([%{name: "Alice", age: 30}])
+      |> Dux.to_csv("/tmp/output.tsv", delimiter: "\t")
   """
   def to_csv(%Dux{} = dux, path, opts \\ []) when is_binary(path) do
     write_copy(dux, path, "CSV", opts)
@@ -274,12 +317,19 @@ defmodule Dux do
 
   @doc group: :io
   @doc """
-  Write a Dux to a newline-delimited JSON file. Triggers computation.
+  Write a Dux to a newline-delimited JSON (NDJSON) file. Triggers computation.
+
+  Each row becomes a single JSON object on its own line. Returns `:ok` on success.
 
   ## Examples
 
       Dux.from_query("SELECT * FROM range(10) t(x)")
       |> Dux.to_ndjson("/tmp/output.ndjson")
+
+      # The resulting file contains one JSON object per line:
+      # {"x":0}
+      # {"x":1}
+      # ...
   """
   def to_ndjson(%Dux{} = dux, path, opts \\ []) when is_binary(path) do
     write_copy(dux, path, "JSON", opts)
@@ -384,7 +434,7 @@ defmodule Dux do
 
   @doc group: :sorting
   @doc """
-  Take the first `n` rows (default 10).
+  Take the first `n` rows, defaulting to 10 if not specified.
 
   In IEx, the result is automatically displayed via the Inspect protocol.
   Use `peek/2` for an explicit table preview.
@@ -395,6 +445,13 @@ defmodule Dux do
       ...> |> Dux.head(3)
       ...> |> Dux.to_columns()
       %{"x" => [0, 1, 2]}
+
+      iex> Dux.from_query("SELECT * FROM range(100) t(x)")
+      ...> |> Dux.head()
+      ...> |> Dux.to_columns()
+      ...> |> Map.get("x")
+      ...> |> length()
+      10
   """
   def head(dux, n \\ 10)
 
@@ -580,7 +637,17 @@ defmodule Dux do
 
   @doc group: :aggregation
   @doc """
-  Clear any active grouping.
+  Clear any active grouping set by `group_by/2`.
+
+  This removes all group columns so subsequent operations apply to the
+  full dataframe rather than per-group. The ungroup is tracked as an
+  operation in the pipeline and takes effect when compiled to SQL.
+
+  ## Examples
+
+      iex> df = Dux.from_list([%{g: "a", x: 1}]) |> Dux.group_by(:g) |> Dux.ungroup()
+      iex> {:ungroup} in df.ops
+      true
   """
   def ungroup(%Dux{ops: ops} = dux) do
     %{dux | ops: ops ++ [{:ungroup}]}
@@ -968,14 +1035,19 @@ defmodule Dux do
   if Code.ensure_loaded?(Nx) do
     @doc group: :materialization
     @doc """
-    Convert a column to an Nx tensor.
+    Convert a single numeric column to an Nx tensor.
 
-    Triggers computation. The column must be a numeric type.
+    Triggers computation. The column must have a numeric DuckDB type (integer,
+    float, or decimal). Boolean columns are converted to `:u8`. Non-numeric
+    columns raise `ArgumentError`.
 
-        require Dux
+    Requires `Nx` to be available as a dependency.
+
+    ## Examples
+
         df = Dux.from_list([%{x: 1.0, y: 2.0}, %{x: 3.0, y: 4.0}])
         Dux.to_tensor(df, :x)
-        # #Nx.Tensor<f64[2] [1.0, 3.0]>
+        #=> #Nx.Tensor<f64[2] [1.0, 3.0]>
     """
     def to_tensor(%Dux{} = dux, column) do
       col_name = to_col_name(column)
