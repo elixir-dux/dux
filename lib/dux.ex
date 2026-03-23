@@ -70,6 +70,7 @@ defmodule Dux do
   # Constructors
   # ---------------------------------------------------------------------------
 
+  @doc group: :constructors
   @doc """
   Create a Dux from a raw SQL query.
 
@@ -87,6 +88,7 @@ defmodule Dux do
     %Dux{source: {:sql, sql}}
   end
 
+  @doc group: :constructors
   @doc """
   Create a Dux from a list of maps.
 
@@ -104,6 +106,7 @@ defmodule Dux do
   # Distribution
   # ---------------------------------------------------------------------------
 
+  @doc group: :distribution
   @doc """
   Mark a Dux for distributed execution across the given workers.
 
@@ -126,6 +129,7 @@ defmodule Dux do
     %{dux | workers: workers}
   end
 
+  @doc group: :distribution
   @doc """
   Return to local execution (remove distributed workers).
   """
@@ -137,6 +141,7 @@ defmodule Dux do
   # IO — reading
   # ---------------------------------------------------------------------------
 
+  @doc group: :constructors
   @doc """
   Read a CSV file.
 
@@ -161,6 +166,7 @@ defmodule Dux do
     %Dux{source: {:csv, path, opts}}
   end
 
+  @doc group: :constructors
   @doc """
   Read a Parquet file or glob pattern.
 
@@ -177,6 +183,7 @@ defmodule Dux do
     %Dux{source: {:parquet, path, opts}}
   end
 
+  @doc group: :constructors
   @doc """
   Read a newline-delimited JSON file.
 
@@ -192,6 +199,7 @@ defmodule Dux do
   # IO — writing
   # ---------------------------------------------------------------------------
 
+  @doc group: :io
   @doc """
   Write a Dux to a CSV file. Triggers computation.
 
@@ -209,6 +217,7 @@ defmodule Dux do
     write_copy(dux, path, "CSV", opts)
   end
 
+  @doc group: :io
   @doc """
   Write a Dux to a Parquet file. Triggers computation.
 
@@ -229,6 +238,7 @@ defmodule Dux do
     write_copy(dux, path, "PARQUET", opts)
   end
 
+  @doc group: :io
   @doc """
   Write a Dux to a newline-delimited JSON file. Triggers computation.
 
@@ -245,6 +255,7 @@ defmodule Dux do
   # Selection verbs
   # ---------------------------------------------------------------------------
 
+  @doc group: :transforms
   @doc """
   Keep only the named columns.
 
@@ -258,6 +269,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:select, cols}]}
   end
 
+  @doc group: :transforms
   @doc """
   Drop the named columns.
 
@@ -275,6 +287,7 @@ defmodule Dux do
   # Filtering verbs
   # ---------------------------------------------------------------------------
 
+  @doc group: :transforms
   @doc """
   Filter rows matching a condition.
 
@@ -312,6 +325,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :transforms
   @doc """
   Filter rows using a raw SQL expression string or compiled `{sql, params}`.
 
@@ -334,6 +348,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:filter, inline_params(sql, params)}]}
   end
 
+  @doc group: :sorting
   @doc """
   Take the first `n` rows (default 10).
 
@@ -353,6 +368,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:head, n}]}
   end
 
+  @doc group: :sorting
   @doc """
   Skip `offset` rows and take `length` rows.
 
@@ -366,6 +382,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:slice, offset, length}]}
   end
 
+  @doc group: :sorting
   @doc """
   Keep distinct rows, optionally by specific columns.
 
@@ -391,6 +408,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:distinct, cols}]}
   end
 
+  @doc group: :transforms
   @doc """
   Drop rows where any of the given columns are nil.
 
@@ -408,6 +426,7 @@ defmodule Dux do
   # Transformation verbs
   # ---------------------------------------------------------------------------
 
+  @doc group: :transforms
   @doc """
   Add or replace columns using expressions.
 
@@ -437,6 +456,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :transforms
   @doc """
   Add or replace columns using raw SQL expression strings or compiled tuples.
 
@@ -454,6 +474,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:mutate, assignments}]}
   end
 
+  @doc group: :transforms
   @doc """
   Rename columns.
 
@@ -477,6 +498,7 @@ defmodule Dux do
   # Sorting
   # ---------------------------------------------------------------------------
 
+  @doc group: :sorting
   @doc """
   Sort rows by columns.
 
@@ -501,6 +523,7 @@ defmodule Dux do
   # Grouping & Aggregation
   # ---------------------------------------------------------------------------
 
+  @doc group: :aggregation
   @doc """
   Group by columns for subsequent aggregation.
 
@@ -521,6 +544,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:group_by, cols}]}
   end
 
+  @doc group: :aggregation
   @doc """
   Clear any active grouping.
   """
@@ -528,6 +552,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:ungroup}]}
   end
 
+  @doc group: :aggregation
   @doc """
   Aggregate grouped data using expressions.
 
@@ -556,6 +581,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :aggregation
   @doc """
   Aggregate grouped data using raw SQL expression strings or compiled tuples.
 
@@ -579,6 +605,7 @@ defmodule Dux do
   # Joins
   # ---------------------------------------------------------------------------
 
+  @doc group: :joins
   @doc """
   Join two dataframes.
 
@@ -622,6 +649,7 @@ defmodule Dux do
   # Reshape
   # ---------------------------------------------------------------------------
 
+  @doc group: :reshape
   @doc """
   Pivot from long to wide format (PIVOT).
 
@@ -651,6 +679,7 @@ defmodule Dux do
     %{dux | ops: ops ++ [{:pivot_wider, names_col, values_col, agg}]}
   end
 
+  @doc group: :reshape
   @doc """
   Unpivot from wide to long format (UNPIVOT).
 
@@ -679,6 +708,7 @@ defmodule Dux do
   # Concatenation
   # ---------------------------------------------------------------------------
 
+  @doc group: :joins
   @doc """
   Concatenate rows from multiple dataframes (UNION ALL).
 
@@ -697,6 +727,7 @@ defmodule Dux do
   # Materialization
   # ---------------------------------------------------------------------------
 
+  @doc group: :materialization
   @doc """
   Compile the pipeline to SQL and execute against DuckDB.
 
@@ -763,6 +794,7 @@ defmodule Dux do
     end)
   end
 
+  @doc group: :distribution
   @doc """
   Collect distributed results back to a local `%Dux{}`.
 
@@ -784,6 +816,7 @@ defmodule Dux do
     %{computed | workers: nil}
   end
 
+  @doc group: :materialization
   @doc """
   Compute and return results as a list of maps.
 
@@ -816,6 +849,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :materialization
   @doc """
   Compute and return results as a map of column_name => [values].
 
@@ -848,6 +882,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :materialization
   @doc """
   Return the SQL that would be generated, without executing.
 
@@ -877,6 +912,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :materialization
   @doc """
   Return the number of rows. Triggers computation.
 
@@ -896,6 +932,7 @@ defmodule Dux do
   # ---------------------------------------------------------------------------
 
   if Code.ensure_loaded?(Nx) do
+    @doc group: :materialization
     @doc """
     Convert a column to an Nx tensor.
 
@@ -940,6 +977,7 @@ defmodule Dux do
     end
   end
 
+  @doc group: :materialization
   @doc """
   Print a formatted preview of the data. Triggers computation.
 
