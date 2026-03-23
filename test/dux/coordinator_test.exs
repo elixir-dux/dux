@@ -114,7 +114,7 @@ defmodule Dux.CoordinatorTest do
       assert Enum.sort(total_files) == Enum.sort(files)
     end
 
-    test "single DuckLake file goes to one worker as parquet source" do
+    test "single DuckLake file goes to one worker, others dropped" do
       files = ["s3://bucket/data/file1.parquet"]
 
       pipeline = %Dux{
@@ -132,6 +132,59 @@ defmodule Dux.CoordinatorTest do
       assert length(assignments) == 1
       [{_worker, assigned}] = assignments
       assert assigned.source == {:parquet, "s3://bucket/data/file1.parquet", []}
+    end
+
+    test "more workers than files assigns one file per worker" do
+      files = ["s3://bucket/f1.parquet", "s3://bucket/f2.parquet"]
+
+      pipeline = %Dux{
+        source: {:ducklake_files, files},
+        ops: [],
+        names: [],
+        dtypes: %{},
+        groups: []
+      }
+
+      workers = [:w1, :w2, :w3, :w4, :w5]
+      assignments = Partitioner.assign(pipeline, workers)
+
+      # Only 2 workers get assignments; the rest are empty and filtered out
+      assert length(assignments) == 2
+
+      all_files =
+        Enum.flat_map(assignments, fn {_w, p} ->
+          case p.source do
+            {:parquet, f, _} -> [f]
+            {:parquet_list, f, _} -> f
+          end
+        end)
+
+      assert Enum.sort(all_files) == Enum.sort(files)
+    end
+
+    test "preserves pipeline ops through distribution" do
+      require Dux
+
+      files = ["s3://bucket/f1.parquet", "s3://bucket/f2.parquet"]
+
+      pipeline =
+        %Dux{
+          source: {:ducklake_files, files},
+          ops: [],
+          names: [],
+          dtypes: %{},
+          groups: []
+        }
+        |> Dux.filter_with("x > 10")
+        |> Dux.select([:x])
+
+      workers = [:w1, :w2]
+      assignments = Partitioner.assign(pipeline, workers)
+
+      # Ops should be preserved on each worker's pipeline
+      Enum.each(assignments, fn {_w, p} ->
+        assert length(p.ops) == 2
+      end)
     end
   end
 
