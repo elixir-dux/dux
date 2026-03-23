@@ -10,7 +10,7 @@ alias Dux.Remote.Worker
 IO.puts("Setting up benchmark data...")
 
 # Small dataset (1K rows)
-small_data = for i <- 1..1_000, do: %{"id" => i, "group" => rem(i, 10), "value" => i * 1.5}
+small_data = for i <- 1..100, do: %{"id" => i, "group" => rem(i, 10), "value" => i * 1.5}
 
 # Medium dataset (100K via DuckDB)
 medium_sql = "SELECT x AS id, x % 100 AS grp, x * 1.5 AS value FROM range(100000) t(x)"
@@ -37,7 +37,7 @@ IO.puts("Benchmark data ready.\n")
 Benchee.run(
   %{
     # --- Construction ---
-    "from_list (1K rows)" => fn ->
+    "from_list (100 rows)" => fn ->
       Dux.from_list(small_data) |> Dux.compute()
     end,
     "from_query (100K rows)" => fn ->
@@ -119,6 +119,68 @@ Benchee.run(
       Dux.from_query(medium_sql)
       |> Dux.filter_with("value > 50000")
       |> Dux.summarise_with(total: "SUM(value)")
+      |> Dux.compute()
+    end
+  },
+  warmup: 1,
+  time: 5,
+  print: [configuration: false]
+)
+
+# ---------------------------------------------------------------------------
+# Shuffle join benchmark
+# ---------------------------------------------------------------------------
+
+IO.puts("\n--- Shuffle join benchmark ---\n")
+
+# Two large datasets that will trigger shuffle (both too big for broadcast)
+left_large = Dux.from_query("SELECT x AS id, x % 50 AS key, x * 1.5 AS val FROM range(100000) t(x)")
+right_large = Dux.from_query("SELECT x AS id, x % 50 AS key, x * 2.0 AS score FROM range(100000) t(x)")
+
+Benchee.run(
+  %{
+    "shuffle join (2 workers, 100K × 100K)" => fn ->
+      left_large
+      |> Dux.distribute([w1, w2])
+      |> Dux.join(right_large, on: :key)
+      |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(val)")
+      |> Dux.collect()
+    end,
+    "local join baseline (100K × 100K)" => fn ->
+      left_large
+      |> Dux.join(right_large, on: :key)
+      |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(val)")
+      |> Dux.compute()
+    end
+  },
+  warmup: 1,
+  time: 5,
+  print: [configuration: false]
+)
+
+# ---------------------------------------------------------------------------
+# Broadcast join + bloom filter benchmark
+# ---------------------------------------------------------------------------
+
+IO.puts("\n--- Broadcast join (bloom filter) benchmark ---\n")
+
+# Large fact table joined with small dimension — triggers broadcast with bloom pre-filter
+fact_table = Dux.from_query("SELECT x AS id, x % 1000 AS dim_key, x * 1.5 AS amount FROM range(100000) t(x)")
+dim_table = Dux.from_list(for i <- 1..20, do: %{dim_key: i, label: "label_#{i}"})
+
+Benchee.run(
+  %{
+    "broadcast join + bloom filter (2 workers, 100K × 20)" => fn ->
+      fact_table
+      |> Dux.distribute([w1, w2])
+      |> Dux.join(dim_table, on: :dim_key)
+      |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(amount)")
+      |> Dux.collect()
+    end,
+    "local join baseline (100K × 20)" => fn ->
+      fact_table
+      |> Dux.join(dim_table, on: :dim_key)
+      |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(amount)")
       |> Dux.compute()
     end
   },
