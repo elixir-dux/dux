@@ -555,6 +555,8 @@ defmodule Dux.Remote.Coordinator do
   defp worker_safe_source?({:query, _}), do: true
   defp worker_safe_source?({:list, _}), do: true
   defp worker_safe_source?({:table, _}), do: false
+  defp worker_safe_source?({:attached, _, _}), do: false
+  defp worker_safe_source?({:attached, _, _, _}), do: false
   defp worker_safe_source?(_), do: false
 
   # Check if an op itself is worker-safe (no nested non-worker-safe sources).

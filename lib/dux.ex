@@ -336,6 +336,196 @@ defmodule Dux do
   end
 
   # ---------------------------------------------------------------------------
+  # Cross-source (ATTACH)
+  # ---------------------------------------------------------------------------
+
+  @doc group: :io
+  @doc """
+  Attach an external database to the DuckDB connection.
+
+  DuckDB can query Postgres, MySQL, SQLite, and lakehouse formats
+  (Iceberg, Delta, DuckLake) as if they were local tables. Filter
+  pushdown is automatic — DuckDB sends filtered queries to the remote
+  database, transferring only matching rows.
+
+  ## Options
+
+    * `:type` — database type (required): `:postgres`, `:mysql`, `:sqlite`,
+      `:iceberg`, `:delta`, `:ducklake`, `:duckdb`
+    * `:read_only` — attach as read-only (default: `true`)
+
+  ## Examples
+
+      Dux.attach(:warehouse, "postgresql://user:pass@host/db", type: :postgres)
+      Dux.attach(:lake, "s3://bucket/iceberg-table/", type: :iceberg)
+      Dux.attach(:local, "other.duckdb", type: :duckdb, read_only: false)
+  """
+  def attach(name, connection_string, opts \\ []) do
+    type = Keyword.fetch!(opts, :type)
+    read_only = Keyword.get(opts, :read_only, true)
+    conn = Dux.Connection.get_conn()
+
+    ro = if read_only, do: ", READ_ONLY", else: ""
+    escaped = String.replace(connection_string, "'", "''")
+    sql = "ATTACH '#{escaped}' AS #{to_string(name)} (TYPE #{type}#{ro})"
+
+    Adbc.Connection.query!(conn, sql)
+    :ok
+  end
+
+  @doc group: :io
+  @doc """
+  Detach a previously attached database.
+
+  ## Examples
+
+      Dux.detach(:warehouse)
+  """
+  def detach(name) do
+    conn = Dux.Connection.get_conn()
+    Adbc.Connection.query!(conn, "DETACH #{to_string(name)}")
+    :ok
+  end
+
+  @doc group: :io
+  @doc """
+  List all attached databases.
+
+  Returns a list of maps with `:name`, `:type`, and `:path` keys.
+
+  ## Examples
+
+      Dux.list_attached()
+      #=> [%{name: "memory", type: "duckdb", path: "", read_only: false}, ...]
+  """
+  def list_attached do
+    conn = Dux.Connection.get_conn()
+    ref = Dux.Backend.query(conn, "PRAGMA database_list")
+    Dux.Backend.table_to_rows(conn, ref)
+  end
+
+  @doc group: :io
+  @doc """
+  Create a lazy `%Dux{}` referencing a table in an attached database.
+
+  The table name can include the schema (e.g., `"public.customers"`).
+
+  ## Options
+
+    * `:version` — snapshot/version number for time-travel (Iceberg, Delta, DuckLake)
+    * `:as_of` — timestamp for time-travel
+
+  ## Examples
+
+      customers = Dux.from_attached(:warehouse, "public.customers")
+      events = Dux.from_attached(:lake, "default.click_events")
+
+      # Time travel
+      Dux.from_attached(:lake, "events", version: 5)
+  """
+  def from_attached(db_name, table_name, opts \\ []) do
+    version = Keyword.get(opts, :version)
+    as_of = Keyword.get(opts, :as_of)
+
+    source =
+      cond do
+        version -> {:attached, db_name, table_name, version: version}
+        as_of -> {:attached, db_name, table_name, as_of: as_of}
+        true -> {:attached, db_name, table_name}
+      end
+
+    %Dux{source: source, ops: [], names: [], dtypes: %{}, groups: []}
+  end
+
+  @doc group: :io
+  @doc """
+  Create a DuckDB secret for accessing remote services.
+
+  Wraps DuckDB's Secrets Manager. Secrets are scoped to specific
+  URL prefixes so different credentials can be used for different
+  buckets or databases.
+
+  ## Options
+
+    * `:type` — secret type (required): `:s3`, `:gcs`, `:azure`, `:postgres`, `:mysql`
+    * `:key_id` — access key ID (S3/GCS)
+    * `:secret` — secret access key (S3/GCS)
+    * `:region` — AWS region (S3)
+    * `:provider` — credential provider: `:credential_chain` (use IAM/env)
+    * `:scope` — URL prefix scope (e.g., `"s3://my-bucket/"`)
+    * `:host`, `:user`, `:password` — database connection options
+    * `:password_env` — read password from environment variable at runtime
+
+  ## Examples
+
+      Dux.create_secret(:my_s3, type: :s3,
+        key_id: "AKIA...",
+        secret: "...",
+        region: "us-east-1"
+      )
+
+      # Use IAM role / environment credentials
+      Dux.create_secret(:my_s3, type: :s3, provider: :credential_chain)
+
+      # Scoped to a specific bucket
+      Dux.create_secret(:prod, type: :s3,
+        scope: "s3://prod-bucket/",
+        provider: :credential_chain
+      )
+  """
+  def create_secret(name, opts) do
+    type = Keyword.fetch!(opts, :type)
+    conn = Dux.Connection.get_conn()
+
+    params =
+      opts
+      |> Keyword.delete(:type)
+      |> Keyword.delete(:password_env)
+      |> Enum.map(fn {k, v} -> secret_param(k, v) end)
+      |> Enum.reject(&is_nil/1)
+
+    # Handle password from env var
+    params =
+      case Keyword.get(opts, :password_env) do
+        nil -> params
+        env_var -> params ++ ["PASSWORD '#{escape(System.get_env(env_var) || "")}'"]
+      end
+
+    type_param = "TYPE #{type}"
+    all_params = [type_param | params] |> Enum.join(", ")
+
+    Adbc.Connection.query!(conn, "CREATE SECRET #{to_string(name)} (#{all_params})")
+    :ok
+  end
+
+  @doc group: :io
+  @doc """
+  Drop a previously created secret.
+
+  ## Examples
+
+      Dux.drop_secret(:my_s3)
+  """
+  def drop_secret(name) do
+    conn = Dux.Connection.get_conn()
+    Adbc.Connection.query!(conn, "DROP SECRET #{to_string(name)}")
+    :ok
+  end
+
+  defp secret_param(:key_id, v), do: "KEY_ID '#{escape(v)}'"
+  defp secret_param(:secret, v), do: "SECRET '#{escape(v)}'"
+  defp secret_param(:region, v), do: "REGION '#{escape(v)}'"
+  defp secret_param(:scope, v), do: "SCOPE '#{escape(v)}'"
+  defp secret_param(:provider, :credential_chain), do: "PROVIDER credential_chain"
+  defp secret_param(:provider, v), do: "PROVIDER '#{escape(to_string(v))}'"
+  defp secret_param(:host, v), do: "HOST '#{escape(v)}'"
+  defp secret_param(:user, v), do: "USER '#{escape(v)}'"
+  defp secret_param(:password, v), do: "PASSWORD '#{escape(v)}'"
+  defp secret_param(_, _), do: nil
+
+  defp escape(str), do: String.replace(to_string(str), "'", "''")
+
+  # ---------------------------------------------------------------------------
   # Selection verbs
   # ---------------------------------------------------------------------------
 

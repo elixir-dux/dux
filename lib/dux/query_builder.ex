@@ -41,6 +41,29 @@ defmodule Dux.QueryBuilder do
     {sql, []}
   end
 
+  defp source_to_sql({:attached, db_name, table_name}, _db) do
+    {"SELECT * FROM #{quote_ident(to_string(db_name))}.#{table_name}", []}
+  end
+
+  defp source_to_sql({:attached, db_name, table_name, opts}, _db) do
+    base = "#{quote_ident(to_string(db_name))}.#{table_name}"
+
+    sql =
+      cond do
+        Keyword.has_key?(opts, :version) ->
+          "SELECT * FROM #{base} AT (VERSION => #{Keyword.fetch!(opts, :version)})"
+
+        Keyword.has_key?(opts, :as_of) ->
+          ts = Keyword.fetch!(opts, :as_of)
+          "SELECT * FROM #{base} AT (TIMESTAMP => '#{ts}')"
+
+        true ->
+          "SELECT * FROM #{base}"
+      end
+
+    {sql, []}
+  end
+
   defp source_to_sql({:table, %Dux.TableRef{name: table_name}}, _db) do
     {~s(SELECT * FROM "#{escape_sql_string(table_name)}"), []}
   end
