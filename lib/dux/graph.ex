@@ -674,9 +674,12 @@ defmodule Dux.Graph do
     {verts_sql, _} = Dux.QueryBuilder.build(graph.vertices, conn)
     {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
 
-    # USING KEY eliminates the Elixir iteration loop — DuckDB handles
-    # convergence internally. Each vertex keeps the minimum component ID
-    # seen through any neighbor.
+    # USING KEY label propagation (canonical DuckDB pattern).
+    # - `cc` (working table) = rows changed in the last iteration only
+    # - `recurring.cc` = accumulated dictionary of all vertex→component mappings
+    # The recursive step joins changed vertices (cc) through edges to find
+    # neighbors in the recurring table with a higher component ID, then
+    # propagates the lower one. DISTINCT ON + ORDER BY ensures determinism.
     sql = """
     WITH RECURSIVE
       bidir_edges AS (
@@ -687,11 +690,12 @@ defmodule Dux.Graph do
       cc(#{qi(vid)}, component) USING KEY (#{qi(vid)}) AS (
         SELECT #{qi(vid)}, #{qi(vid)} AS component FROM (#{verts_sql}) __v
         UNION
-        (SELECT e.b AS #{qi(vid)}, cc.component
-         FROM cc
-         JOIN bidir_edges e ON cc.#{qi(vid)} = e.a
-         LEFT JOIN recurring.cc AS rec ON rec.#{qi(vid)} = e.b
-         WHERE cc.component < COALESCE(rec.component, cc.component + 1))
+        (SELECT DISTINCT ON (prev.#{qi(vid)}) prev.#{qi(vid)}, changed.component
+         FROM cc AS changed
+         JOIN bidir_edges e ON changed.#{qi(vid)} = e.a
+         JOIN recurring.cc AS prev ON prev.#{qi(vid)} = e.b
+         WHERE changed.component < prev.component
+         ORDER BY prev.#{qi(vid)}, changed.component)
       )
     SELECT * FROM cc
     """
