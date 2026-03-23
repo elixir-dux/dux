@@ -19,7 +19,7 @@ defmodule Dux.Remote.Coordinator do
   The result is a `%Dux{}` struct with the merged data.
   """
 
-  alias Dux.Remote.{Merger, Partitioner, PipelineSplitter, Shuffle, Worker}
+  alias Dux.Remote.{Merger, Partitioner, PipelineSplitter, Shuffle, StreamingMerger, Worker}
   import Dux.SQL.Helpers, only: [qi: 1]
 
   # Broadcast threshold: 256MB serialized Arrow IPC
@@ -50,8 +50,12 @@ defmodule Dux.Remote.Coordinator do
     end
 
     # Split pipeline: worker ops push down, coordinator ops apply post-merge
-    %{worker_ops: worker_ops, coordinator_ops: coord_ops, agg_rewrites: rewrites} =
-      PipelineSplitter.split(pipeline.ops)
+    %{
+      worker_ops: worker_ops,
+      coordinator_ops: coord_ops,
+      agg_rewrites: rewrites,
+      streaming_compatible?: streaming?
+    } = split = PipelineSplitter.split(pipeline.ops)
 
     # Preprocess joins: broadcast/shuffle right sides that aren't worker-safe
     case preprocess_joins(worker_ops, workers, timeout, bcast_threshold) do
@@ -60,7 +64,9 @@ defmodule Dux.Remote.Coordinator do
         worker_pipeline = %{pipeline | ops: processed_ops}
 
         try do
-          result = execute_fan_out(worker_pipeline, workers, strategy, timeout)
+          result =
+            execute_fan_out(worker_pipeline, workers, strategy, timeout, streaming?, split)
+
           result = apply_avg_rewrites(result, rewrites)
           finalize(result, coord_ops)
         after
@@ -108,10 +114,26 @@ defmodule Dux.Remote.Coordinator do
   # ---------------------------------------------------------------------------
 
   # Standard distributed execution: partition → fan out → merge
-  defp execute_fan_out(worker_pipeline, workers, strategy, timeout) do
+  # When streaming_compatible? is true and a StreamingMerger can be created,
+  # folds results incrementally. Otherwise falls back to batch merge.
+  defp execute_fan_out(worker_pipeline, workers, strategy, timeout, streaming?, split) do
     assignments = Partitioner.assign(worker_pipeline, workers, strategy: strategy)
     n_workers = length(assignments)
 
+    # Try streaming merge for lattice-compatible pipelines
+    merger =
+      if streaming? do
+        StreamingMerger.new(split.worker_ops, n_workers)
+      end
+
+    if merger do
+      execute_streaming(assignments, worker_pipeline, merger, timeout)
+    else
+      execute_batch(assignments, worker_pipeline, n_workers, timeout)
+    end
+  end
+
+  defp execute_batch(assignments, worker_pipeline, n_workers, timeout) do
     results =
       :telemetry.span([:dux, :distributed, :fan_out], %{n_workers: n_workers}, fn ->
         r = fan_out(assignments, timeout)
@@ -129,6 +151,73 @@ defmodule Dux.Remote.Coordinator do
       merged = Merger.merge_to_dux(successes, worker_pipeline)
       {merged, %{n_results: length(successes)}}
     end)
+  end
+
+  defp execute_streaming(assignments, _worker_pipeline, merger, timeout) do
+    n_workers = length(assignments)
+
+    :telemetry.span(
+      [:dux, :distributed, :fan_out],
+      %{n_workers: n_workers, streaming: true},
+      fn ->
+        final_merger = streaming_fan_out(assignments, merger, n_workers, timeout)
+        result = StreamingMerger.to_dux(final_merger)
+        {result, %{n_workers: n_workers, streaming: true}}
+      end
+    )
+  end
+
+  defp streaming_fan_out(assignments, merger, n_workers, timeout) do
+    assignments
+    |> Enum.with_index()
+    |> Task.async_stream(
+      fn {{worker, partition_pipeline}, idx} ->
+        execute_on_worker(worker, partition_pipeline, idx, n_workers, timeout)
+      end,
+      timeout: timeout,
+      max_concurrency: n_workers,
+      ordered: false
+    )
+    |> Enum.reduce(merger, &fold_streaming_result/2)
+  end
+
+  defp execute_on_worker(worker, pipeline, idx, n_workers, timeout) do
+    start_time = System.monotonic_time()
+    result = Worker.execute(worker, pipeline, timeout)
+
+    case result do
+      {:ok, ipc} ->
+        :telemetry.execute(
+          [:dux, :distributed, :worker, :stop],
+          %{duration: System.monotonic_time() - start_time, ipc_bytes: byte_size(ipc)},
+          %{worker: worker, worker_index: idx, n_workers: n_workers}
+        )
+
+      _ ->
+        :ok
+    end
+
+    result
+  end
+
+  defp fold_streaming_result({:ok, {:ok, ipc}}, merger) do
+    merger = StreamingMerger.fold(merger, ipc)
+
+    :telemetry.execute(
+      [:dux, :distributed, :streaming_merge],
+      %{workers_complete: merger.workers_complete, workers_total: merger.workers_total},
+      %{progress: StreamingMerger.progress(merger)}
+    )
+
+    merger
+  end
+
+  defp fold_streaming_result({:ok, {:error, _reason}}, merger) do
+    StreamingMerger.record_failure(merger)
+  end
+
+  defp fold_streaming_result({:exit, _reason}, merger) do
+    StreamingMerger.record_failure(merger)
   end
 
   # Multi-stage execution for shuffle joins:
@@ -153,7 +242,7 @@ defmodule Dux.Remote.Coordinator do
       if ops_before == [] do
         Dux.compute(%{pipeline | ops: []})
       else
-        execute_fan_out(%{pipeline | ops: ops_before}, workers, strategy, timeout)
+        execute_fan_out(%{pipeline | ops: ops_before}, workers, strategy, timeout, false, %{})
       end
 
     # Stage 2: shuffle join

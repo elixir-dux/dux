@@ -1,5 +1,6 @@
-version,sha,date,from_query_10k_ms,from_list_100_ms,from_list_10k_ms,to_rows_1k_ms,to_columns_10k_ms,join_small_ms,full_pipeline_ms,group_summarise_ms,filter_mutate_ms,distributed_2_ms,shortest_paths_ms,connected_components_ms,pagerank_ms,triangle_count_ms,out_degree_ms,communities_ms,shuffle_join_ms,broadcast_bloom_ms
+version,sha,date,from_query_10k_ms,from_list_100_ms,from_list_10k_ms,to_rows_1k_ms,to_columns_10k_ms,join_small_ms,full_pipeline_ms,group_summarise_ms,filter_mutate_ms,distributed_2_ms,shortest_paths_ms,connected_components_ms,pagerank_ms,triangle_count_ms,out_degree_ms,communities_ms,shuffle_join_ms,broadcast_bloom_ms,streaming_minmax_ms,streaming_sumcount_ms
 v0.1.1,2eb9e5d,2026-03-23,0.10,3.41,3675,3.69,3150,4.24,625,655,3143,,,,,,
 0534abb-adbc,0534abb,2026-03-23,1.18,6.04,5.81,6.78,8.08,6.39,4.88,5.81,7.29,9.47,,,,,,
 96620af-graph,96620af,2026-03-23,,,,,,,,,,,34,19,221,20,3,45
 b7d9da7-shuffle-bloom,b7d9da7,2026-03-23,16.02,8.59,,,,,,2.85,,3.84,,,,,,,1500,4.68
+45c613d-streaming,45c613d,2026-03-23,16.04,7.65,,,,,,2.95,,4.09,,,,,,,1490,4.80,3.29,9.41
