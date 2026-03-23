@@ -203,18 +203,15 @@ defmodule Dux.Remote.PipelineSplitter do
     {new_aggs, new_rewrites}
   end
 
-  # COUNT(DISTINCT x) → workers: SELECT DISTINCT x. Coordinator: COUNT(DISTINCT)
-  # This changes the intermediate result shape — workers return rows instead of scalar.
-  # For now, we raise an error since this requires a fundamentally different merge strategy.
-  # The proper implementation would need the Coordinator to collect distinct values and re-count.
+  # COUNT(DISTINCT x) → workers compute approx_count_distinct (HyperLogLog).
+  # Coordinator sums the approximations. ~2% error, constant wire cost.
   defp rewrite_count_distinct(name, expr, acc_aggs, acc_rewrites) do
     inner = extract_inner_expr(expr)
-    cd_name = "__cd_#{name}"
+    hll_name = "__hll_#{name}"
 
-    # Workers compute distinct values (not a scalar count)
-    # The coordinator will need to merge these differently
-    new_aggs = [{cd_name, "ARRAY_AGG(DISTINCT #{inner})"} | acc_aggs]
-    new_rewrites = Map.put(acc_rewrites, name, {:count_distinct, cd_name, inner})
+    # Workers compute HyperLogLog approximate count (one number per group, not arrays)
+    new_aggs = [{hll_name, "approx_count_distinct(#{inner})"} | acc_aggs]
+    new_rewrites = Map.put(acc_rewrites, name, {:count_distinct_hll, hll_name})
     {new_aggs, new_rewrites}
   end
 

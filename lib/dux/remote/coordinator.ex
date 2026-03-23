@@ -441,9 +441,10 @@ defmodule Dux.Remote.Coordinator do
         {name, {:stddev, :var_pop, n, sum_x, sum_x2}} ->
           {name, stddev_formula(n, sum_x, sum_x2, :pop, false)}
 
-        {name, {:count_distinct, cd_col, _inner}} ->
-          # ARRAY_AGG(DISTINCT) across workers → flatten and count distinct
-          {name, "list_distinct(flatten(list(#{qi(cd_col)}))).__len"}
+        {name, {:count_distinct_hll, hll_col}} ->
+          # HyperLogLog: workers computed approx_count_distinct, merger summed them.
+          # The summed HLL is already in the column — just rename.
+          {name, qi(hll_col)}
       end)
 
     intermediate_cols =
@@ -454,8 +455,8 @@ defmodule Dux.Remote.Coordinator do
         {_, {:stddev, _, n, sum_x, sum_x2}} ->
           [String.to_atom(n), String.to_atom(sum_x), String.to_atom(sum_x2)]
 
-        {_, {:count_distinct, cd_col, _}} ->
-          [String.to_atom(cd_col)]
+        {_, {:count_distinct_hll, hll_col}} ->
+          [String.to_atom(hll_col)]
       end)
 
     dux
