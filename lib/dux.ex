@@ -2,51 +2,85 @@ defmodule Dux do
   @moduledoc """
   DuckDB-native dataframe library for Elixir.
 
-  The `Dux` module IS the dataframe. All operations are verbs on `%Dux{}` structs.
-  Pipelines are lazy — operations accumulate until `compute/1` compiles them to
-  SQL CTEs and executes against DuckDB.
+  Dux gives you a dataframe API that compiles to SQL and executes on DuckDB.
+  Pipelines are lazy — operations accumulate as an AST until you materialize.
+  DuckDB handles all the heavy lifting: columnar execution, parallel scans,
+  predicate pushdown, and vectorized aggregation.
 
-  `require Dux` to use expression-based verbs like `filter/2`, `mutate/2`,
-  and `summarise/2`. Bare identifiers become column names, `^` interpolates
-  Elixir values as parameter bindings.
+  This module is the entire public API. Every operation is a verb on a `%Dux{}`
+  struct. Verbs compose via pipes and nothing hits DuckDB until you ask for
+  results.
 
-  ## Creating data
+  ## Quick start
 
-      iex> df = Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
-      iex> Dux.to_rows(df)
-      [%{"x" => 1, "y" => "a"}, %{"x" => 2, "y" => "b"}]
+      require Dux
 
-  ## Piping through verbs
+      Dux.Datasets.penguins()
+      |> Dux.filter(species == "Gentoo" and body_mass_g > 5000)
+      |> Dux.group_by(:island)
+      |> Dux.summarise(count: count(species), avg_mass: avg(body_mass_g))
+      |> Dux.to_rows()
+
+  ## How it works
+
+  1. **Build** — each verb (`filter`, `mutate`, `group_by`, etc.) appends an
+     operation to the `%Dux{}` struct. No computation happens.
+
+  2. **Compile** — when you call `compute/1`, `to_rows/1`, or `to_columns/1`,
+     the operation list compiles to a chain of SQL CTEs.
+
+  3. **Execute** — DuckDB runs the SQL. Results land in a temporary table
+     that's automatically cleaned up when garbage collected.
+
+  Use `sql_preview/1` to see the generated SQL at any point:
 
       iex> require Dux
-      iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
-      ...> |> Dux.filter(x > 2)
-      ...> |> Dux.mutate(doubled: x * 2)
-      ...> |> Dux.to_columns()
-      %{"doubled" => [6, 8, 10], "x" => [3, 4, 5]}
+      iex> Dux.from_query("SELECT * FROM range(10) t(x)")
+      ...> |> Dux.filter(x > 5)
+      ...> |> Dux.sql_preview()
+      ...> |> String.contains?("WHERE")
+      true
 
-  ## Interpolation with ^
+  ## Expression syntax
+
+  Verbs like `filter/2`, `mutate/2`, and `summarise/2` are macros that capture
+  Elixir expressions. Bare identifiers become column names. Use `^` to
+  interpolate Elixir values safely (as parameter bindings, not string
+  interpolation):
 
       iex> require Dux
-      iex> min_val = 3
+      iex> threshold = 3
       iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
-      ...> |> Dux.filter(x > ^min_val)
+      ...> |> Dux.filter(x > ^threshold)
       ...> |> Dux.to_columns()
       %{"x" => [4, 5]}
 
-  ## Raw SQL strings
-
-  The `_with` variants accept raw SQL strings for programmatic use:
+  Every expression verb has a `_with` variant that accepts raw DuckDB SQL
+  strings for full access to DuckDB's function library:
 
       iex> Dux.from_query("SELECT * FROM range(1, 6) t(x)")
       ...> |> Dux.filter_with("x > 3")
       ...> |> Dux.to_columns()
       %{"x" => [4, 5]}
 
-  ## Lazy by default
+  ## Distribution
 
-  Operations accumulate — nothing hits DuckDB until you call `compute/1`,
-  `to_rows/1`, or `to_columns/1`. This lets DuckDB optimize the full pipeline.
+  Mark a pipeline for distributed execution across BEAM nodes with
+  `distribute/2`. The same verbs work — Dux partitions, fans out, and
+  merges automatically. See `Dux.Remote` for details.
+
+      workers = Dux.Remote.Worker.list()
+
+      Dux.from_parquet("s3://data/**/*.parquet")
+      |> Dux.distribute(workers)
+      |> Dux.group_by(:region)
+      |> Dux.summarise(total: sum(amount))
+      |> Dux.to_rows()
+
+  ## Embedded datasets
+
+  `Dux.Datasets` ships with CC0 datasets for learning and testing:
+  penguins, gapminder, nycflights13 (flights, airlines, airports, planes).
   """
 
   defstruct [:source, :remote, :workers, ops: [], names: [], dtypes: %{}, groups: []]
