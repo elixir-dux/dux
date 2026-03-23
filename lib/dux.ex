@@ -1349,11 +1349,12 @@ defmodule Dux do
   if Code.ensure_loaded?(Nx) do
     @doc group: :materialization
     @doc """
-    Convert a single numeric column to an Nx tensor.
+    Convert a single column to an Nx tensor via zero-copy from Arrow buffers.
 
-    Triggers computation. The column must have a numeric DuckDB type (integer,
-    float, or decimal). Boolean columns are converted to `:u8`. Non-numeric
-    columns raise `ArgumentError`.
+    Triggers computation. Supports integer, float, date, time, timestamp,
+    duration, and dictionary-encoded columns. Columns with nulls raise
+    `ArgumentError` — filter them first. Boolean and decimal columns are not
+    supported (booleans are bit-packed, decimals need conversion).
 
     Requires `Nx` to be available as a dependency.
 
@@ -1380,106 +1381,101 @@ defmodule Dux do
     end
 
     @doc false
-    def column_to_tensor(%Adbc.Column{field: field}) when not is_struct(field, Adbc.Field) do
-      raise ArgumentError, "expected an Adbc.Column with a valid field"
-    end
+    def column_to_tensor(%Adbc.Column{} = col) do
+      case nx_type_for(col.field.type) do
+        nil ->
+          hint =
+            case col.field.type do
+              :boolean ->
+                ". Hint: cast to integer at the query level with mutate_with(flag: \"CAST(col AS UTINYINT)\")"
 
-    def column_to_tensor(%Adbc.Column{field: field, data: data})
-        when not is_struct(data, Adbc.BufferData) do
-      raise ArgumentError,
-            "column #{inspect(field.name)} has non-numeric type: #{inspect(field.type)}"
-    end
+              _ ->
+                ""
+            end
 
-    def column_to_tensor(%Adbc.Column{field: field, data: %Adbc.BufferData{} = buf, size: size}) do
-      case nx_type_for(field.type) do
-        {:direct, nx_type} ->
-          # Zero-copy: Arrow buffer → Nx tensor directly
-          if has_nulls?(buf, size) do
-            raise ArgumentError,
-                  "column #{inspect(field.name)} contains nulls; filter them before converting to tensor"
-          end
-
-          Nx.from_binary(buf.data, nx_type, backend: Nx.BinaryBackend)
-          |> Nx.reshape({size})
-
-        {:boolean, _nx_type} ->
-          if has_nulls?(buf, size) do
-            raise ArgumentError,
-                  "column #{inspect(field.name)} contains nulls; filter them before converting to tensor"
-          end
-
-          # Booleans are bit-packed — unpack to u8
-          values = Adbc.Column.to_list(%Adbc.Column{field: field, data: buf, size: size})
-
-          Nx.tensor(
-            Enum.map(values, fn
-              true -> 1
-              false -> 0
-            end),
-            type: :u8
-          )
-
-        {:decimal, _nx_type} ->
-          if has_nulls?(buf, size) do
-            raise ArgumentError,
-                  "column #{inspect(field.name)} contains nulls; filter them before converting to tensor"
-          end
-
-          # Decimals are 128-bit integers — convert via Adbc.Column.to_list
-          values = Adbc.Column.to_list(%Adbc.Column{field: field, data: buf, size: size})
-
-          Nx.tensor(
-            Enum.map(values, fn
-              %Decimal{} = d -> Decimal.to_float(d)
-              v when is_number(v) -> v
-            end),
-            type: :f64
-          )
-
-        :unsupported ->
           raise ArgumentError,
-                "column #{inspect(field.name)} has non-numeric type: #{inspect(field.type)}"
+                "column #{inspect(col.field.name)} has non-numeric type: #{inspect(col.field.type)}#{hint}"
+
+        nx_type ->
+          if has_actual_nulls?(col) do
+            raise ArgumentError,
+                  "column #{inspect(col.field.name)} contains nulls; filter them before converting to tensor"
+          end
+
+          binary = Adbc.Column.to_binary(col)
+
+          Nx.from_binary(binary, nx_type, backend: Nx.BinaryBackend)
+          |> Nx.reshape({col.size})
       end
     end
 
-    defp nx_type_for(:s8), do: {:direct, :s8}
-    defp nx_type_for(:s16), do: {:direct, :s16}
-    defp nx_type_for(:s32), do: {:direct, :s32}
-    defp nx_type_for(:s64), do: {:direct, :s64}
-    defp nx_type_for(:u8), do: {:direct, :u8}
-    defp nx_type_for(:u16), do: {:direct, :u16}
-    defp nx_type_for(:u32), do: {:direct, :u32}
-    defp nx_type_for(:u64), do: {:direct, :u64}
-    defp nx_type_for(:f16), do: {:direct, :f16}
-    defp nx_type_for(:f32), do: {:direct, :f32}
-    defp nx_type_for(:f64), do: {:direct, :f64}
-    defp nx_type_for(:boolean), do: {:boolean, :u8}
-    defp nx_type_for({:decimal128, _, _}), do: {:decimal, :f64}
-    defp nx_type_for({:decimal256, _, _}), do: {:decimal, :f64}
-    defp nx_type_for(_), do: :unsupported
+    # Check if a column actually contains null values.
+    # Adbc.Column.has_validity? only checks if a validity bitmap exists —
+    # DuckDB always includes one even for non-nullable columns.
+    # We scan the bitmap directly to avoid materializing the column.
+    defp has_actual_nulls?(%Adbc.Column{size: 0}), do: false
 
-    defp has_nulls?(%Adbc.BufferData{validity: validity}, size) do
-      # All-ones validity means no nulls. Check if all bits in range are set.
-      expected_bytes = div(size + 7, 8)
+    defp has_actual_nulls?(%Adbc.Column{size: size, data: %Adbc.BufferData{validity: nil}})
+         when size > 0,
+         do: false
+
+    defp has_actual_nulls?(%Adbc.Column{size: size, data: %Adbc.BufferData{validity: validity}}) do
+      # All-ones bitmap means no nulls. Check full bytes then remainder bits.
       full_bytes = div(size, 8)
       remainder = rem(size, 8)
 
-      full_valid = :binary.copy(<<255>>, full_bytes)
-
-      case {byte_size(validity) >= expected_bytes, remainder} do
-        {false, _} ->
+      has_null_in_full =
+        if full_bytes > 0 do
+          :binary.part(validity, 0, full_bytes) != :binary.copy(<<255>>, full_bytes)
+        else
           false
+        end
 
-        {true, 0} ->
-          :binary.part(validity, 0, full_bytes) != full_valid
+      has_null_in_tail =
+        if remainder > 0 do
+          mask = Bitwise.bsl(1, remainder) - 1
+          Bitwise.band(:binary.at(validity, full_bytes), mask) != mask
+        else
+          false
+        end
 
-        {true, r} ->
-          mask = Bitwise.bsl(1, r) - 1
-
-          :binary.part(validity, 0, full_bytes) != full_valid or
-            Bitwise.band(:binary.at(validity, full_bytes), mask) != mask
-      end
+      has_null_in_full or has_null_in_tail
     end
+
+    defp has_actual_nulls?(%Adbc.Column{
+           data: %Adbc.DictionaryData{key: key_data},
+           field: %{type: {:dictionary, key_field, _}}
+         }) do
+      has_actual_nulls?(%Adbc.Column{field: key_field, data: key_data, size: key_data.size})
+    end
+
+    defp has_actual_nulls?(%Adbc.Column{} = col) do
+      Adbc.Column.has_validity?(col)
+    end
+
+    defp nx_type_for(:s8), do: :s8
+    defp nx_type_for(:s16), do: :s16
+    defp nx_type_for(:s32), do: :s32
+    defp nx_type_for(:s64), do: :s64
+    defp nx_type_for(:u8), do: :u8
+    defp nx_type_for(:u16), do: :u16
+    defp nx_type_for(:u32), do: :u32
+    defp nx_type_for(:u64), do: :u64
+    defp nx_type_for(:f16), do: :f16
+    defp nx_type_for(:f32), do: :f32
+    defp nx_type_for(:f64), do: :f64
+    # Date/time stored as fixed-size integers in Arrow buffers
+    defp nx_type_for(:date32), do: :s32
+    defp nx_type_for(:date64), do: :s64
+    defp nx_type_for({:time32, _}), do: :s32
+    defp nx_type_for({:time64, _}), do: :s64
+    defp nx_type_for({:timestamp, _, _}), do: :s64
+    defp nx_type_for({:duration, _}), do: :s64
+    # Month intervals are single s32 values
+    defp nx_type_for({:interval, :month}), do: :s32
+    # Dictionary-encoded: use the key type
+    defp nx_type_for({:dictionary, %Adbc.Field{type: key_type}, _}), do: nx_type_for(key_type)
+    defp nx_type_for(_), do: nil
   end
 
   @doc group: :materialization

@@ -23,11 +23,29 @@ if Code.ensure_loaded?(Nx) do
         assert_in_delta Nx.to_number(tensor[0]), 1.5, 0.01
       end
 
-      test "converts boolean column to u8 tensor" do
-        df = Dux.from_list([%{"b" => true}, %{"b" => false}, %{"b" => true}])
-        tensor = Dux.to_tensor(df, :b)
-        assert Nx.type(tensor) == {:u, 8}
-        assert Nx.to_list(tensor) == [1, 0, 1]
+      test "converts date column to s32 tensor" do
+        df = Dux.from_query("SELECT DATE '2024-01-01' AS d UNION ALL SELECT DATE '2024-01-02'")
+        tensor = Dux.to_tensor(df, :d)
+        assert Nx.type(tensor) == {:s, 32}
+        assert Nx.shape(tensor) == {2}
+        # date32 is days since epoch — just verify they're sequential
+        [d1, d2] = Nx.to_list(tensor)
+        assert d2 - d1 == 1
+      end
+
+      test "converts timestamp column to s64 tensor" do
+        df = Dux.from_query("SELECT TIMESTAMP '2024-01-01 00:00:00' AS ts")
+        tensor = Dux.to_tensor(df, :ts)
+        assert Nx.type(tensor) == {:s, 64}
+        assert Nx.shape(tensor) == {1}
+      end
+
+      test "raises on boolean column with cast hint" do
+        df = Dux.from_list([%{"b" => true}, %{"b" => false}])
+
+        assert_raise ArgumentError, ~r/cast to integer at the query level/, fn ->
+          Dux.to_tensor(df, :b)
+        end
       end
 
       test "raises on non-numeric column" do
@@ -60,7 +78,8 @@ if Code.ensure_loaded?(Nx) do
 
     describe "Nx.LazyContainer protocol" do
       test "traverses numeric columns" do
-        df = Dux.from_list([%{"x" => 1, "y" => 2.0}, %{"x" => 3, "y" => 4.0}])
+        # Use explicit DOUBLE cast to avoid decimal inference from Elixir floats
+        df = Dux.from_query("SELECT 1 AS x, 2.0::DOUBLE AS y UNION ALL SELECT 3, 4.0")
 
         {result_map, count} =
           Nx.LazyContainer.traverse(df, 0, fn _template, fun, acc ->

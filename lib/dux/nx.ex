@@ -45,9 +45,17 @@ if Code.ensure_loaded?(Nx) do
     defp nx_type_for_adbc(:f16), do: :f16
     defp nx_type_for_adbc(:f32), do: :f32
     defp nx_type_for_adbc(:f64), do: :f64
-    defp nx_type_for_adbc(:boolean), do: :u8
-    defp nx_type_for_adbc({:decimal128, _, _}), do: :f64
-    defp nx_type_for_adbc({:decimal256, _, _}), do: :f64
+    defp nx_type_for_adbc(:date32), do: :s32
+    defp nx_type_for_adbc(:date64), do: :s64
+    defp nx_type_for_adbc({:time32, _}), do: :s32
+    defp nx_type_for_adbc({:time64, _}), do: :s64
+    defp nx_type_for_adbc({:timestamp, _, _}), do: :s64
+    defp nx_type_for_adbc({:duration, _}), do: :s64
+    defp nx_type_for_adbc({:interval, :month}), do: :s32
+
+    defp nx_type_for_adbc({:dictionary, %Adbc.Field{type: key_type}, _}),
+      do: nx_type_for_adbc(key_type)
+
     defp nx_type_for_adbc(_), do: nil
   end
 end
