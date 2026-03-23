@@ -335,6 +335,67 @@ defmodule Dux do
     write_copy(dux, path, "JSON", opts)
   end
 
+  @doc group: :io
+  @doc """
+  Insert a Dux pipeline's results into a table. Triggers computation.
+
+  The target can be any table DuckDB can write to — a local table, or a
+  table in an attached database (Postgres, DuckLake, etc.). The pipeline
+  is compiled to SQL and executed as `INSERT INTO target SELECT ...`.
+
+  ## Options
+
+    * `:create` — create the target table if it doesn't exist (default: `false`).
+      Uses `CREATE TABLE ... AS SELECT ...` instead of `INSERT INTO`.
+
+  ## Examples
+
+      # Insert into an attached DuckLake table
+      Dux.attach(:lake, "ducklake:metadata.db", type: :ducklake, read_only: false)
+
+      Dux.from_parquet("s3://bucket/raw/*.parquet")
+      |> Dux.filter(col("status") == "active")
+      |> Dux.insert_into("lake.analytics.users")
+
+      # Create a new table from a pipeline
+      Dux.from_csv("/data/events.csv")
+      |> Dux.mutate(day: cast(timestamp, :date))
+      |> Dux.insert_into("lake.events", create: true)
+
+      # Insert into a local DuckDB table
+      Dux.from_query("SELECT 1 AS x")
+      |> Dux.insert_into("my_table", create: true)
+  """
+  def insert_into(%Dux{} = dux, table, opts \\ []) when is_binary(table) do
+    create? = Keyword.get(opts, :create, false)
+    meta = %{table: table, create: create?}
+
+    :telemetry.span([:dux, :io, :write], meta, fn ->
+      conn = Dux.Connection.get_conn()
+      Process.put(:dux_write_ref, extract_source_ref(dux))
+      {query_sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
+
+      Enum.each(source_setup, fn setup_sql ->
+        Dux.Backend.execute(conn, setup_sql)
+      end)
+
+      sql =
+        if create? do
+          "CREATE TABLE #{table} AS #{query_sql}"
+        else
+          "INSERT INTO #{table} #{query_sql}"
+        end
+
+      case Adbc.Connection.query(conn, sql) do
+        {:ok, _} -> :ok
+        {:error, err} -> raise ArgumentError, "DuckDB insert failed: #{Exception.message(err)}"
+      end
+
+      Process.delete(:dux_write_ref)
+      {:ok, meta}
+    end)
+  end
+
   # ---------------------------------------------------------------------------
   # Cross-source (ATTACH)
   # ---------------------------------------------------------------------------

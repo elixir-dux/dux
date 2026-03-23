@@ -374,4 +374,133 @@ defmodule Dux.IOTest do
       end
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # insert_into
+  # ---------------------------------------------------------------------------
+
+  describe "insert_into" do
+    test "create: true creates a new table from pipeline" do
+      require Dux
+
+      Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}])
+      |> Dux.filter(x > 1)
+      |> Dux.insert_into("__dux_insert_test_create", create: true)
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_test_create ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result == %{"x" => [2, 3]}
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_test_create")
+    end
+
+    test "inserts into an existing table" do
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query!(conn, "CREATE TABLE __dux_insert_test_existing (x BIGINT)")
+      Adbc.Connection.query!(conn, "INSERT INTO __dux_insert_test_existing VALUES (0)")
+
+      Dux.from_list([%{"x" => 1}, %{"x" => 2}])
+      |> Dux.insert_into("__dux_insert_test_existing")
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_test_existing ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result == %{"x" => [0, 1, 2]}
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_test_existing")
+    end
+
+    test "insert_into with attached DuckDB database" do
+      path = tmp_path("insert_attached.duckdb")
+
+      try do
+        Dux.attach(:insert_test_db, path, type: :duckdb, read_only: false)
+
+        Dux.from_list([%{"a" => 10, "b" => "hello"}])
+        |> Dux.insert_into("insert_test_db.main.insert_target", create: true)
+
+        result = Dux.from_attached(:insert_test_db, "insert_target") |> Dux.to_rows()
+        assert result == [%{"a" => 10, "b" => "hello"}]
+      after
+        Dux.detach(:insert_test_db)
+        File.rm(path)
+      end
+    end
+
+    test "insert_into with pipeline before write" do
+      require Dux
+
+      Dux.from_query("SELECT * FROM range(1, 11) t(x)")
+      |> Dux.filter(x > 5)
+      |> Dux.mutate(doubled: x * 2)
+      |> Dux.insert_into("__dux_insert_pipeline", create: true)
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_pipeline ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result["x"] == [6, 7, 8, 9, 10]
+      assert result["doubled"] == [12, 14, 16, 18, 20]
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_pipeline")
+    end
+
+    test "insert_into non-existent table without create raises" do
+      assert_raise ArgumentError, ~r/DuckDB insert failed/, fn ->
+        Dux.from_list([%{"x" => 1}])
+        |> Dux.insert_into("__dux_table_that_does_not_exist")
+      end
+    end
+
+    test "insert_into preserves null values" do
+      Dux.from_query("SELECT 1 AS x, NULL AS y UNION ALL SELECT NULL, 'hello'")
+      |> Dux.insert_into("__dux_insert_nulls", create: true)
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_nulls ORDER BY x")
+        |> Dux.to_columns()
+
+      assert nil in result["x"]
+      assert nil in result["y"]
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_nulls")
+    end
+
+    test "insert_into with empty pipeline creates empty table" do
+      Dux.from_query("SELECT 1 AS x WHERE false")
+      |> Dux.insert_into("__dux_insert_empty", create: true)
+
+      assert Dux.from_query("SELECT * FROM __dux_insert_empty") |> Dux.n_rows() == 0
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_empty")
+    end
+
+    test "multiple inserts accumulate rows" do
+      Dux.from_list([%{"x" => 1}])
+      |> Dux.insert_into("__dux_insert_multi", create: true)
+
+      Dux.from_list([%{"x" => 2}])
+      |> Dux.insert_into("__dux_insert_multi")
+
+      Dux.from_list([%{"x" => 3}])
+      |> Dux.insert_into("__dux_insert_multi")
+
+      result =
+        Dux.from_query("SELECT * FROM __dux_insert_multi ORDER BY x")
+        |> Dux.to_columns()
+
+      assert result == %{"x" => [1, 2, 3]}
+    after
+      conn = Dux.Connection.get_conn()
+      Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_multi")
+    end
+  end
 end
