@@ -2,8 +2,8 @@ defmodule Dux.GraphImprovementsTest do
   use ExUnit.Case, async: true
   require Dux
 
+  alias Dux.Datasets
   alias Dux.Remote.Worker
-  alias Dux.Test.Datasets
 
   # ---------------------------------------------------------------------------
   # USING KEY shortest paths — happy path

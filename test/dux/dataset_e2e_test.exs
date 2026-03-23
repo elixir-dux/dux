@@ -2,7 +2,7 @@ defmodule Dux.DatasetE2ETest do
   use ExUnit.Case, async: true
   require Dux
 
-  alias Dux.Test.Datasets
+  alias Dux.Datasets
 
   # ---------------------------------------------------------------------------
   # Penguins — filter, group_by, summarise, nulls, pivot

@@ -26,3 +26,4 @@ dux-*.tar
 # Editor / OS
 .DS_Store
 .elixir_ls/
+.tmp/

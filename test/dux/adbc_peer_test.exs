@@ -2,8 +2,8 @@ defmodule Dux.AdbcPeerTest do
   use ExUnit.Case, async: false
   require Dux
 
+  alias Dux.Datasets
   alias Dux.Remote.Worker
-  alias Dux.Test.Datasets
 
   @moduletag :distributed
   @moduletag timeout: 120_000

@@ -59,4 +59,26 @@ defmodule Dux.Datasets do
   @doc "Aircraft tail numbers, manufacturers, models (3,322 rows). CC0."
   @doc group: :datasets
   def planes, do: Dux.from_csv(Path.join(@datasets_dir, "planes.csv"), nullstr: "NA")
+
+  @doc """
+  Zachary's Karate Club graph (34 nodes, 78 undirected edges). CC BY 4.0.
+
+  Returns a `Dux.Graph` with bidirectional edges (156 directed edges).
+  The classic social network dataset from a 1977 study of friendships
+  in a university karate club.
+  """
+  @doc group: :datasets
+  def karate_club do
+    path = Path.join(@datasets_dir, "karate_club.csv")
+
+    edges =
+      Dux.from_query("""
+        SELECT src, dst FROM read_csv('#{String.replace(path, "'", "''")}')
+        UNION ALL
+        SELECT dst AS src, src AS dst FROM read_csv('#{String.replace(path, "'", "''")}')
+      """)
+
+    vertices = Dux.from_list(Enum.map(1..34, &%{id: &1}))
+    Dux.Graph.new(vertices: vertices, edges: edges, edge_src: :src, edge_dst: :dst)
+  end
 end
