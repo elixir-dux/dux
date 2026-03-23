@@ -16,18 +16,28 @@ defmodule Dux.Remote.PipelineSplitter do
   @doc """
   Split pipeline ops into worker and coordinator portions.
 
-  Returns `%{worker_ops: [...], coordinator_ops: [...], agg_rewrites: %{}}`.
-
-  `agg_rewrites` maps output column names to their rewrite info
-  (e.g., AVG rewritten to SUM/COUNT pair).
+  Returns a map with:
+    * `:worker_ops` — ops pushed to each worker
+    * `:coordinator_ops` — ops applied after merge on the coordinator
+    * `:agg_rewrites` — rewrite info for AVG/STDDEV/COUNT DISTINCT
+    * `:lattice_map` — `%{col_name => lattice_module}` for mergeable aggregates
+    * `:streaming_compatible?` — true if all aggregates are lattice-mergeable
   """
   def split(ops) do
     {worker_ops, coordinator_ops, rewrites} = do_split(ops, [], [], %{})
 
+    worker_ops = Enum.reverse(worker_ops)
+    coordinator_ops = Enum.reverse(coordinator_ops)
+
+    # Build lattice map from the original aggregate expressions
+    {lattice_map, streaming?} = build_lattice_map(ops)
+
     %{
-      worker_ops: Enum.reverse(worker_ops),
-      coordinator_ops: Enum.reverse(coordinator_ops),
-      agg_rewrites: rewrites
+      worker_ops: worker_ops,
+      coordinator_ops: coordinator_ops,
+      agg_rewrites: rewrites,
+      lattice_map: lattice_map,
+      streaming_compatible?: streaming?
     }
   end
 
@@ -229,5 +239,34 @@ defmodule Dux.Remote.PipelineSplitter do
 
   defp rewrite_func(expr, from, to) do
     String.replace(expr, ~r/#{from}\(/i, "#{to}(")
+  end
+
+  # ---------------------------------------------------------------------------
+  # Lattice classification
+  # ---------------------------------------------------------------------------
+
+  # Classify each aggregate in the pipeline and build a lattice_map.
+  # Returns {lattice_map, streaming_compatible?}.
+  # streaming_compatible? is true only when there IS a summarise and
+  # ALL its aggregates map to known lattices.
+  defp build_lattice_map(ops) do
+    case Enum.find(ops, &match?({:summarise, _}, &1)) do
+      nil ->
+        {%{}, false}
+
+      {:summarise, aggs} ->
+        classify_aggs_for_lattice(aggs)
+    end
+  end
+
+  defp classify_aggs_for_lattice(aggs) do
+    Enum.reduce(aggs, {%{}, true}, fn {name, expr}, {map, all?} ->
+      upper = if is_binary(expr), do: String.upcase(expr), else: ""
+
+      case Dux.Lattice.classify(upper) do
+        nil -> {map, false}
+        lattice -> {Map.put(map, name, lattice), all?}
+      end
+    end)
   end
 end
