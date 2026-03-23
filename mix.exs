@@ -88,6 +88,7 @@ defmodule Dux.MixProject do
         "Core API": [Dux, Dux.Query],
         Graph: [Dux.Graph],
         Distribution: [
+          Dux.Remote,
           Dux.Remote.Coordinator,
           Dux.Remote.Worker,
           Dux.Remote.Broadcast
