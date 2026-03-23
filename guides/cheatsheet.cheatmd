@@ -2,7 +2,7 @@
 
 ## Creating Data
 
-### From lists
+### From Elixir
 ```elixir
 Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
 ```
@@ -10,6 +10,7 @@ Dux.from_list([%{x: 1, y: "a"}, %{x: 2, y: "b"}])
 ### From files
 ```elixir
 Dux.from_csv("data.csv")
+Dux.from_csv("data.csv", delimiter: "\t", nullstr: "NA")
 Dux.from_parquet("data/**/*.parquet")
 Dux.from_ndjson("events.ndjson")
 ```
@@ -24,13 +25,11 @@ Dux.from_query("SELECT * FROM range(100) t(x)")
 ### Expression syntax
 {: .col-2}
 
-#### Macro (requires `require Dux`)
+#### Macro (`require Dux`)
 ```elixir
 Dux.filter(df, x > 10 and status == "active")
-```
 
-#### With interpolation
-```elixir
+# Interpolate Elixir values with ^
 min_val = 50
 Dux.filter(df, price > ^min_val)
 ```
@@ -38,40 +37,51 @@ Dux.filter(df, price > ^min_val)
 #### Raw SQL
 ```elixir
 Dux.filter_with(df, "x > 10 AND status = 'active'")
+
+# DuckDB functions work here
+Dux.filter_with(df, "x BETWEEN 10 AND 20")
 ```
 
-## Transformation
+## Transforms
 
-### Add columns
+### Mutate (add/replace columns)
 {: .col-2}
 
 #### Macro
 ```elixir
-Dux.mutate(df, revenue: price * qty, tax: price * 0.08)
+Dux.mutate(df,
+  revenue: price * qty,
+  tax: price * 0.08
+)
 ```
 
 #### Raw SQL
 ```elixir
-Dux.mutate_with(df, revenue: "price * qty")
+Dux.mutate_with(df,
+  revenue: "price * qty",
+  upper_name: "UPPER(name)",
+  rank: "ROW_NUMBER() OVER (ORDER BY score DESC)"
+)
 ```
 
-### Other transforms
+### Column management
 ```elixir
-Dux.select(df, [:name, :age])        # keep columns
-Dux.discard(df, [:temp])             # drop columns
-Dux.rename(df, old_name: :new_name)  # rename columns
-Dux.drop_nil(df, [:age])             # remove nil rows
+Dux.select(df, [:name, :age])         # keep columns
+Dux.discard(df, [:temp, :debug])       # drop columns
+Dux.rename(df, old_name: :new_name)    # rename columns
+Dux.drop_nil(df, [:age, :email])       # remove rows with nils
 ```
 
 ## Sorting & Limiting
 
 ```elixir
-Dux.sort_by(df, :name)              # ascending
-Dux.sort_by(df, desc: :score)       # descending
-Dux.sort_by(df, asc: :dept, desc: :salary)  # multi-column
-Dux.head(df, 10)                     # first N rows
-Dux.slice(df, 5, 10)                # offset + limit
-Dux.distinct(df)                     # deduplicate
+Dux.sort_by(df, :name)                          # ascending
+Dux.sort_by(df, desc: :score)                    # descending
+Dux.sort_by(df, asc: :dept, desc: :salary)       # multi-column
+Dux.head(df)                                     # first 10 rows (default)
+Dux.head(df, 5)                                  # first 5 rows
+Dux.slice(df, 5, 10)                             # offset 5, take 10
+Dux.distinct(df)                                 # deduplicate all columns
 ```
 
 ## Aggregation
@@ -85,20 +95,46 @@ df
 |> Dux.group_by(:region)
 |> Dux.summarise(
   total: sum(amount),
-  avg: avg(price),
-  n: count(id)
+  average: avg(price),
+  n: count(id),
+  biggest: max(amount),
+  smallest: min(amount)
 )
 ```
 
 #### Raw SQL
 ```elixir
 df
-|> Dux.group_by(:region)
+|> Dux.group_by([:region, :year])
 |> Dux.summarise_with(
   total: "SUM(amount)",
-  avg: "AVG(price)",
-  n: "COUNT(id)"
+  median: "MEDIAN(price)",
+  p95: "PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY amount)",
+  unique: "COUNT(DISTINCT customer_id)"
 )
+```
+
+## Joins
+
+### Join types
+```elixir
+Dux.join(left, right, on: :id)                   # inner (default)
+Dux.join(left, right, on: :id, how: :left)       # left
+Dux.join(left, right, on: :id, how: :right)      # right
+Dux.join(left, right, on: :id, how: :anti)       # anti (no match)
+Dux.join(left, right, on: :id, how: :semi)       # semi (exists)
+Dux.join(left, right, on: :id, how: :cross)      # cross product
+```
+
+### Different column names
+```elixir
+Dux.join(flights, airports, on: [{:dest, :faa}])
+Dux.join(orders, users, on: [{:customer_id, :id}])
+```
+
+### Concat rows (UNION ALL)
+```elixir
+Dux.concat_rows([df1, df2, df3])
 ```
 
 ## Reshape
@@ -106,51 +142,47 @@ df
 ### Pivot
 {: .col-2}
 
-#### Wide (long → wide)
+#### Long → Wide
 ```elixir
+Dux.pivot_wider(df, :product, :sales)
 Dux.pivot_wider(df, :product, :sales, agg: "SUM")
 ```
 
-#### Long (wide → long)
+#### Wide → Long
 ```elixir
-Dux.pivot_longer(df, [:q1, :q2], names_to: "quarter", values_to: "sales")
-```
-
-## Joins
-
-```elixir
-# Same column name
-Dux.join(left, right, on: :id)
-
-# Different column names
-Dux.join(left, right, on: [{:user_id, :id}])
-
-# Join types
-Dux.join(left, right, on: :id, how: :left)
-# :inner (default), :left, :right, :cross, :anti, :semi
+Dux.pivot_longer(df, [:q1, :q2, :q3, :q4],
+  names_to: "quarter",
+  values_to: "revenue"
+)
 ```
 
 ## IO
 
-### Reading
+### Read & Write
+{: .col-2}
+
+#### Reading
 ```elixir
-Dux.from_csv("file.csv", delimiter: "\t")
-Dux.from_parquet("s3://bucket/*.parquet")
+Dux.from_csv("file.csv")
+Dux.from_csv("file.csv", delimiter: "\t", nullstr: "NA")
+Dux.from_parquet("data/*.parquet")
+Dux.from_parquet("s3://bucket/data/*.parquet")
 Dux.from_ndjson("events.ndjson")
+Dux.from_query("SELECT * FROM 'file.csv'")
 ```
 
-### Writing
+#### Writing
 ```elixir
 Dux.to_csv(df, "out.csv")
+Dux.to_parquet(df, "out.parquet")
 Dux.to_parquet(df, "out.parquet", compression: :zstd)
 Dux.to_ndjson(df, "out.ndjson")
 ```
 
-## Materialization & Inspection
+## Materialization
 
 ```elixir
-Dux.compute(df)                    # → %Dux{} with table ref
-Dux.collect(df)                    # → local %Dux{} (from distributed)
+Dux.compute(df)                    # → %Dux{} (execute pipeline)
 Dux.to_rows(df)                    # → [%{"col" => val}, ...]
 Dux.to_rows(df, atom_keys: true)   # → [%{col: val}, ...]
 Dux.to_columns(df)                 # → %{"col" => [vals]}
@@ -163,10 +195,11 @@ Dux.sql_preview(df, pretty: true)  # → formatted SQL
 ## Distributed
 
 ```elixir
-# Mark for distributed execution
+# Discover or start workers
 workers = Dux.Remote.Worker.list()
 
-Dux.from_parquet("data/**/*.parquet")
+# Same verbs, automatically distributed
+Dux.from_parquet("s3://data/**/*.parquet")
 |> Dux.distribute(workers)
 |> Dux.filter(amount > 100)
 |> Dux.group_by(:region)
@@ -175,35 +208,32 @@ Dux.from_parquet("data/**/*.parquet")
 
 # Collect back to local %Dux{}
 df |> Dux.distribute(workers) |> Dux.collect()
+
+# FLAME: elastic cloud compute
+Dux.Flame.start_pool(backend: {FLAME.FlyBackend, ...}, max: 10)
+workers = Dux.Flame.spin_up(5)
 ```
 
-## Graph
+## Graph Analytics
 
 ```elixir
 graph = Dux.Graph.new(vertices: v, edges: e)
 
-# Local
-Dux.Graph.pagerank(graph)
-Dux.Graph.shortest_paths(graph, start_node)
-Dux.Graph.connected_components(graph)
-Dux.Graph.triangle_count(graph)
-Dux.Graph.out_degree(graph)
+# Algorithms (return %Dux{} — pipe into any verb)
+Dux.Graph.pagerank(graph)                    # influence ranking
+Dux.Graph.shortest_paths(graph, start)       # BFS distances
+Dux.Graph.connected_components(graph)        # community detection
+Dux.Graph.triangle_count(graph)              # clustering density
+Dux.Graph.out_degree(graph)                  # connection count
+Dux.Graph.in_degree(graph)                   # incoming connections
 
-# Distributed
-graph = Dux.Graph.new(vertices: v, edges: e)
-        |> Dux.Graph.distribute(workers)
-
-Dux.Graph.pagerank(graph)
-Dux.Graph.connected_components(graph)
-Dux.Graph.shortest_paths(graph, start_node)
-Dux.Graph.triangle_count(graph)
+# Distribute across workers
+graph |> Dux.Graph.distribute(workers) |> Dux.Graph.pagerank()
 ```
 
 ## Nx Interop
 
 ```elixir
-# Single column → tensor
-tensor = Dux.to_tensor(df, :price)
-
+tensor = Dux.to_tensor(df, :price)    # column → Nx.Tensor
 # Implements Nx.LazyContainer for defn
 ```
