@@ -508,22 +508,42 @@ defmodule Dux.Graph do
         "p.dist + 1"
       end
 
-    # USING KEY eliminates duplicate rows by keeping the shortest distance.
-    # No GROUP BY needed — DuckDB deduplicates automatically.
-    sql = """
-    WITH RECURSIVE
-      edges_cte AS (#{edges_sql}),
-      paths(node, dist) USING KEY (node) AS (
-        SELECT #{from_vertex} AS node, 0 AS dist
-        UNION
-        (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
-         FROM paths p
-         JOIN edges_cte e ON p.node = e.#{qi(src)}
-         LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
-         WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth}))
-      )
-    SELECT * FROM paths
-    """
+    sql =
+      if weight do
+        # Weighted: use UNION + GROUP BY MIN (Bellman-Ford).
+        # USING KEY has a limitation with weighted graphs where multiple paths
+        # of different weights reach the same node in the same iteration.
+        """
+        WITH RECURSIVE
+          edges_cte AS (#{edges_sql}),
+          paths AS (
+            SELECT #{from_vertex} AS node, 0 AS dist
+            UNION
+            SELECT e.#{qi(dst)} AS node, #{cost_expr}
+            FROM paths p
+            JOIN edges_cte e ON p.node = e.#{qi(src)}
+            WHERE #{cost_expr} <= #{max_depth}
+          )
+        SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
+        """
+      else
+        # Unweighted: USING KEY eliminates duplicate rows automatically.
+        # 1000x intermediate row reduction vs plain UNION.
+        """
+        WITH RECURSIVE
+          edges_cte AS (#{edges_sql}),
+          paths(node, dist) USING KEY (node) AS (
+            SELECT #{from_vertex} AS node, 0 AS dist
+            UNION
+            (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
+             FROM paths p
+             JOIN edges_cte e ON p.node = e.#{qi(src)}
+             LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
+             WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth} + 1))
+          )
+        SELECT * FROM paths
+        """
+      end
 
     Dux.from_query(sql)
   end
@@ -549,18 +569,33 @@ defmodule Dux.Graph do
         "p.dist + 1"
       end
 
-    sql = """
-    WITH RECURSIVE paths(node, dist) USING KEY (node) AS (
-        SELECT #{from_vertex} AS node, 0 AS dist
-        UNION
-        (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
-         FROM paths p
-         JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
-         LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
-         WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth}))
-      )
-    SELECT * FROM paths
-    """
+    sql =
+      if weight do
+        """
+        WITH RECURSIVE paths AS (
+            SELECT #{from_vertex} AS node, 0 AS dist
+            UNION
+            SELECT e.#{qi(dst)} AS node, #{cost_expr}
+            FROM paths p
+            JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
+            WHERE #{cost_expr} <= #{max_depth}
+          )
+        SELECT node, MIN(dist) AS dist FROM paths GROUP BY node
+        """
+      else
+        """
+        WITH RECURSIVE paths(node, dist) USING KEY (node) AS (
+            SELECT #{from_vertex} AS node, 0 AS dist
+            UNION
+            (SELECT e.#{qi(dst)} AS node, #{cost_expr} AS dist
+             FROM paths p
+             JOIN "__bfs_edges" e ON p.node = e.#{qi(src)}
+             LEFT JOIN recurring.paths AS rec ON rec.node = e.#{qi(dst)}
+             WHERE #{cost_expr} < COALESCE(rec.dist, #{max_depth} + 1))
+          )
+        SELECT * FROM paths
+        """
+      end
 
     {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
     result = Dux.Backend.table_from_ipc(conn, result_ipc)

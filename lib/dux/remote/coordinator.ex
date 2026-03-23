@@ -464,6 +464,15 @@ defmodule Dux.Remote.Coordinator do
     |> Dux.discard(intermediate_cols)
   end
 
+  # Distributed STDDEV/VARIANCE formula.
+  # Workers emit (COUNT, SUM, SUM_OF_SQUARES) — all additive.
+  # Merger re-aggregates with SUM. Coordinator computes:
+  #   variance = (sum_x2 - sum_x^2 / n) / divisor
+  #
+  # Uses DOUBLE precision throughout. This formula can suffer from catastrophic
+  # cancellation when values are very large (>1e15) with tiny variance, but
+  # is correct for all practical data. DuckDB uses Welford internally for
+  # single-node STDDEV — the decomposition is only needed for cross-worker merge.
   defp stddev_formula(n_col, sum_col, sum2_col, pop_or_samp, sqrt?) do
     n = qi(n_col)
     sx = qi(sum_col)

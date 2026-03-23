@@ -178,7 +178,9 @@ defmodule Dux.Remote.PipelineSplitter do
     {new_aggs, new_rewrites}
   end
 
-  # STDDEV/VARIANCE → workers: COUNT(x), SUM(x), SUM(x*x). Coordinator: algebraic formula
+  # STDDEV/VARIANCE → workers: COUNT(x), SUM(x), SUM(x*x). Coordinator: algebraic formula.
+  # Uses DOUBLE precision to minimize cancellation. For extreme values (>1e15 with
+  # tiny variance), consider computing STDDEV locally instead of distributing.
   defp rewrite_stddev(name, expr, upper, acc_aggs, acc_rewrites) do
     inner = extract_inner_expr(expr)
     n_name = "__sd_n_#{name}"
