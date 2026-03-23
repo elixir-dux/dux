@@ -115,6 +115,11 @@ defmodule Dux.Remote.PipelineSplitter do
     do_split(rest, [op | worker], coord, rewrites)
   end
 
+  # ASOF join — push to workers (same as regular join)
+  defp do_split([{:asof_join, _, _, _, _, _} = op | rest], worker, coord, rewrites) do
+    do_split(rest, [op | worker], coord, rewrites)
+  end
+
   # Concat — push to workers
   defp do_split([{:concat_rows, _} = op | rest], worker, coord, rewrites) do
     do_split(rest, [op | worker], coord, rewrites)

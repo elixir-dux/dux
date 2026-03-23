@@ -746,6 +746,69 @@ defmodule Dux do
     %{left | ops: ops ++ [{:join, right, how, on_cols, suffix}]}
   end
 
+  @doc group: :join
+  @doc """
+  ASOF join — match each left row to the nearest right row satisfying an inequality.
+
+  Useful for time series alignment: match each trade to the most recent quote,
+  each event to the closest preceding snapshot, etc.
+
+  ## Options
+
+    * `:on` — equality column(s) to match on (atom, string, or list)
+    * `:by` — `{column, operator}` specifying the inequality condition.
+      Operators: `:>=`, `:>`, `:<=`, `:<`
+    * `:how` — `:inner` (default) or `:left` (preserve unmatched left rows)
+    * `:suffix` — suffix for duplicate column names (default: `"_right"`)
+
+  ## Examples
+
+      trades = Dux.from_list([
+        %{symbol: "AAPL", timestamp: 10, price: 150.0},
+        %{symbol: "AAPL", timestamp: 20, price: 152.0}
+      ])
+      quotes = Dux.from_list([
+        %{symbol: "AAPL", timestamp: 5, bid: 149.0},
+        %{symbol: "AAPL", timestamp: 15, bid: 151.0}
+      ])
+
+      # Match each trade to the most recent quote
+      Dux.asof_join(trades, quotes, on: :symbol, by: {:timestamp, :>=})
+      |> Dux.to_rows()
+  """
+  def asof_join(%Dux{ops: ops} = left, %Dux{} = right, opts) do
+    on = Keyword.get(opts, :on)
+    by = Keyword.fetch!(opts, :by)
+    how = Keyword.get(opts, :how, :inner)
+    suffix = Keyword.get(opts, :suffix, "_right")
+
+    {by_col, by_op} = by
+
+    unless by_op in [:>=, :>, :<=, :<] do
+      raise ArgumentError,
+            "asof_join :by operator must be one of :>=, :>, :<=, :< — got #{inspect(by_op)}"
+    end
+
+    on_cols =
+      case on do
+        nil ->
+          []
+
+        col when is_atom(col) or is_binary(col) ->
+          [{to_col_name(col), to_col_name(col)}]
+
+        cols when is_list(cols) ->
+          Enum.map(cols, fn
+            {l, r} -> {to_col_name(l), to_col_name(r)}
+            col -> {to_col_name(col), to_col_name(col)}
+          end)
+      end
+
+    by_normalized = {to_col_name(by_col), by_op}
+
+    %{left | ops: ops ++ [{:asof_join, right, how, on_cols, by_normalized, suffix}]}
+  end
+
   # ---------------------------------------------------------------------------
   # Reshape
   # ---------------------------------------------------------------------------

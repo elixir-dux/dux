@@ -563,6 +563,10 @@ defmodule Dux.Remote.Coordinator do
     worker_safe_source?(right.source) and Enum.all?(right.ops, &worker_safe_op?/1)
   end
 
+  defp worker_safe_op?({:asof_join, %Dux{} = right, _, _, _, _}) do
+    worker_safe_source?(right.source) and Enum.all?(right.ops, &worker_safe_op?/1)
+  end
+
   defp worker_safe_op?({:concat_rows, others}) do
     Enum.all?(others, fn %Dux{} = other ->
       worker_safe_source?(other.source) and Enum.all?(other.ops, &worker_safe_op?/1)
