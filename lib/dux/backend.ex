@@ -54,34 +54,36 @@ defmodule Dux.Backend do
 
     materialized = Adbc.Result.materialize(result)
 
-    # ADBC returns empty data list for 0-row results. Can't ingest empty columns.
-    # Instead, create the temp table via SQL (CREATE ... AS SELECT ... WHERE false)
-    # to preserve the schema.
-    if materialized.data == [] do
-      create_table_from_sql(conn, sql)
-    else
-      # ADBC ingest doesn't quote column names, so columns with spaces/special
-      # chars fail. Fall back to CREATE TABLE AS for those cases.
-      has_special_names = has_special_column_names?(materialized.data)
+    case flatten_batches(materialized.data) do
+      [] ->
+        # ADBC returns empty data for 0-row results. Can't ingest empty columns.
+        # Create the temp table via SQL to preserve the schema.
+        create_table_from_sql(conn, sql)
 
-      if has_special_names do
+      :multi_batch ->
+        # Multiple record batches — fall back to SQL to avoid concatenation.
         create_table_with_data(conn, sql)
-      else
-        try do
-          ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
 
-          %TableRef{
-            name: ingest_result.table,
-            gc_ref: ingest_result,
-            node: node()
-          }
-        rescue
-          ArgumentError ->
-            # ADBC ingest doesn't support all DuckDB types (e.g. timestamps
-            # from postgres_scanner). Fall back to CREATE TABLE AS SELECT.
-            create_table_with_data(conn, sql)
+      columns ->
+        # Single batch — ingest directly (avoids SQL round-trip).
+        if has_special_column_names?(columns) do
+          create_table_with_data(conn, sql)
+        else
+          try do
+            ingest_result = Adbc.Connection.ingest!(conn, columns)
+
+            %TableRef{
+              name: ingest_result.table,
+              gc_ref: ingest_result,
+              node: node()
+            }
+          rescue
+            ArgumentError ->
+              # ADBC ingest doesn't support all DuckDB types (e.g. timestamps
+              # from postgres_scanner). Fall back to CREATE TABLE AS SELECT.
+              create_table_with_data(conn, sql)
+          end
         end
-      end
     end
   end
 
@@ -165,6 +167,31 @@ defmodule Dux.Backend do
   end
 
   @doc false
+  def table_to_raw_columns(conn, %TableRef{} = ref) do
+    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
+    materialized = Adbc.Result.materialize(result)
+
+    case flatten_batches(materialized.data) do
+      [] -> %{}
+      :multi_batch -> table_to_raw_columns_multi(materialized.data)
+      columns -> Map.new(columns, fn col -> {col.field.name, col} end)
+    end
+  end
+
+  # Multi-batch: concatenate column buffers across batches by materializing to lists
+  # and rebuilding. Rare path — only for very large results.
+  defp table_to_raw_columns_multi(batches) do
+    batches
+    |> Enum.zip_with(fn columns_at_pos ->
+      [first | _] = columns_at_pos
+      name = first.field.name
+      values = Enum.flat_map(columns_at_pos, &Adbc.Column.to_list/1)
+      {name, Adbc.Column.new(values, name: name)}
+    end)
+    |> Map.new()
+  end
+
+  @doc false
   def table_to_rows(conn, %TableRef{} = ref) do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
     map = Adbc.Result.to_map(result)
@@ -197,7 +224,7 @@ defmodule Dux.Backend do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
     materialized = Adbc.Result.materialize(result)
 
-    if materialized.data == [] do
+    if flatten_batches(materialized.data) == [] do
       # ADBC can't serialize zero-row results to IPC.
       # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
       build_empty_table_ipc(conn, ref.name)
@@ -235,10 +262,9 @@ defmodule Dux.Backend do
   end
 
   def table_from_ipc(conn, <<"DUX_EMPTY"::binary, ipc::binary>>) do
-    # Empty table with schema — ingest the dummy row then delete it
-    result = Adbc.Result.from_ipc_stream!(ipc)
-    materialized = Adbc.Result.materialize(result)
-    ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+    # Empty table with schema — ingest the dummy row via zero-copy stream, then delete it
+    stream = Adbc.StreamResult.from_ipc_stream!(ipc)
+    ingest_result = Adbc.Connection.ingest!(conn, stream)
     # Delete the dummy row
     Adbc.Connection.query!(conn, "DELETE FROM #{qi(ingest_result.table)} WHERE true")
 
@@ -250,25 +276,37 @@ defmodule Dux.Backend do
   end
 
   def table_from_ipc(conn, binary) when is_binary(binary) do
-    result = Adbc.Result.from_ipc_stream!(binary)
-    materialized = Adbc.Result.materialize(result)
+    # Zero-copy path: load IPC stream and ingest directly without materializing.
+    # Falls back to materialized path if ingest fails (e.g. special column names).
+    stream = Adbc.StreamResult.from_ipc_stream!(binary)
+    ingest_result = Adbc.Connection.ingest!(conn, stream)
 
-    cond do
-      materialized.data == [] ->
+    %TableRef{
+      name: ingest_result.table,
+      gc_ref: ingest_result,
+      node: node()
+    }
+  rescue
+    _ ->
+      # ADBC ingest doesn't quote column names in DDL, so special chars fail.
+      # Fall back to materialize + safe-rename ingest.
+      result = Adbc.Result.from_ipc_stream!(binary)
+      materialized = Adbc.Result.materialize(result)
+      columns = flatten_batches(materialized.data)
+
+      if columns in [[], :multi_batch] do
         name = "__dux_#{:erlang.unique_integer([:positive])}"
-        Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
+
+        Adbc.Connection.query!(
+          conn,
+          "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false"
+        )
+
         %TableRef{name: name, gc_ref: nil, node: node()}
-
-      has_special_column_names?(materialized.data) ->
-        # Can't use ingest — DuckDB doesn't quote column names in DDL.
-        # Ingest to a temp name first, then copy with proper quoting.
-        ingest_result = ingest_safe(conn, materialized.data)
+      else
+        ingest_result = ingest_safe(conn, columns)
         %TableRef{name: ingest_result.table, gc_ref: ingest_result, node: node()}
-
-      true ->
-        ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
-        %TableRef{name: ingest_result.table, gc_ref: ingest_result, node: node()}
-    end
+      end
   end
 
   @sql_reserved ~w(
@@ -283,19 +321,9 @@ defmodule Dux.Backend do
   @doc false
   def sql_reserved_words, do: @sql_reserved
 
-  defp has_special_column_names?(columns) do
-    Enum.any?(columns, fn col ->
-      name = col.field.name
-
-      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "") or
-        String.downcase(name) in @sql_reserved
-    end)
-  end
-
   # Ingest data that has special column names by renaming to safe names,
   # ingesting, then renaming back via CREATE TABLE AS SELECT.
   defp ingest_safe(conn, columns) do
-    # Rename columns to safe names for ingest
     safe_columns =
       columns
       |> Enum.with_index()
@@ -305,7 +333,6 @@ defmodule Dux.Backend do
 
     ingest_result = Adbc.Connection.ingest!(conn, safe_columns)
 
-    # Now create a new table with the original column names
     original_names = Enum.map(columns, & &1.field.name)
 
     select_cols =
@@ -320,14 +347,32 @@ defmodule Dux.Backend do
       "CREATE TEMPORARY TABLE #{qi(final_name)} AS SELECT #{select_cols} FROM #{qi(ingest_result.table)}"
     )
 
-    # Return an "IngestResult-like" with the final table name
-    # Note: gc_ref is the original ingest_result which keeps the source alive
     %Adbc.IngestResult{
       ref: ingest_result.ref,
       table: final_name,
       num_rows: ingest_result.num_rows
     }
   end
+
+  defp has_special_column_names?(columns) do
+    Enum.any?(columns, fn col ->
+      name = col.field.name
+
+      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "") or
+        String.downcase(name) in @sql_reserved
+    end)
+  end
+
+  # ---------------------------------------------------------------------------
+  # Batch helpers
+  # ---------------------------------------------------------------------------
+
+  # ADBC results contain a list of record batches (each a list of columns).
+  # For single-batch results (common), return the batch directly.
+  # For empty or multi-batch results, return [] (callers handle this via SQL fallback).
+  defp flatten_batches([single_batch]) when is_list(single_batch), do: single_batch
+  defp flatten_batches([_ | _]), do: :multi_batch
+  defp flatten_batches([]), do: []
 
   # ---------------------------------------------------------------------------
   # Value normalization

@@ -3,7 +3,8 @@ if Code.ensure_loaded?(Nx) do
     @moduledoc """
     Implements `Nx.LazyContainer` for `%Dux{}`.
 
-    Numeric columns become tensors on demand. Non-numeric columns are skipped.
+    Numeric columns become tensors on demand via zero-copy from Arrow buffers.
+    Non-numeric columns are skipped.
     The result is a map of `%{column_name => tensor}`.
     """
 
@@ -11,41 +12,42 @@ if Code.ensure_loaded?(Nx) do
       computed = Dux.compute(dux)
       {:table, table_ref} = computed.source
       conn = Dux.Connection.get_conn()
-      columns = Dux.Backend.table_to_columns(conn, table_ref)
-      dtypes = computed.dtypes
+      raw_columns = Dux.Backend.table_to_raw_columns(conn, table_ref)
 
       {pairs, acc} =
-        columns
+        raw_columns
         |> Enum.sort_by(fn {name, _} -> name end)
-        |> Enum.flat_map_reduce(acc, &traverse_column(&1, &2, dtypes, fun))
+        |> Enum.flat_map_reduce(acc, &traverse_column(&1, &2, fun))
 
       {Map.new(pairs), acc}
     end
 
-    defp traverse_column({name, values}, acc, dtypes, fun) do
-      case nx_type(Map.get(dtypes, name)) do
+    defp traverse_column({name, %Adbc.Column{size: size} = col}, acc, fun) do
+      case nx_type_for_adbc(col.field.type) do
         nil ->
           {[], acc}
 
         nx_type ->
-          template = Nx.template({length(values)}, nx_type)
-          {result, acc} = fun.(template, fn -> Nx.tensor(values, type: nx_type) end, acc)
+          template = Nx.template({size}, nx_type)
+          {result, acc} = fun.(template, fn -> Dux.column_to_tensor(col) end, acc)
           {[{name, result}], acc}
       end
     end
 
-    defp nx_type({:s, 8}), do: :s8
-    defp nx_type({:s, 16}), do: :s16
-    defp nx_type({:s, 32}), do: :s32
-    defp nx_type({:s, 64}), do: :s64
-    defp nx_type({:u, 8}), do: :u8
-    defp nx_type({:u, 16}), do: :u16
-    defp nx_type({:u, 32}), do: :u32
-    defp nx_type({:u, 64}), do: :u64
-    defp nx_type({:f, 32}), do: :f32
-    defp nx_type({:f, 64}), do: :f64
-    defp nx_type(:boolean), do: :u8
-    defp nx_type({:decimal, _, _}), do: :f64
-    defp nx_type(_), do: nil
+    defp nx_type_for_adbc(:s8), do: :s8
+    defp nx_type_for_adbc(:s16), do: :s16
+    defp nx_type_for_adbc(:s32), do: :s32
+    defp nx_type_for_adbc(:s64), do: :s64
+    defp nx_type_for_adbc(:u8), do: :u8
+    defp nx_type_for_adbc(:u16), do: :u16
+    defp nx_type_for_adbc(:u32), do: :u32
+    defp nx_type_for_adbc(:u64), do: :u64
+    defp nx_type_for_adbc(:f16), do: :f16
+    defp nx_type_for_adbc(:f32), do: :f32
+    defp nx_type_for_adbc(:f64), do: :f64
+    defp nx_type_for_adbc(:boolean), do: :u8
+    defp nx_type_for_adbc({:decimal128, _, _}), do: :f64
+    defp nx_type_for_adbc({:decimal256, _, _}), do: :f64
+    defp nx_type_for_adbc(_), do: nil
   end
 end

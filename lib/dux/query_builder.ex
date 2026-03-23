@@ -483,26 +483,8 @@ defmodule Dux.QueryBuilder do
           Map.get(row, name) || Map.get(row, String.to_atom(name))
         end)
 
-      %Adbc.Column{
-        field: %Adbc.Field{name: name, type: infer_type(values), nullable: true, metadata: nil},
-        data: values
-      }
+      Adbc.Column.new(values, name: name)
     end)
-  end
-
-  defp infer_type([]), do: :string
-
-  defp infer_type(values) do
-    sample = Enum.find(values, &(&1 != nil))
-
-    case sample do
-      nil -> :string
-      v when is_integer(v) -> :s64
-      v when is_float(v) -> :f64
-      v when is_binary(v) -> :string
-      v when is_boolean(v) -> :boolean
-      _ -> :string
-    end
   end
 
   defp ingest_columns(conn, columns) do
