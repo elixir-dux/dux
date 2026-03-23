@@ -38,7 +38,8 @@ defmodule Dux.Remote.Shuffle do
   def execute(%Dux{} = left, %Dux{} = right, opts) do
     workers = Keyword.get_lazy(opts, :workers, &Worker.list/0)
     n_workers = length(workers)
-    n_buckets = n_workers * @over_partition_factor
+    factor = Keyword.get(opts, :over_partition_factor, @over_partition_factor)
+    n_buckets = n_workers * factor
 
     :telemetry.span(
       [:dux, :distributed, :shuffle],
@@ -62,7 +63,8 @@ defmodule Dux.Remote.Shuffle do
     right_cols = Enum.map(on_pairs, fn {_l, r} -> to_string(r) end)
 
     n_workers = length(workers)
-    n_buckets = n_workers * @over_partition_factor
+    factor = Keyword.get(opts, :over_partition_factor, @over_partition_factor)
+    n_buckets = n_workers * factor
     stage_id = :erlang.unique_integer([:positive])
 
     if workers == [] do
@@ -77,6 +79,9 @@ defmodule Dux.Remote.Shuffle do
 
       left_partitions = hash_partition_all(left_sliced, left_cols, n_buckets, timeout)
       right_partitions = hash_partition_all(right_sliced, right_cols, n_buckets, timeout)
+
+      # Skew detection: flag heavy buckets
+      detect_skew(left_partitions, right_partitions, n_buckets)
 
       # Phase 2: Shuffle exchange — send each bucket to the assigned worker
       # Assign buckets to workers round-robin
@@ -195,6 +200,49 @@ defmodule Dux.Remote.Shuffle do
   # ---------------------------------------------------------------------------
   # Phase 2: Shuffle exchange
   # ---------------------------------------------------------------------------
+
+  # Detect skewed buckets and emit telemetry.
+  # A bucket is "heavy" if it exceeds 5x the mean bucket size.
+  defp detect_skew(left_partitions, right_partitions, n_buckets) do
+    left_sizes = bucket_sizes(left_partitions)
+    right_sizes = bucket_sizes(right_partitions)
+
+    left_heavy = find_heavy_buckets(left_sizes, n_buckets)
+    right_heavy = find_heavy_buckets(right_sizes, n_buckets)
+
+    if left_heavy != [] or right_heavy != [] do
+      :telemetry.execute(
+        [:dux, :distributed, :shuffle, :skew_detected],
+        %{
+          left_heavy_count: length(left_heavy),
+          right_heavy_count: length(right_heavy)
+        },
+        %{
+          left_heavy_buckets: left_heavy,
+          right_heavy_buckets: right_heavy,
+          n_buckets: n_buckets
+        }
+      )
+    end
+  end
+
+  defp bucket_sizes(partitions) do
+    for {_worker, buckets} <- partitions,
+        {bucket_id, ipc} <- buckets,
+        ipc != nil,
+        reduce: %{} do
+      acc -> Map.update(acc, bucket_id, byte_size(ipc), &(&1 + byte_size(ipc)))
+    end
+  end
+
+  defp find_heavy_buckets(sizes, _n_buckets, threshold_factor \\ 5) do
+    values = Map.values(sizes)
+    mean = if values == [], do: 0, else: div(Enum.sum(values), length(values))
+
+    if mean == 0,
+      do: [],
+      else: for({id, size} <- sizes, size > threshold_factor * mean, do: id)
+  end
 
   defp assign_buckets(n_buckets, workers) do
     for bucket_id <- 0..(n_buckets - 1), into: %{} do
