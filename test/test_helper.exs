@@ -12,6 +12,12 @@ unless Node.alive?() do
   end
 end
 
+# Start testcontainers for integration tests (requires Docker)
+case Testcontainers.start_link() do
+  {:ok, _} -> :ok
+  {:error, _} -> IO.puts("⚠ Docker not available — excluding :container tests")
+end
+
 if Node.alive?() do
   ExUnit.start()
 else

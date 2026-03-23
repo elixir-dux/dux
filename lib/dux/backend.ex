@@ -67,13 +67,20 @@ defmodule Dux.Backend do
       if has_special_names do
         create_table_with_data(conn, sql)
       else
-        ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
+        try do
+          ingest_result = Adbc.Connection.ingest!(conn, materialized.data)
 
-        %TableRef{
-          name: ingest_result.table,
-          gc_ref: ingest_result,
-          node: node()
-        }
+          %TableRef{
+            name: ingest_result.table,
+            gc_ref: ingest_result,
+            node: node()
+          }
+        rescue
+          ArgumentError ->
+            # ADBC ingest doesn't support all DuckDB types (e.g. timestamps
+            # from postgres_scanner). Fall back to CREATE TABLE AS SELECT.
+            create_table_with_data(conn, sql)
+        end
       end
     end
   end
