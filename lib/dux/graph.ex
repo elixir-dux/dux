@@ -232,7 +232,8 @@ defmodule Dux.Graph do
   """
   def pagerank(%__MODULE__{} = graph, opts \\ []) do
     damping = Keyword.get(opts, :damping, 0.85)
-    iterations = Keyword.get(opts, :iterations, 20)
+    iterations = Keyword.get(opts, :max_iterations, Keyword.get(opts, :iterations, 100))
+    tolerance = Keyword.get(opts, :tolerance, 1.0e-6)
     workers = graph.workers
 
     meta = %{
@@ -247,14 +248,14 @@ defmodule Dux.Graph do
         if workers do
           pagerank_distributed(graph, damping, iterations, workers)
         else
-          pagerank_local(graph, damping, iterations)
+          pagerank_local(graph, damping, iterations, tolerance)
         end
 
       {result, meta}
     end)
   end
 
-  defp pagerank_local(graph, damping, iterations) do
+  defp pagerank_local(graph, damping, iterations, tolerance) do
     vid = graph.vertex_id
     src = graph.edge_src
     dst = graph.edge_dst
@@ -277,8 +278,8 @@ defmodule Dux.Graph do
 
     base_rank = (1.0 - damping) / n
 
-    {final, kept_out_deg, kept_prev} =
-      Enum.reduce(1..iterations, {ranks, out_deg, [ranks]}, fn _i, {ranks, out_deg, prev} ->
+    {final, _kept_out_deg, _kept_prev} =
+      Enum.reduce_while(1..iterations, {ranks, out_deg, [ranks]}, fn i, {ranks, out_deg, prev} ->
         conn = Dux.Connection.get_conn()
         Process.put(:dux_compute_ref, {ranks.source, out_deg.source})
 
@@ -313,11 +314,37 @@ defmodule Dux.Graph do
 
         new_ranks = Dux.from_query(sql) |> Dux.compute()
         Process.delete(:dux_compute_ref)
-        {new_ranks, out_deg, [new_ranks | prev]}
+
+        # Convergence check: L1 norm of rank change
+        converged =
+          if tolerance > 0 and i > 1 do
+            delta_sql = """
+              SELECT SUM(ABS(n."rank" - o."rank")) AS delta
+              FROM "#{new_ranks.source |> elem(1) |> Map.get(:name)}" n
+              JOIN "#{ranks_table}" o ON n.#{qi(vid)} = o.#{qi(vid)}
+            """
+
+            delta_result = Dux.from_query(delta_sql) |> Dux.to_rows()
+            delta = hd(delta_result)["delta"] || 0
+            delta < tolerance
+          else
+            false
+          end
+
+        :telemetry.execute([:dux, :graph, :iteration, :stop], %{iteration: i}, %{
+          algorithm: :pagerank,
+          iteration: i,
+          max_iterations: iterations,
+          converged: converged
+        })
+
+        if converged do
+          {:halt, {new_ranks, out_deg, [new_ranks | prev]}}
+        else
+          {:cont, {new_ranks, out_deg, [new_ranks | prev]}}
+        end
       end)
 
-    :erlang.garbage_collect()
-    _ = {kept_out_deg, kept_prev}
     final
   end
 
