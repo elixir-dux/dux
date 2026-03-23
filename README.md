@@ -43,21 +43,16 @@ Dux is a pure Elixir project. The DuckDB engine is provided via ADBC — a preco
 ```elixir
 require Dux
 
-# Read data
-df = Dux.from_csv("sales.csv")
+# Built-in datasets — no files needed
+Dux.Datasets.flights()
+|> Dux.filter(distance > 1000)
+|> Dux.mutate(delay_per_mile: arr_delay / distance)
+|> Dux.group_by(:origin)
+|> Dux.summarise(avg_delay: avg(arr_delay), n: count(flight))
+|> Dux.sort_by(desc: :avg_delay)
+|> Dux.to_rows()
 
-# Transform
-result =
-  df
-  |> Dux.filter(amount > 100)
-  |> Dux.mutate(tax: amount * 0.08)
-  |> Dux.group_by(:region)
-  |> Dux.summarise(total: sum(amount), avg_tax: avg(tax))
-  |> Dux.sort_by(desc: :total)
-  |> Dux.to_rows()
-
-# result is a list of maps:
-# [%{"region" => "US", "total" => 15000, "avg_tax" => 120.0}, ...]
+# [%{"origin" => "EWR", "avg_delay" => 8.15, "n" => 1094}, ...]
 ```
 
 ## Verbs
