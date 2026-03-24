@@ -10,13 +10,15 @@ if Code.ensure_loaded?(FLAME) do
       pool_name = :"flame_test_#{System.unique_integer([:positive])}"
 
       {:ok, _} =
-        Dux.Flame.start_pool(
-          name: pool_name,
-          backend: FLAME.LocalBackend,
-          min: 0,
-          max: 5,
-          idle_shutdown_after: :timer.seconds(30),
-          boot_timeout: 30_000
+        DynamicSupervisor.start_child(
+          Dux.DynamicSupervisor,
+          {FLAME.Pool,
+           name: pool_name,
+           backend: FLAME.LocalBackend,
+           min: 0,
+           max: 5,
+           idle_shutdown_after: :timer.seconds(30),
+           boot_timeout: 30_000}
         )
 
       %{pool: pool_name}
