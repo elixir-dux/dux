@@ -119,13 +119,19 @@ defmodule Dux.MixProject do
 
   defp before_closing_body_tag(:html) do
     """
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.2.3/dist/mermaid.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
     <script>
-      document.addEventListener("DOMContentLoaded", function () {
-        mermaid.initialize({
-          startOnLoad: false,
-          theme: document.body.className.includes("dark") ? "dark" : "default"
-        });
+      let mermaidInitialized = false;
+
+      window.addEventListener("exdoc:loaded", function () {
+        if (!mermaidInitialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: document.body.className.includes("dark") ? "dark" : "default"
+          });
+          mermaidInitialized = true;
+        }
+
         let id = 0;
         for (const codeEl of document.querySelectorAll("pre code.mermaid")) {
           const preEl = codeEl.parentElement;
@@ -134,6 +140,7 @@ defmodule Dux.MixProject do
           const graphId = "mermaid-graph-" + id++;
           mermaid.render(graphId, graphDefinition).then(function(result) {
             graphEl.innerHTML = result.svg;
+            if (result.bindFunctions) result.bindFunctions(graphEl);
             preEl.insertAdjacentElement("afterend", graphEl);
             preEl.remove();
           });
