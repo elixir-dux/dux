@@ -1745,6 +1745,9 @@ defmodule Dux do
     meta = %{format: fmt_atom, path: base_path, n_workers: n_workers}
 
     :telemetry.span([:dux, :distributed, :write], meta, fn ->
+      # Ensure output directory exists for local paths
+      ensure_output_dir(base_path)
+
       # Warn if output directory is non-empty
       warn_if_non_empty(base_path)
 
@@ -1772,9 +1775,12 @@ defmodule Dux do
 
         {write_path, worker_copy_opts} =
           if partitioned? do
-            # PARTITION_BY writes to a directory — use base_path directly but
-            # add FILENAME_PATTERN so each worker's files are uniquely named
-            {base_path, "#{copy_opts}, FILENAME_PATTERN \"w#{idx}_{i}\""}
+            # PARTITION_BY writes to a directory. Each worker gets its own
+            # subdirectory to avoid races on concurrent directory creation.
+            # The Hive partition dirs nest under each worker's subdir.
+            # Readers use **/*.parquet to find all files across worker dirs.
+            worker_dir = Path.join(base_path, "__w#{idx}")
+            {worker_dir, copy_opts}
           else
             {Path.join(base_path, "part_#{idx}_#{unique}.#{ext}"), copy_opts}
           end
@@ -1805,6 +1811,12 @@ defmodule Dux do
     end
 
     Enum.map(successes, fn {_w, {:ok, path}} -> path end)
+  end
+
+  defp ensure_output_dir(path) do
+    unless String.starts_with?(path, "s3://") or String.starts_with?(path, "http") do
+      File.mkdir_p(path)
+    end
   end
 
   defp format_extension("CSV"), do: "csv"

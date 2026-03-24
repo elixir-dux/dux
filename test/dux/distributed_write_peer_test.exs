@@ -283,16 +283,149 @@ defmodule Dux.DistributedWritePeerTest do
         assert row["n"] == 100
         assert row["total"] == div(100 * 101, 2)
 
-        # Verify Hive directories exist
-        subdirs =
+        # Verify per-worker subdirs with Hive directories exist
+        worker_dirs =
           File.ls!(output_dir)
-          |> Enum.filter(&String.starts_with?(&1, "region="))
+          |> Enum.filter(&String.starts_with?(&1, "__w"))
           |> Enum.sort()
 
-        assert subdirs == ["region=APAC", "region=EU", "region=US"]
+        assert length(worker_dirs) == 2
+
+        # Each worker dir should have Hive partition subdirectories
+        all_regions =
+          Enum.flat_map(worker_dirs, fn wdir ->
+            File.ls!(Path.join(output_dir, wdir))
+            |> Enum.filter(&String.starts_with?(&1, "region="))
+          end)
+          |> Enum.uniq()
+          |> Enum.sort()
+
+        assert all_regions == ["region=APAC", "region=EU", "region=US"]
       after
         :peer.stop(peer1)
         :peer.stop(peer2)
+        File.rm_rf!(input_dir)
+        File.rm_rf!(output_dir)
+      end
+    end
+
+    test "distributed partition_by write matches local partition_by write" do
+      input_dir = tmp_path("dw_hive_match_in")
+      local_dir = tmp_path("dw_hive_match_local")
+      dist_dir = tmp_path("dw_hive_match_dist")
+      File.mkdir_p!(input_dir)
+
+      {peer1, node1} = start_peer(:dw_hive_m1)
+      {peer2, node2} = start_peer(:dw_hive_m2)
+
+      try do
+        for i <- 1..6 do
+          rows =
+            for j <- 1..50 do
+              %{
+                "year" => Enum.at([2023, 2024], rem(j, 2)),
+                "value" => (i - 1) * 50 + j
+              }
+            end
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(input_dir, "part_#{i}.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Local write
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.filter_with("value > 100")
+        |> Dux.to_parquet(local_dir, partition_by: :year)
+
+        # Distributed write
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.distribute([w1, w2])
+        |> Dux.filter_with("value > 100")
+        |> Dux.to_parquet(dist_dir, partition_by: :year)
+
+        # Compare results
+        local_result =
+          Dux.from_parquet(Path.join(local_dir, "**/*.parquet"))
+          |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+          |> Dux.to_rows()
+
+        dist_result =
+          Dux.from_parquet(Path.join(dist_dir, "**/*.parquet"))
+          |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+          |> Dux.to_rows()
+
+        assert hd(local_result)["n"] == hd(dist_result)["n"]
+        assert hd(local_result)["total"] == hd(dist_result)["total"]
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        File.rm_rf!(input_dir)
+        File.rm_rf!(local_dir)
+        File.rm_rf!(dist_dir)
+      end
+    end
+
+    test "distributed partition_by at scale (1000 rows, 3 workers)" do
+      input_dir = tmp_path("dw_hive_scale_in")
+      output_dir = tmp_path("dw_hive_scale_out")
+      File.mkdir_p!(input_dir)
+
+      {peer1, node1} = start_peer(:dw_hive_s1)
+      {peer2, node2} = start_peer(:dw_hive_s2)
+      {peer3, node3} = start_peer(:dw_hive_s3)
+
+      try do
+        for i <- 1..10 do
+          rows =
+            for j <- 1..100 do
+              idx = (i - 1) * 100 + j
+
+              %{
+                "category" => Enum.at(["A", "B", "C", "D"], rem(idx, 4)),
+                "value" => idx
+              }
+            end
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(input_dir, "part_#{i}.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        {:ok, w3} = start_worker_on(node3)
+        Process.sleep(200)
+
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.distribute([w1, w2, w3])
+        |> Dux.to_parquet(output_dir, partition_by: :category)
+
+        result =
+          Dux.from_parquet(Path.join(output_dir, "**/*.parquet"))
+          |> Dux.summarise_with(
+            n: "COUNT(*)",
+            total: "SUM(value)",
+            min_v: "MIN(value)",
+            max_v: "MAX(value)"
+          )
+          |> Dux.to_rows()
+
+        row = hd(result)
+        assert row["n"] == 1000
+        assert row["total"] == div(1000 * 1001, 2)
+        assert row["min_v"] == 1
+        assert row["max_v"] == 1000
+
+        # 3 worker subdirs, each containing up to 4 category partition dirs
+        worker_dirs = File.ls!(output_dir) |> Enum.filter(&String.starts_with?(&1, "__w"))
+        assert length(worker_dirs) == 3
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        :peer.stop(peer3)
         File.rm_rf!(input_dir)
         File.rm_rf!(output_dir)
       end

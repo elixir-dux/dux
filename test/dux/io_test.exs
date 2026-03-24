@@ -1,5 +1,6 @@
 defmodule Dux.IOTest do
   use ExUnit.Case, async: false
+  use ExUnitProperties
 
   @tmp_dir System.tmp_dir!()
 
@@ -613,6 +614,124 @@ defmodule Dux.IOTest do
         assert row["min_v"] >= 2_024_000
       after
         File.rm_rf!(dir)
+      end
+    end
+
+    test "partition_by with string column name" do
+      dir = tmp_path("hive_out_string_col")
+
+      try do
+        Dux.from_list([%{"cat" => "X", "v" => 1}, %{"cat" => "Y", "v" => 2}])
+        |> Dux.to_parquet(dir, partition_by: "cat")
+
+        assert File.dir?(Path.join(dir, "cat=X"))
+        assert File.dir?(Path.join(dir, "cat=Y"))
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "partition_by preserves nulls and special characters in data columns" do
+      dir = tmp_path("hive_out_adversarial")
+
+      try do
+        Dux.from_list([
+          %{"region" => "US", "name" => "it's a test", "val" => 1},
+          %{"region" => "EU", "name" => nil, "val" => 2},
+          %{"region" => "US", "name" => "line1\nline2", "val" => 3}
+        ])
+        |> Dux.to_parquet(dir, partition_by: :region)
+
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.sort_by(:val)
+          |> Dux.to_columns()
+
+        assert result["val"] == [1, 2, 3]
+        assert nil in result["name"]
+        assert "it's a test" in result["name"]
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "partition_by with many partition values (scale)" do
+      dir = tmp_path("hive_out_scale")
+
+      try do
+        rows =
+          for i <- 1..1000 do
+            %{"bucket" => rem(i, 50), "value" => i}
+          end
+
+        Dux.from_list(rows)
+        |> Dux.to_parquet(dir, partition_by: :bucket)
+
+        # 50 partition directories
+        subdirs =
+          File.ls!(dir)
+          |> Enum.filter(&String.starts_with?(&1, "bucket="))
+
+        assert length(subdirs) == 50
+
+        # Read back — all 1000 rows present
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+          |> Dux.to_rows()
+
+        assert hd(result)["n"] == 1000
+        assert hd(result)["total"] == div(1000 * 1001, 2)
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "partition_by with empty result writes no files" do
+      dir = tmp_path("hive_out_empty")
+
+      try do
+        Dux.from_query("SELECT 1 AS region, 1 AS x WHERE false")
+        |> Dux.to_parquet(dir, partition_by: :region)
+
+        # Directory may or may not exist, but should have no parquet files
+        files = Path.wildcard(Path.join(dir, "**/*.parquet"))
+        assert files == []
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    property "partition_by round-trip preserves row count for arbitrary partition counts" do
+      check all(
+              n_partitions <- integer(1..20),
+              rows_per_partition <- integer(1..50)
+            ) do
+        dir = tmp_path("hive_prop_#{n_partitions}_#{rows_per_partition}")
+
+        try do
+          rows =
+            for p <- 1..n_partitions, r <- 1..rows_per_partition do
+              %{"part" => p, "value" => (p - 1) * rows_per_partition + r}
+            end
+
+          total_rows = n_partitions * rows_per_partition
+          expected_sum = div(total_rows * (total_rows + 1), 2)
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(dir, partition_by: :part)
+
+          result =
+            Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+            |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+            |> Dux.to_rows()
+
+          row = hd(result)
+          assert row["n"] == total_rows
+          assert row["total"] == expected_sum
+        after
+          File.rm_rf!(dir)
+        end
       end
     end
   end
