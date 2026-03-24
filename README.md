@@ -1,44 +1,47 @@
 # Dux
 
-**DuckDB-native DataFrames for Elixir.**
+[![CI](https://github.com/elixir-dux/dux/actions/workflows/ci.yml/badge.svg)](https://github.com/elixir-dux/dux/actions/workflows/ci.yml)
+[![Docs](https://img.shields.io/badge/hex.pm-docs-green.svg?style=flat)](https://hexdocs.pm/dux)
+[![Hex.pm](https://img.shields.io/hexpm/v/dux.svg)](https://hex.pm/packages/dux)
 
-Dux is a dataframe library where DuckDB is the execution engine and the BEAM is the distributed runtime. Pipelines are lazy, operations compile to SQL CTEs, and DuckDB handles all the heavy lifting.
+**DuckDB-native dataframes for Elixir.**
+
+Dux gives you a [dplyr](https://dplyr.tidyverse.org)-style verb API backed by DuckDB's analytical engine, with built-in distributed execution across the BEAM. Pipelines are lazy, operations compile to SQL, and DuckDB handles columnar execution, vectorised aggregation, and predicate pushdown.
 
 ```elixir
 require Dux
 
 Dux.from_parquet("s3://data/sales/**/*.parquet")
-|> Dux.filter(amount > 100 and region == ^selected_region)
+|> Dux.filter(amount > 100 and region == "US")
 |> Dux.mutate(revenue: price * quantity)
 |> Dux.group_by(:product)
 |> Dux.summarise(total: sum(revenue), orders: count(product))
 |> Dux.sort_by(desc: :total)
-|> Dux.to_parquet("results.parquet", compression: :zstd)
+|> Dux.to_rows()
 ```
 
-## Why Dux?
+## Design
 
-- **The module IS the dataframe.** `Dux.filter(df, ...)` — no `Dux.DataFrame`, no `Dux.Series`. Just verbs that pipe.
-- **Everything is lazy.** Operations accumulate until `compute/1`. DuckDB optimizes the full pipeline.
-- **DuckDB-only.** No pluggable backends, no abstraction tax. Full access to DuckDB extensions, window functions, recursive CTEs.
-- **Elixir expressions compile to SQL.** `Dux.filter(df, x > ^min_val)` becomes `WHERE x > $1` with parameter bindings. SQL injection safe by construction.
-- **Distributed.** Ship `%Dux{}` structs to any BEAM node, compile to SQL there, execute against that node's local DuckDB. Fan out with the Coordinator, merge results.
-- **Graph analytics.** `Dux.Graph` — a graph is two dataframes (vertices + edges). PageRank, shortest paths, connected components as verb compositions.
-- **Nx interop.** Numeric columns become tensors via `Nx.LazyContainer`. Zero-copy where possible.
+Dux is the successor to [Explorer](https://github.com/elixir-explorer/explorer). That means it borrows its verb design from dplyr and the tidyverse — constrained, composable operations that each do one thing well. If you've used `dplyr::filter()`, `mutate()`, `group_by() |> summarise()`, the Dux API will feel familiar.
+
+Where Dux diverges from Explorer:
+
+- **The module IS the dataframe.** `Dux.filter(df, ...)` not `Dux.DataFrame.filter(df, ...)`. No Series API — all operations are dataframe-level.
+- **DuckDB is the only engine.** No pluggable backends, no abstraction tax. Full access to DuckDB's SQL functions, window functions, recursive CTEs, and 50+ extensions.
+- **Lazy by default.** Operations accumulate as an AST in `%Dux{}`. When you materialise (`compute/1`, `to_rows/1`), the whole pipeline compiles to a chain of SQL CTEs and DuckDB optimises end-to-end.
+- **Distributed on the BEAM.** `%Dux{}` is plain data — ship it to any BEAM node, compile to SQL there, execute against that node's local DuckDB. No function serialisation, no cluster manager, no heavyweight RPC.
 
 ## Installation
 
 ```elixir
 def deps do
-  [
-    {:dux, github: "elixir-dux/dux"}
-  ]
+  [{:dux, "~> 0.2.0"}]
 end
 ```
 
-Dux is a pure Elixir project. The DuckDB engine is provided via ADBC — a precompiled driver downloaded automatically at compile time. No Rust, C++, or DuckDB compilation needed.
+Dux is a pure Elixir project. The DuckDB engine is provided via [ADBC](https://github.com/elixir-explorer/adbc) — a precompiled driver downloaded automatically at compile time. No Rust or C++ compilation needed.
 
-## Quick start
+## Getting Started
 
 ```elixir
 require Dux
@@ -46,127 +49,110 @@ require Dux
 # Built-in datasets — no files needed
 Dux.Datasets.flights()
 |> Dux.filter(distance > 1000)
-|> Dux.mutate(delay_per_mile: arr_delay / distance)
 |> Dux.group_by(:origin)
 |> Dux.summarise(avg_delay: avg(arr_delay), n: count(flight))
 |> Dux.sort_by(desc: :avg_delay)
+|> Dux.head(5)
 |> Dux.to_rows()
-
-# [%{"origin" => "EWR", "avg_delay" => 8.15, "n" => 1094}, ...]
 ```
 
-## Verbs
+Every verb (`filter`, `mutate`, `group_by`, `summarise`, etc.) takes Elixir expressions via macros. Bare identifiers become column names. `^` interpolates Elixir values safely as parameter bindings:
 
-All operations are verbs on `%Dux{}` structs:
+```elixir
+min_amount = 500
+Dux.filter(df, amount > ^min_amount and status == "active")
+```
 
-| Verb             | Description                                                |
-| ---------------- | ---------------------------------------------------------- |
-| `filter/2`       | Filter rows (macro: `filter(df, x > 10)`)                  |
-| `mutate/2`       | Add/replace columns (macro: `mutate(df, y: x * 2)`)        |
-| `select/2`       | Keep columns                                               |
-| `discard/2`      | Drop columns                                               |
-| `sort_by/2`      | Sort rows (asc/desc)                                       |
-| `group_by/2`     | Group for aggregation                                      |
-| `summarise/2`    | Aggregate (macro: `summarise(df, total: sum(x))`)          |
-| `join/3`         | Inner, left, right, cross, anti, semi joins                |
-| `head/2`         | First N rows                                               |
-| `slice/3`        | Offset + limit                                             |
-| `distinct/1`     | Deduplicate                                                |
-| `drop_nil/2`     | Remove rows with nil values                                |
-| `rename/2`       | Rename columns                                             |
-| `pivot_wider/4`  | Long → wide (DuckDB PIVOT)                                 |
-| `pivot_longer/3` | Wide → long (DuckDB UNPIVOT)                               |
-| `concat_rows/1`  | UNION ALL                                                  |
-| `compute/1`      | Execute the pipeline                                       |
-| `to_rows/1`      | Execute and return list of maps (`atom_keys: true` option) |
-| `to_columns/1`   | Execute and return column map                              |
-| `peek/2`         | Print formatted table preview                              |
-| `n_rows/1`       | Count rows                                                 |
-| `sql_preview/2`  | Show generated SQL (`pretty: true` option)                 |
+The `_with` variants accept raw DuckDB SQL for anything the macro doesn't cover:
 
-The `_with` variants (`filter_with/2`, `mutate_with/2`, `summarise_with/2`) accept raw SQL strings for programmatic use.
+```elixir
+Dux.mutate_with(df, rank: "ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)")
+```
 
 ## IO
 
-DuckDB handles all file formats and remote access natively:
+Read and write CSV, Parquet, NDJSON, Excel, and database tables:
 
 ```elixir
-# Read
-Dux.from_csv("data.csv", delimiter: "\t")
-Dux.from_parquet("data/**/*.parquet")
-Dux.from_ndjson("events.ndjson")
-Dux.from_query("SELECT * FROM read_parquet('s3://bucket/data.parquet')")
+df = Dux.from_parquet("s3://bucket/data/**/*.parquet")
+df = Dux.from_csv("data.csv", delimiter: "\t")
+df = Dux.from_excel("sales.xlsx", sheet: "Q1")
 
-# Write
-Dux.to_csv(df, "output.csv")
-Dux.to_parquet(df, "output.parquet", compression: :zstd)
-Dux.to_ndjson(df, "output.ndjson")
+Dux.to_parquet(df, "output/", partition_by: [:year, :month])
+Dux.to_excel(df, "report.xlsx")
+Dux.insert_into(df, "pg.public.events", create: true)
 ```
 
-S3, HTTP, Postgres, MySQL, SQLite — all via DuckDB extensions. No separate libraries needed.
-
-## Distributed queries
-
-Dux distributes analytical workloads across a BEAM cluster:
+Cross-source queries via DuckDB's ATTACH — Postgres, MySQL, SQLite, Iceberg, Delta, DuckLake:
 
 ```elixir
-# Workers auto-register via :pg
-workers = Dux.Remote.Worker.list()
+Dux.attach(:warehouse, "host=db.internal dbname=analytics", type: :postgres)
+customers = Dux.from_attached(:warehouse, "public.customers")
 
-# Mark for distributed, then use the same verbs
-Dux.from_parquet("data/**/*.parquet")
-|> Dux.distribute(workers)
-|> Dux.filter(amount > 100)
+Dux.from_parquet("s3://lake/orders/*.parquet")
+|> Dux.join(customers, on: :customer_id)
 |> Dux.group_by(:region)
-|> Dux.summarise(total: sum(amount))
+|> Dux.summarise(revenue: sum(amount))
 |> Dux.to_rows()
 ```
 
-No function serialization — `%Dux{}` is plain data. Ship it anywhere, compile to SQL there. No cluster manager — just `libcluster` + `:pg`. No heavyweight RPC — just `:erpc.multicall`.
+## Distributed Execution
 
-## Graph analytics
+Mark a pipeline for distributed execution with `distribute/2`. The same verbs work — Dux handles partitioning, fan-out, and merge automatically:
+
+```elixir
+workers = Dux.Remote.Worker.list()
+
+Dux.from_parquet("s3://lake/events/**/*.parquet")
+|> Dux.distribute(workers)
+|> Dux.filter(year == 2024)
+|> Dux.group_by(:region)
+|> Dux.summarise(total: sum(revenue))
+|> Dux.to_rows()
+```
+
+Under the hood: the Coordinator partitions files across workers (size-balanced, with Hive partition pruning), each worker compiles and executes SQL against its local DuckDB, and the Merger re-aggregates results. Workers read from and write to storage directly — no data funnels through the coordinator.
+
+Distributed writes work the same way:
+
+```elixir
+Dux.from_parquet("s3://input/**/*.parquet")
+|> Dux.distribute(workers)
+|> Dux.filter(status == "active")
+|> Dux.to_parquet("s3://output/", partition_by: :year)
+```
+
+Attach Postgres and distribute reads with `partition_by:`:
+
+```elixir
+Dux.from_attached(:pg, "public.orders", partition_by: :id)
+|> Dux.distribute(workers)
+|> Dux.insert_into("pg.public.summary", create: true)
+```
+
+See the [Distributed Execution](https://hexdocs.pm/dux/distributed.html) guide for the full architecture — aggregate rewrites, broadcast vs shuffle joins, streaming merge, and fault tolerance.
+
+## Graph Analytics
+
+A graph is two dataframes. All algorithms return `%Dux{}` — pipe into any verb:
 
 ```elixir
 graph = Dux.Graph.new(vertices: users, edges: follows)
 
-# All algorithms are verb compositions
 graph |> Dux.Graph.pagerank() |> Dux.sort_by(desc: :rank) |> Dux.head(10)
 graph |> Dux.Graph.shortest_paths(start_node)
 graph |> Dux.Graph.connected_components()
-graph |> Dux.Graph.triangle_count()
-
-# Distribute graph across workers
-graph |> Dux.Graph.distribute(workers) |> Dux.Graph.pagerank()
 ```
 
-## Nx interop
+## Guides
 
-Numeric columns become tensors:
-
-```elixir
-tensor = Dux.to_tensor(df, :price)
-# #Nx.Tensor<f64[1000] [...]>
-```
-
-`Dux` implements `Nx.LazyContainer` for use in `defn`.
-
-## Raw SQL escape hatch
-
-For anything the macro doesn't support — window functions, CASE WHEN, PIVOT, CTEs — use the `_with` variants with raw DuckDB SQL:
-
-```elixir
-# Window functions
-Dux.mutate_with(df, rank: "ROW_NUMBER() OVER (PARTITION BY \"dept\" ORDER BY \"salary\" DESC)")
-
-# CASE WHEN
-Dux.mutate_with(df, tier: "CASE WHEN amount > 1000 THEN 'high' ELSE 'low' END")
-
-# Pivot
-Dux.from_query("PIVOT sales ON product USING SUM(amount) GROUP BY region")
-
-# Any DuckDB SQL
-Dux.from_query("SELECT * FROM read_parquet('s3://bucket/data.parquet') WHERE year = 2025")
-```
+- [Getting Started](https://hexdocs.pm/dux/getting-started.html) — core concepts, expressions, pipelines
+- [Data IO](https://hexdocs.pm/dux/data-io.html) — CSV, Parquet, Excel, NDJSON, database writes
+- [Transformations](https://hexdocs.pm/dux/transformations.html) — filter, mutate, window functions
+- [Joins & Reshape](https://hexdocs.pm/dux/joins-and-reshape.html) — join types, ASOF joins, pivots
+- [Distributed Execution](https://hexdocs.pm/dux/distributed.html) — architecture, partitioning, distributed IO
+- [Graph Analytics](https://hexdocs.pm/dux/graph-analytics.html) — PageRank, shortest paths, components
+- [Cheatsheet](https://hexdocs.pm/dux/cheatsheet.html) — quick reference for all verbs
 
 ## License
 
@@ -174,6 +160,7 @@ Dual-licensed under Apache 2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and
 
 ## Links
 
-- [Documentation](https://hexdocs.pm/dux)
+- [HexDocs](https://hexdocs.pm/dux)
+- [Hex.pm](https://hex.pm/packages/dux)
 - [GitHub](https://github.com/elixir-dux/dux)
 - [Changelog](CHANGELOG.md)
