@@ -550,8 +550,11 @@ defmodule Dux.Remote.Coordinator do
   end
 
   # ---------------------------------------------------------------------------
-  # DuckLake source resolution
+  # Source resolution (public for distributed_write/insert_into paths)
   # ---------------------------------------------------------------------------
+
+  @doc false
+  def resolve_source(pipeline), do: resolve_ducklake_source(pipeline)
 
   # Resolve attached sources that can be distributed:
   # - DuckLake: resolve file manifest → {:ducklake_files, paths}

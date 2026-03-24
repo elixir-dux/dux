@@ -297,5 +297,199 @@ defmodule Dux.DistributedInsertPeerTest do
         :peer.stop(peer2)
       end
     end
+
+    test "insert with mismatched column schema raises", %{conn_string: cs} do
+      Dux.attach(:dipg, cs, type: :postgres, read_only: false)
+
+      {peer1, node1} = start_peer(:di_sad_schema1)
+      {peer2, node2} = start_peer(:di_sad_schema2)
+
+      try do
+        # Create a table with specific columns
+        pg_query!(cs, """
+        CREATE TABLE __pg__.public.di_test_schema (id INTEGER, name VARCHAR)
+        """)
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Insert data with wrong column names — should fail
+        assert_raise ArgumentError, ~r/all workers failed/, fn ->
+          Dux.from_list([%{"wrong_col" => 1, "also_wrong" => "x"}])
+          |> Dux.distribute([w1, w2])
+          |> Dux.insert_into("dipg.public.di_test_schema")
+        end
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        pg_query!(cs, "DROP TABLE IF EXISTS __pg__.public.di_test_schema")
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Adversarial
+  # ---------------------------------------------------------------------------
+
+  describe "adversarial" do
+    test "inserts data with nulls, quotes, and newlines", %{conn_string: cs} do
+      Dux.attach(:dipg, cs, type: :postgres, read_only: false)
+
+      {peer1, node1} = start_peer(:di_adv1)
+      {peer2, node2} = start_peer(:di_adv2)
+
+      try do
+        input_dir = tmp_path("di_adv_input")
+        File.mkdir_p!(input_dir)
+
+        Dux.from_list([
+          %{"id" => 1, "name" => "it's a test", "value" => 100},
+          %{"id" => 2, "name" => nil, "value" => 200},
+          %{"id" => 3, "name" => "line1\nline2", "value" => 300},
+          %{"id" => 4, "name" => "has \"quotes\"", "value" => 400}
+        ])
+        |> Dux.to_parquet(Path.join(input_dir, "part_1.parquet"))
+
+        Dux.from_list([
+          %{"id" => 5, "name" => "normal", "value" => 500},
+          %{"id" => 6, "name" => "", "value" => 600}
+        ])
+        |> Dux.to_parquet(Path.join(input_dir, "part_2.parquet"))
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.distribute([w1, w2])
+        |> Dux.insert_into("dipg.public.di_test_adversarial", create: true)
+
+        count = pg_count(cs, "public.di_test_adversarial")
+        assert count == 6
+
+        # Read back and verify special values survived
+        result =
+          Dux.from_attached(:dipg, "public.di_test_adversarial")
+          |> Dux.sort_by(:id)
+          |> Dux.to_rows()
+
+        assert Enum.find(result, &(&1["id"] == 1))["name"] == "it's a test"
+        assert Enum.find(result, &(&1["id"] == 2))["name"] == nil
+        assert Enum.find(result, &(&1["id"] == 3))["name"] == "line1\nline2"
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        pg_query!(cs, "DROP TABLE IF EXISTS __pg__.public.di_test_adversarial")
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Wicked (multi-step)
+  # ---------------------------------------------------------------------------
+
+  describe "wicked" do
+    test "distributed read from Postgres → filter → distributed insert back to Postgres",
+         %{conn_string: cs} do
+      Dux.attach(:dipg, cs, type: :postgres, read_only: false)
+
+      {peer1, node1} = start_peer(:di_wicked1)
+      {peer2, node2} = start_peer(:di_wicked2)
+
+      try do
+        # Seed source table
+        pg_query!(cs, """
+        CREATE TABLE __pg__.public.di_test_source (id INTEGER, category VARCHAR, amount INTEGER)
+        """)
+
+        values =
+          for i <- 1..200 do
+            cat = Enum.at(["A", "B", "C"], rem(i, 3))
+            "(#{i}, '#{cat}', #{i * 10})"
+          end
+
+        pg_query!(cs, """
+        INSERT INTO __pg__.public.di_test_source VALUES #{Enum.join(values, ", ")}
+        """)
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Distributed read → filter → distributed insert
+        Dux.from_attached(:dipg, "public.di_test_source", partition_by: :id)
+        |> Dux.distribute([w1, w2])
+        |> Dux.filter_with("category = 'A'")
+        |> Dux.insert_into("dipg.public.di_test_dest", create: true)
+
+        # Verify: only category A rows, with correct count
+        dest_count = pg_count(cs, "public.di_test_dest")
+
+        # Category A: ids where rem(i, 3) == 0, which is 66 or 67 out of 200
+        source_a_count =
+          Dux.from_attached(:dipg, "public.di_test_source")
+          |> Dux.filter_with("category = 'A'")
+          |> Dux.summarise_with(n: "COUNT(*)")
+          |> Dux.to_rows()
+          |> hd()
+          |> Map.get("n")
+
+        assert dest_count == source_a_count
+        assert dest_count > 0
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        pg_query!(cs, "DROP TABLE IF EXISTS __pg__.public.di_test_source")
+        pg_query!(cs, "DROP TABLE IF EXISTS __pg__.public.di_test_dest")
+      end
+    end
+
+    test "1000-row insert with SUM verification", %{conn_string: cs} do
+      Dux.attach(:dipg, cs, type: :postgres, read_only: false)
+
+      {peer1, node1} = start_peer(:di_wk_sum1)
+      {peer2, node2} = start_peer(:di_wk_sum2)
+      {peer3, node3} = start_peer(:di_wk_sum3)
+
+      try do
+        input_dir = tmp_path("di_wk_sum_input")
+        File.mkdir_p!(input_dir)
+
+        for i <- 1..10 do
+          rows =
+            for j <- 1..100 do
+              %{"id" => (i - 1) * 100 + j, "value" => (i - 1) * 100 + j}
+            end
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(input_dir, "part_#{i}.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        {:ok, w3} = start_worker_on(node3)
+        Process.sleep(200)
+
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.distribute([w1, w2, w3])
+        |> Dux.insert_into("dipg.public.di_test_sum", create: true)
+
+        # Read back and verify SUM
+        result =
+          Dux.from_attached(:dipg, "public.di_test_sum")
+          |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+          |> Dux.to_rows()
+
+        row = hd(result)
+        assert row["n"] == 1000
+        assert row["total"] == div(1000 * 1001, 2)
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        :peer.stop(peer3)
+        pg_query!(cs, "DROP TABLE IF EXISTS __pg__.public.di_test_sum")
+      end
+    end
   end
 end

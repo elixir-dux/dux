@@ -428,8 +428,11 @@ defmodule Dux do
       # Resolve the target database's connection info for worker ATTACH
       setup_sqls = resolve_insert_target_setup(table)
 
-      # Partition the source across workers
+      # Resolve source for distribution (e.g., attached with partition_by →
+      # distributed_scan) then partition across workers
       pipeline = %{dux | workers: nil}
+      # credo:disable-for-next-line Credo.Check.Design.AliasUsage
+      pipeline = Dux.Remote.Coordinator.resolve_source(pipeline)
       assignments = Partitioner.assign(pipeline, workers)
 
       results = fan_out_inserts(assignments, table, setup_sqls, create?, n_workers)
