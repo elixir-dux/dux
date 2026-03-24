@@ -267,6 +267,34 @@ defmodule Dux do
     %Dux{source: {:ndjson, path, opts}}
   end
 
+  @doc group: :io
+  @doc """
+  Read an Excel file (.xlsx) into a lazy Dux pipeline.
+
+  Uses DuckDB's `read_xlsx` function (available in DuckDB 1.5+).
+
+  ## Options
+
+    * `:sheet` — sheet name (default: first sheet)
+    * `:range` — cell range, e.g. `"A1:F1000"` (default: auto-detect)
+    * `:header` — whether the first row is a header (default: `true`)
+    * `:all_varchar` — read all columns as VARCHAR (default: `false`).
+      Useful when type inference fails on mixed-type columns.
+    * `:stop_at_empty` — stop reading at the first empty row (default: `true`)
+
+  ## Examples
+
+      df = Dux.from_excel("sales.xlsx")
+      df = Dux.from_excel("data.xlsx", sheet: "Q1 2024", range: "A1:F100")
+      df = Dux.from_excel("messy.xlsx", all_varchar: true)
+  """
+  def from_excel(path, opts \\ []) when is_binary(path) do
+    escaped = String.replace(path, "'", "''")
+    opts = Keyword.put_new(opts, :header, true)
+    read_opts = excel_read_options(opts)
+    %Dux{source: {:sql, "SELECT * FROM read_xlsx('#{escaped}'#{read_opts})"}}
+  end
+
   # ---------------------------------------------------------------------------
   # IO — writing
   # ---------------------------------------------------------------------------
@@ -342,6 +370,21 @@ defmodule Dux do
   """
   def to_ndjson(%Dux{} = dux, path, opts \\ []) when is_binary(path) do
     write_copy(dux, path, "JSON", opts)
+  end
+
+  @doc group: :io
+  @doc """
+  Write a Dux to an Excel file (.xlsx). Triggers computation.
+
+  Requires the DuckDB `excel` extension (auto-installed, needs explicit LOAD).
+
+  ## Examples
+
+      Dux.from_list([%{name: "Alice", age: 30}, %{name: "Bob", age: 25}])
+      |> Dux.to_excel("/tmp/output.xlsx")
+  """
+  def to_excel(%Dux{} = dux, path) when is_binary(path) do
+    write_copy(dux, path, "XLSX", [])
   end
 
   @doc group: :io
@@ -1836,6 +1879,9 @@ defmodule Dux do
         Dux.Backend.execute(conn, setup_sql)
       end)
 
+      # XLSX format requires explicit extension loading
+      if format == "XLSX", do: Dux.Backend.execute(conn, "INSTALL excel; LOAD excel;")
+
       copy_opts = build_copy_options(format, opts)
       escaped_path = String.replace(path, "'", "''")
       sql = "COPY (#{query_sql}) TO '#{escaped_path}' (#{copy_opts})"
@@ -1938,6 +1984,7 @@ defmodule Dux do
   defp format_extension("CSV"), do: "csv"
   defp format_extension("PARQUET"), do: "parquet"
   defp format_extension("JSON"), do: "ndjson"
+  defp format_extension("XLSX"), do: "xlsx"
 
   defp warn_if_non_empty(path) do
     require Logger
@@ -2009,6 +2056,34 @@ defmodule Dux do
 
   defp build_copy_options("JSON", _opts) do
     "FORMAT JSON"
+  end
+
+  defp build_copy_options("XLSX", _opts) do
+    "FORMAT XLSX, HEADER true"
+  end
+
+  defp excel_read_options(opts) do
+    parts =
+      [
+        excel_opt(opts, :sheet, fn s -> "sheet = '#{String.replace(to_string(s), "'", "''")}'" end),
+        excel_opt(opts, :range, fn r -> "range = '#{r}'" end),
+        excel_opt(opts, :header, fn v -> "header = #{v}" end),
+        excel_opt(opts, :all_varchar, fn
+          true -> "all_varchar = true"
+          _ -> nil
+        end),
+        excel_opt(opts, :stop_at_empty, fn v -> "stop_at_empty = #{v}" end)
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    if parts == [], do: "", else: ", " <> Enum.join(parts, ", ")
+  end
+
+  defp excel_opt(opts, key, formatter) do
+    case Keyword.get(opts, key) do
+      nil -> nil
+      val -> formatter.(val)
+    end
   end
 
   defp normalize_sort(col) when is_atom(col), do: [{:asc, to_col_name(col)}]
