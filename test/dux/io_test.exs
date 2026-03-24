@@ -503,4 +503,117 @@ defmodule Dux.IOTest do
       Adbc.Connection.query(conn, "DROP TABLE IF EXISTS __dux_insert_multi")
     end
   end
+
+  # ---------------------------------------------------------------------------
+  # partition_by (Hive-partitioned Parquet output)
+  # ---------------------------------------------------------------------------
+
+  describe "to_parquet with partition_by" do
+    test "single partition column creates Hive directory structure" do
+      dir = tmp_path("hive_out_single")
+
+      try do
+        Dux.from_list([
+          %{"region" => "US", "value" => 1},
+          %{"region" => "US", "value" => 2},
+          %{"region" => "EU", "value" => 3}
+        ])
+        |> Dux.to_parquet(dir, partition_by: :region)
+
+        # Should create region=US/ and region=EU/ directories
+        assert File.dir?(Path.join(dir, "region=US"))
+        assert File.dir?(Path.join(dir, "region=EU"))
+
+        # Read back and verify
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.sort_by(:value)
+          |> Dux.to_columns()
+
+        assert result["value"] == [1, 2, 3]
+        assert length(result["region"]) == 3
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "multiple partition columns create nested directories" do
+      dir = tmp_path("hive_out_multi")
+
+      try do
+        rows =
+          for year <- [2023, 2024], month <- [1, 2], i <- 1..5 do
+            %{"year" => year, "month" => month, "x" => i}
+          end
+
+        Dux.from_list(rows)
+        |> Dux.to_parquet(dir, partition_by: [:year, :month])
+
+        # Should create nested structure
+        assert File.dir?(Path.join([dir, "year=2024", "month=2"]))
+        assert File.dir?(Path.join([dir, "year=2023", "month=1"]))
+
+        # Read back and verify total
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.summarise_with(n: "COUNT(*)")
+          |> Dux.to_rows()
+
+        assert hd(result)["n"] == 20
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "partition_by with compression" do
+      dir = tmp_path("hive_out_zstd")
+
+      try do
+        Dux.from_list([
+          %{"group" => "A", "val" => 1},
+          %{"group" => "B", "val" => 2}
+        ])
+        |> Dux.to_parquet(dir, partition_by: :group, compression: :zstd)
+
+        assert File.dir?(Path.join(dir, "group=A"))
+        assert File.dir?(Path.join(dir, "group=B"))
+
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.to_columns()
+
+        assert Enum.sort(result["val"]) == [1, 2]
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "round-trip: partition_by write then partition-pruned read" do
+      require Dux
+      dir = tmp_path("hive_roundtrip")
+
+      try do
+        rows =
+          for year <- [2023, 2024], i <- 1..50 do
+            %{"year" => year, "value" => year * 1000 + i}
+          end
+
+        Dux.from_list(rows)
+        |> Dux.to_parquet(dir, partition_by: :year)
+
+        # Read back with filter — should get only year=2024 data
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.filter(year == 2024)
+          |> Dux.summarise_with(n: "COUNT(*)", min_v: "MIN(value)", max_v: "MAX(value)")
+          |> Dux.to_rows()
+
+        row = hd(result)
+        assert row["n"] == 50
+        assert row["min_v"] >= 2_024_000
+      after
+        File.rm_rf!(dir)
+      end
+    end
+  end
 end

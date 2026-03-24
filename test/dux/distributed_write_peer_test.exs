@@ -237,6 +237,69 @@ defmodule Dux.DistributedWritePeerTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Distributed partition_by writes
+  # ---------------------------------------------------------------------------
+
+  describe "distributed to_parquet with partition_by" do
+    test "each worker writes Hive-partitioned output" do
+      input_dir = tmp_path("dw_hive_input")
+      output_dir = tmp_path("dw_hive_output")
+      File.mkdir_p!(input_dir)
+
+      {peer1, node1} = start_peer(:dw_hive1)
+      {peer2, node2} = start_peer(:dw_hive2)
+
+      try do
+        # Create input with a partition column
+        for i <- 1..4 do
+          rows =
+            for j <- 1..25 do
+              %{
+                "region" => Enum.at(["US", "EU", "APAC"], rem((i - 1) * 25 + j, 3)),
+                "value" => (i - 1) * 25 + j
+              }
+            end
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(input_dir, "part_#{i}.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Distributed write with partition_by
+        Dux.from_parquet(Path.join(input_dir, "*.parquet"))
+        |> Dux.distribute([w1, w2])
+        |> Dux.to_parquet(output_dir, partition_by: :region)
+
+        # Each worker creates Hive directories — read back all output
+        result =
+          Dux.from_parquet(Path.join(output_dir, "**/*.parquet"))
+          |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
+          |> Dux.to_rows()
+
+        row = hd(result)
+        assert row["n"] == 100
+        assert row["total"] == div(100 * 101, 2)
+
+        # Verify Hive directories exist
+        subdirs =
+          File.ls!(output_dir)
+          |> Enum.filter(&String.starts_with?(&1, "region="))
+          |> Enum.sort()
+
+        assert subdirs == ["region=APAC", "region=EU", "region=US"]
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        File.rm_rf!(input_dir)
+        File.rm_rf!(output_dir)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Sad path
   # ---------------------------------------------------------------------------
 
