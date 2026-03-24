@@ -352,6 +352,10 @@ defmodule Dux do
   table in an attached database (Postgres, DuckLake, etc.). The pipeline
   is compiled to SQL and executed as `INSERT INTO target SELECT ...`.
 
+  When workers are set (`Dux.distribute/2`), each worker ATTACHes the
+  target database independently and inserts its partition in parallel.
+  Per-worker transactions — not atomic across workers.
+
   ## Options
 
     * `:create` — create the target table if it doesn't exist (default: `false`).
@@ -359,23 +363,30 @@ defmodule Dux do
 
   ## Examples
 
-      # Insert into an attached DuckLake table
-      Dux.attach(:lake, "ducklake:metadata.db", type: :ducklake, read_only: false)
+      # Insert into an attached Postgres table
+      Dux.attach(:pg, "host=... dbname=analytics", type: :postgres, read_only: false)
 
       Dux.from_parquet("s3://bucket/raw/*.parquet")
       |> Dux.filter(col("status") == "active")
-      |> Dux.insert_into("lake.analytics.users")
+      |> Dux.insert_into("pg.public.users")
 
-      # Create a new table from a pipeline
-      Dux.from_csv("/data/events.csv")
-      |> Dux.mutate(day: cast(timestamp, :date))
-      |> Dux.insert_into("lake.events", create: true)
+      # Distributed insert — each worker writes its partition to Postgres
+      Dux.from_parquet("s3://input/**/*.parquet")
+      |> Dux.distribute(workers)
+      |> Dux.insert_into("pg.public.events", create: true)
 
       # Insert into a local DuckDB table
       Dux.from_query("SELECT 1 AS x")
       |> Dux.insert_into("my_table", create: true)
   """
-  def insert_into(%Dux{} = dux, table, opts \\ []) when is_binary(table) do
+  def insert_into(dux, table, opts \\ [])
+
+  def insert_into(%Dux{workers: workers} = dux, table, opts)
+      when is_binary(table) and is_list(workers) and workers != [] do
+    distributed_insert_into(dux, table, opts)
+  end
+
+  def insert_into(%Dux{} = dux, table, opts) when is_binary(table) do
     create? = Keyword.get(opts, :create, false)
     meta = %{table: table, create: create?}
 
@@ -402,6 +413,108 @@ defmodule Dux do
 
       Process.delete(:dux_write_ref)
       {:ok, meta}
+    end)
+  end
+
+  defp distributed_insert_into(%Dux{workers: workers} = dux, table, opts) do
+    alias Dux.Remote.{Partitioner, Worker}
+    require Logger
+
+    create? = Keyword.get(opts, :create, false)
+    n_workers = length(workers)
+    meta = %{table: table, create: create?, n_workers: n_workers, distributed: true}
+
+    :telemetry.span([:dux, :distributed, :write], meta, fn ->
+      # Resolve the target database's connection info for worker ATTACH
+      setup_sqls = resolve_insert_target_setup(table)
+
+      # Partition the source across workers
+      pipeline = %{dux | workers: nil}
+      assignments = Partitioner.assign(pipeline, workers)
+
+      results = fan_out_inserts(assignments, table, setup_sqls, create?, n_workers)
+      files = handle_write_results(results, n_workers, table)
+      {:ok, Map.merge(meta, %{files: files, n_files: length(files)})}
+    end)
+  end
+
+  # Fan out INSERT INTO to workers. If create: true, the first worker creates
+  # the table sequentially before the rest start inserting in parallel.
+  defp fan_out_inserts(assignments, table, setup_sqls, create?, n_workers) do
+    alias Dux.Remote.Worker
+
+    if create? do
+      [{first_worker, first_pipeline} | rest] = assignments
+      first = Worker.insert_into(first_worker, first_pipeline, table, setup_sqls, true)
+
+      rest_results =
+        rest
+        |> Task.async_stream(
+          fn {worker, wp} ->
+            {worker, Worker.insert_into(worker, wp, table, setup_sqls, false)}
+          end,
+          max_concurrency: n_workers,
+          timeout: :infinity
+        )
+        |> Enum.map(fn {:ok, r} -> r end)
+
+      [{first_worker, first} | rest_results]
+    else
+      assignments
+      |> Task.async_stream(
+        fn {worker, wp} ->
+          {worker, Worker.insert_into(worker, wp, table, setup_sqls, false)}
+        end,
+        max_concurrency: n_workers,
+        timeout: :infinity
+      )
+      |> Enum.map(fn {:ok, r} -> r end)
+    end
+  end
+
+  # Resolve the target table's database to INSTALL/LOAD/ATTACH setup SQL
+  # for workers. The table name format is "db_name.schema.table" or "db_name.table".
+  defp resolve_insert_target_setup(table) do
+    case String.split(table, ".", parts: 2) do
+      [db_name, _rest] -> build_attach_setup(db_name)
+      _ -> []
+    end
+  end
+
+  defp build_attach_setup(db_name) do
+    conn = Dux.Connection.get_conn()
+    sql = "SELECT type, path FROM duckdb_databases() WHERE database_name = '#{db_name}'"
+
+    case Adbc.Connection.query(conn, sql) do
+      {:ok, result} ->
+        materialized = Adbc.Result.materialize(result)
+        columns = List.flatten(materialized.data)
+        attach_setup_from_columns(columns, db_name)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp attach_setup_from_columns(columns, db_name) do
+    type = extract_col_value(columns, "type")
+    path = extract_col_value(columns, "path")
+
+    if type && path && type != "duckdb" do
+      escaped = String.replace(path, "'", "''")
+
+      [
+        "INSTALL #{type}; LOAD #{type};",
+        "ATTACH '#{escaped}' AS #{db_name} (TYPE #{type})"
+      ]
+    else
+      []
+    end
+  end
+
+  defp extract_col_value(columns, name) do
+    Enum.find_value(columns, fn col ->
+      if col.field.name == name, do: hd(Adbc.Column.to_list(col))
     end)
   end
 

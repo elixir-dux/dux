@@ -115,6 +115,20 @@ defmodule Dux.Remote.Worker do
   end
 
   @doc """
+  Execute a pipeline and insert the results into a table.
+
+  `setup_sqls` is a list of SQL statements to run before the insert
+  (e.g., INSTALL/LOAD extensions, ATTACH databases). The worker compiles
+  the pipeline, then runs INSERT INTO or CREATE TABLE AS.
+
+  Returns `{:ok, table}` or `{:error, reason}`.
+  """
+  def insert_into(worker, %Dux{} = pipeline, table, setup_sqls, create?, timeout \\ :infinity)
+      when is_binary(table) and is_list(setup_sqls) and is_boolean(create?) do
+    GenServer.call(worker, {:insert_into, pipeline, table, setup_sqls, create?}, timeout)
+  end
+
+  @doc """
   Get worker info (node, connection status).
   """
   def info(worker) do
@@ -288,6 +302,43 @@ defmodule Dux.Remote.Worker do
         result =
           case Adbc.Connection.query(conn, copy_sql) do
             {:ok, _} -> {:ok, path}
+            {:error, err} -> {:error, Exception.message(err)}
+          end
+
+        :erlang.phash2(source_ref, 1)
+        result
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(
+        {:insert_into, %Dux{} = pipeline, table, setup_sqls, create?},
+        _from,
+        %{conn: conn} = state
+      ) do
+    result =
+      try do
+        # Run setup SQL (INSTALL, LOAD, ATTACH)
+        Enum.each(setup_sqls, fn s -> Dux.Backend.execute(conn, s) end)
+
+        source_ref = extract_source_ref(pipeline)
+        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, conn)
+        Enum.each(source_setup, fn s -> Dux.Backend.execute(conn, s) end)
+
+        insert_sql =
+          if create? do
+            "CREATE TABLE #{table} AS #{sql}"
+          else
+            "INSERT INTO #{table} #{sql}"
+          end
+
+        result =
+          case Adbc.Connection.query(conn, insert_sql) do
+            {:ok, _} -> {:ok, table}
             {:error, err} -> {:error, Exception.message(err)}
           end
 
