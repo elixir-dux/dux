@@ -99,6 +99,37 @@ flights
 |> Dux.to_rows()
 ```
 
+## ASOF Join: Time Series Alignment
+
+An ASOF join matches each left row to the **nearest** right row satisfying an
+inequality — perfect for aligning time series data:
+
+```elixir
+trades = Dux.from_list([
+  %{symbol: "AAPL", timestamp: 1, price: 150.0},
+  %{symbol: "AAPL", timestamp: 3, price: 151.5},
+  %{symbol: "GOOG", timestamp: 2, price: 2800.0}
+])
+
+quotes = Dux.from_list([
+  %{symbol: "AAPL", timestamp: 0, bid: 149.5, ask: 150.5},
+  %{symbol: "AAPL", timestamp: 2, bid: 150.5, ask: 151.5},
+  %{symbol: "GOOG", timestamp: 1, bid: 2795.0, ask: 2805.0}
+])
+
+# Match each trade to the most recent quote for that symbol
+Dux.asof_join(trades, quotes, on: :symbol, by: {:timestamp, :>=})
+|> Dux.to_rows()
+```
+
+The `by:` option specifies the inequality column and operator. Each trade gets
+the quote with the largest `timestamp <= trade.timestamp` for the same symbol.
+
+> #### ASOF join operators {: .info}
+>
+> Supports `>=`, `>`, `<=`, `<`. Exactly one inequality condition per join.
+> All other conditions must be equality (`on:` columns).
+
 ## Pivot Wider: Long to Wide
 
 Spread values across columns. Count flights per origin airport per carrier:
@@ -141,8 +172,15 @@ Dux.concat_rows([jan1, jan2, jan3])
 |> Dux.to_rows()
 ```
 
+> #### Cross-source joins {: .tip}
+>
+> Dux can join across different data sources — Parquet files with Postgres
+> tables, S3 data with local CSVs. See the [Distributed IO](distributed-io.md)
+> guide for `Dux.attach/3` and `Dux.from_attached/3`.
+
 ## What's Next
 
 - [Getting Started](getting-started.livemd) — core Dux concepts
 - [Transformations](transformations.livemd) — filter, mutate, window functions
-- [Distributed Queries](distributed-queries.livemd) — distribute joins across workers
+- [Distributed IO](distributed-io.md) — distributed reads, writes, and cross-source joins
+- [Distributed Queries](distributed-queries.livemd) — the execution model

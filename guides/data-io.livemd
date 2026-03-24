@@ -97,6 +97,60 @@ Dux.Datasets.penguins()
 "#{div(File.stat!(parquet_path).size, 1024)} KB"
 ```
 
+## Reading Excel
+
+DuckDB 1.5+ reads `.xlsx` files natively. Dux defaults to `ignore_errors: true`
+and `empty_as_varchar: true` for safe handling of messy spreadsheets:
+
+```elixir
+# xlsx_path = "sales.xlsx"
+# Dux.from_excel(xlsx_path) |> Dux.to_rows()
+#
+# # With options
+# Dux.from_excel("data.xlsx", sheet: "Q1 2024", range: "A1:F100")
+#
+# # For messy spreadsheets with mixed types
+# Dux.from_excel("messy.xlsx", all_varchar: true)
+```
+
+## Writing Excel
+
+```elixir
+# excel_out = Path.join(tmp_dir, "output.xlsx")
+# Dux.Datasets.penguins()
+# |> Dux.filter_with("species = 'Gentoo'")
+# |> Dux.to_excel(excel_out)
+```
+
+## Database Tables: `insert_into`
+
+Write pipeline results to a table — local DuckDB or an attached database:
+
+```elixir
+# Create a local table from a pipeline
+Dux.from_query("SELECT * FROM range(100) t(x)")
+|> Dux.insert_into("my_table", create: true)
+
+# Read it back
+Dux.from_query("SELECT * FROM my_table") |> Dux.n_rows()
+```
+
+```elixir
+# Cleanup
+conn = Dux.Connection.get_conn()
+Adbc.Connection.query(conn, "DROP TABLE IF EXISTS my_table")
+```
+
+> #### Attached databases {: .info}
+>
+> `insert_into` works with attached databases too:
+> ```elixir
+> Dux.attach(:pg, "host=... dbname=analytics", type: :postgres, read_only: false)
+> Dux.from_parquet("data.parquet")
+> |> Dux.insert_into("pg.public.events", create: true)
+> ```
+> See the [Distributed IO](distributed-io.md) guide for parallel writes.
+
 ## The SQL Escape Hatch
 
 `from_query/1` lets you write raw DuckDB SQL for anything the verbs don't cover:

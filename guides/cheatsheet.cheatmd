@@ -13,6 +13,23 @@ Dux.from_csv("data.csv")
 Dux.from_csv("data.csv", delimiter: "\t", nullstr: "NA")
 Dux.from_parquet("data/**/*.parquet")
 Dux.from_ndjson("events.ndjson")
+Dux.from_excel("data.xlsx")
+Dux.from_excel("data.xlsx", sheet: "Sales", all_varchar: true)
+```
+
+### From databases
+```elixir
+Dux.attach(:pg, "host=... dbname=db", type: :postgres)
+Dux.from_attached(:pg, "public.orders")
+Dux.from_attached(:pg, "public.orders", partition_by: :id)
+Dux.detach(:pg)
+Dux.list_attached()
+```
+
+### Secrets
+```elixir
+Dux.create_secret(:s3, type: :s3, key_id: "...", secret: "...", region: "us-east-1")
+Dux.drop_secret(:s3)
 ```
 
 ### From SQL
@@ -132,6 +149,12 @@ Dux.join(flights, airports, on: [{:dest, :faa}])
 Dux.join(orders, users, on: [{:customer_id, :id}])
 ```
 
+### ASOF join (time series)
+```elixir
+Dux.asof_join(trades, quotes, on: :symbol, by: {:timestamp, :>=})
+Dux.asof_join(trades, quotes, on: :symbol, by: {:timestamp, :>=}, how: :left)
+```
+
 ### Concat rows (UNION ALL)
 ```elixir
 Dux.concat_rows([df1, df2, df3])
@@ -176,7 +199,15 @@ Dux.from_query("SELECT * FROM 'file.csv'")
 Dux.to_csv(df, "out.csv")
 Dux.to_parquet(df, "out.parquet")
 Dux.to_parquet(df, "out.parquet", compression: :zstd)
+Dux.to_parquet(df, "out/", partition_by: [:year, :month])
 Dux.to_ndjson(df, "out.ndjson")
+Dux.to_excel(df, "out.xlsx")
+```
+
+### Database writes
+```elixir
+Dux.insert_into(df, "my_table", create: true)
+Dux.insert_into(df, "pg.public.events")
 ```
 
 ## Materialization
@@ -194,11 +225,11 @@ Dux.sql_preview(df, pretty: true)  # → formatted SQL
 
 ## Distributed
 
+### Reads
 ```elixir
-# Discover or start workers
 workers = Dux.Remote.Worker.list()
 
-# Same verbs, automatically distributed
+# Size-balanced Parquet distribution
 Dux.from_parquet("s3://data/**/*.parquet")
 |> Dux.distribute(workers)
 |> Dux.filter(amount > 100)
@@ -206,10 +237,29 @@ Dux.from_parquet("s3://data/**/*.parquet")
 |> Dux.summarise(total: sum(amount))
 |> Dux.to_rows()
 
-# Collect back to local %Dux{}
-df |> Dux.distribute(workers) |> Dux.collect()
+# Hash-partitioned Postgres reads
+Dux.from_attached(:pg, "public.orders", partition_by: :id)
+|> Dux.distribute(workers)
+|> Dux.to_rows()
+```
 
-# FLAME: elastic cloud compute
+### Writes
+```elixir
+# Parallel file writes
+df |> Dux.distribute(workers) |> Dux.to_parquet("s3://out/")
+
+# Hive-partitioned output
+df |> Dux.distribute(workers) |> Dux.to_parquet("s3://out/", partition_by: :year)
+
+# Parallel database inserts
+df |> Dux.distribute(workers) |> Dux.insert_into("pg.public.events", create: true)
+
+# Collect back to local
+df |> Dux.distribute(workers) |> Dux.collect()
+```
+
+### FLAME: elastic cloud compute
+```elixir
 Dux.Flame.start_pool(backend: {FLAME.FlyBackend, ...}, max: 10)
 workers = Dux.Flame.spin_up(5)
 ```
