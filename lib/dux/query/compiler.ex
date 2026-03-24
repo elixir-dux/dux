@@ -139,6 +139,57 @@ defmodule Dux.Query.Compiler do
     {"#{sql_name}(#{Enum.join(arg_sqls, ", ")})", all_params, idx}
   end
 
+  # --- CASE WHEN ---
+
+  defp compile({:case_when, pairs, else_expr}, pins, idx) do
+    {when_clauses, all_params, idx} =
+      Enum.reduce(pairs, {[], [], idx}, fn {condition, result}, {clauses, params, idx} ->
+        {cond_sql, cond_params, idx} = compile(condition, pins, idx)
+        {result_sql, result_params, idx} = compile(result, pins, idx)
+        clause = "WHEN #{cond_sql} THEN #{result_sql}"
+        {clauses ++ [clause], params ++ cond_params ++ result_params, idx}
+      end)
+
+    {else_clause, else_params, idx} =
+      case else_expr do
+        nil ->
+          {"", [], idx}
+
+        expr ->
+          {sql, params, idx} = compile(expr, pins, idx)
+          {" ELSE #{sql}", params, idx}
+      end
+
+    sql = "(CASE #{Enum.join(when_clauses, " ")}#{else_clause} END)"
+    {sql, all_params ++ else_params, idx}
+  end
+
+  # --- IN operator ---
+
+  defp compile({:in, left, {:pin, pin_idx}}, pins, idx) do
+    {l_sql, l_params, idx} = compile(left, pins, idx)
+    values = Enum.at(pins, pin_idx)
+    # Pinned list — expand to individual parameter bindings
+    {placeholders, idx} =
+      Enum.reduce(values, {[], idx}, fn _v, {phs, idx} ->
+        {phs ++ ["$#{idx + 1}"], idx + 1}
+      end)
+
+    {"(#{l_sql} IN (#{Enum.join(placeholders, ", ")}))", l_params ++ values, idx}
+  end
+
+  defp compile({:in, left, right}, pins, idx) when is_list(right) do
+    {l_sql, l_params, idx} = compile(left, pins, idx)
+
+    {val_sqls, val_params, idx} =
+      Enum.reduce(right, {[], [], idx}, fn item, {sqls, params, idx} ->
+        {sql, new_params, idx} = compile(item, pins, idx)
+        {sqls ++ [sql], params ++ new_params, idx}
+      end)
+
+    {"(#{l_sql} IN (#{Enum.join(val_sqls, ", ")}))", l_params ++ val_params, idx}
+  end
+
   # --- Sort direction markers ---
 
   defp compile({:asc, expr}, pins, idx) do
