@@ -1218,7 +1218,7 @@ defmodule Dux do
     %{left | ops: ops ++ [{:join, right, how, on_cols, suffix}]}
   end
 
-  @doc group: :join
+  @doc group: :joins
   @doc """
   ASOF join — match each left row to the nearest right row satisfying an inequality.
 
