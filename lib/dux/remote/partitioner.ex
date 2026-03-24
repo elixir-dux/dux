@@ -3,8 +3,10 @@ defmodule Dux.Remote.Partitioner do
 
   # Assigns data partitions to workers.
   #
-  # For Parquet glob sources, splits files across workers.
-  # For other sources, currently sends the full source to all workers
+  # For Parquet glob sources and DuckLake file manifests, splits files
+  # across workers using size-balanced bin-packing when file sizes are
+  # available, falling back to round-robin otherwise.
+  # For other sources, sends the full source to all workers
   # (the coordinator will merge the results).
 
   @doc """
@@ -21,7 +23,7 @@ defmodule Dux.Remote.Partitioner do
        when is_binary(path) do
     case expand_glob(path) do
       {:ok, files} when length(files) > 1 ->
-        distribute_files(files, workers, pipeline, opts)
+        distribute_parquet_files(files, workers, pipeline, opts)
 
       _ ->
         replicate(pipeline, workers)
@@ -36,15 +38,36 @@ defmodule Dux.Remote.Partitioner do
          workers,
          :round_robin
        ) do
-    partitions = chunk_round_robin(files, length(workers))
+    distribute_parquet_files(files, workers, pipeline, [])
+  end
 
-    Enum.zip(workers, partitions)
-    |> Enum.map(fn {worker, file_group} ->
+  # Other sources — no splitting
+  defp assign_strategy(pipeline, workers, :round_robin) do
+    replicate(pipeline, workers)
+  end
+
+  # ---------------------------------------------------------------------------
+  # File distribution (size-balanced or round-robin fallback)
+  # ---------------------------------------------------------------------------
+
+  defp distribute_parquet_files(files, workers, pipeline, opts) do
+    files_with_sizes = fetch_file_sizes(files)
+
+    assignments =
+      if files_with_sizes do
+        bin_pack(files_with_sizes, length(workers))
+      else
+        chunk_round_robin(files, length(workers))
+      end
+
+    assignments
+    |> Enum.zip(workers)
+    |> Enum.map(fn {file_group, worker} ->
       source =
         case file_group do
-          [] -> {:parquet_list, [], []}
-          [single] -> {:parquet, single, []}
-          multiple -> {:parquet_list, multiple, []}
+          [] -> {:parquet_list, [], opts}
+          [single] -> {:parquet, single, opts}
+          multiple -> {:parquet_list, multiple, opts}
         end
 
       {worker, %{pipeline | source: source}}
@@ -55,25 +78,64 @@ defmodule Dux.Remote.Partitioner do
     end)
   end
 
-  # CSV with glob-like path — no splitting (CSV globs less common)
-  defp assign_strategy(pipeline, workers, :round_robin) do
-    replicate(pipeline, workers)
+  # ---------------------------------------------------------------------------
+  # Size-balanced bin-packing
+  # ---------------------------------------------------------------------------
+
+  # Greedy first-fit-decreasing: sort files largest-first, assign each to
+  # the worker with the smallest current total load. Produces assignments
+  # within 11/9 OPT + 6/9 of optimal for the multiprocessor scheduling problem.
+  defp bin_pack(files_with_sizes, n_workers) do
+    sorted = Enum.sort_by(files_with_sizes, fn {_file, size} -> size end, :desc)
+
+    # Initialize worker loads: [{total_load, worker_index, [files]}]
+    initial = Enum.map(0..(n_workers - 1), fn i -> {0, i, []} end)
+
+    bins =
+      Enum.reduce(sorted, initial, fn {file, size}, bins ->
+        # Find the worker with the smallest load
+        [{load, idx, files} | rest] = Enum.sort_by(bins, fn {load, _, _} -> load end)
+        [{load + size, idx, [file | files]} | rest]
+      end)
+
+    # Return file lists ordered by worker index
+    bins
+    |> Enum.sort_by(fn {_load, idx, _files} -> idx end)
+    |> Enum.map(fn {_load, _idx, files} -> Enum.reverse(files) end)
   end
 
-  defp distribute_files(files, workers, pipeline, opts) do
-    partitions = chunk_round_robin(files, length(workers))
+  # ---------------------------------------------------------------------------
+  # File size fetching (tiered)
+  # ---------------------------------------------------------------------------
 
-    Enum.zip(workers, partitions)
-    |> Enum.map(fn {worker, file_group} ->
-      partitioned_source =
-        case file_group do
-          [single] -> {:parquet, single, opts}
-          multiple -> {:parquet_list, multiple, opts}
-        end
+  # Returns [{file, size}] or nil if sizes unavailable.
+  # Tiered: local File.stat (instant) > nil for remote (can't stat S3 locally).
+  defp fetch_file_sizes(files) do
+    if all_local?(files) do
+      Enum.map(files, &stat_file/1)
+    else
+      # Remote files (S3/HTTP) — can't get sizes locally.
+      # Falls back to round-robin via the nil return.
+      nil
+    end
+  end
 
-      {worker, %{pipeline | source: partitioned_source}}
+  defp stat_file(file) do
+    case File.stat(file) do
+      {:ok, %{size: size}} -> {file, size}
+      _ -> {file, 0}
+    end
+  end
+
+  defp all_local?(files) do
+    Enum.all?(files, fn f ->
+      not String.starts_with?(f, "s3://") and not String.starts_with?(f, "http")
     end)
   end
+
+  # ---------------------------------------------------------------------------
+  # Replicate / round-robin helpers
+  # ---------------------------------------------------------------------------
 
   # Replicate: every worker gets the same pipeline.
   # Table refs are connection-local — convert to list source for workers.

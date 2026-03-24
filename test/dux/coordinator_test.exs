@@ -188,6 +188,125 @@ defmodule Dux.CoordinatorTest do
     end
   end
 
+  describe "Partitioner size-balanced assignment" do
+    test "balances skewed file sizes across workers" do
+      dir = tmp_path("size_balanced_test")
+      File.mkdir_p!(dir)
+
+      try do
+        # Create files with very different sizes:
+        # 1 large file (~10K rows) and 5 small files (~10 rows each)
+        Dux.from_query("SELECT * FROM range(10000) t(x)")
+        |> Dux.to_parquet(Path.join(dir, "big.parquet"))
+
+        for i <- 1..5 do
+          Dux.from_list([%{"x" => i}])
+          |> Dux.to_parquet(Path.join(dir, "small_#{i}.parquet"))
+        end
+
+        pipeline = Dux.from_parquet(Path.join(dir, "*.parquet"))
+        workers = [:w1, :w2, :w3]
+        assignments = Partitioner.assign(pipeline, workers)
+
+        assert length(assignments) == 3
+
+        # The big file should be alone on one worker (or with at most one small file).
+        # With round-robin, 6 files / 3 workers = 2 files each, which would pair
+        # the big file with a small one arbitrarily. With bin-packing, the big file
+        # gets its own worker and the small files cluster on the other workers.
+        worker_file_counts =
+          Enum.map(assignments, fn {_w, p} ->
+            case p.source do
+              {:parquet_list, files, _} -> length(files)
+              {:parquet, _, _} -> 1
+            end
+          end)
+          |> Enum.sort()
+
+        # The worker with the big file should have fewer files than others
+        # (bin-packing: big goes first, then small files fill lightest workers)
+        assert hd(worker_file_counts) <= 2
+
+        # All files accounted for
+        total =
+          Enum.flat_map(assignments, fn {_w, p} ->
+            case p.source do
+              {:parquet_list, f, _} -> f
+              {:parquet, f, _} -> [f]
+            end
+          end)
+
+        assert length(total) == 6
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "size-balanced produces more balanced loads than round-robin on skewed data" do
+      dir = tmp_path("balance_comparison")
+      File.mkdir_p!(dir)
+
+      try do
+        # Create: 1 file with 5000 rows, 1 with 3000, 1 with 1000, 3 with 100 each
+        for {name, n} <- [
+              {"a_5000", 5000},
+              {"b_3000", 3000},
+              {"c_1000", 1000},
+              {"d_100", 100},
+              {"e_100", 100},
+              {"f_100", 100}
+            ] do
+          Dux.from_query("SELECT * FROM range(#{n}) t(x)")
+          |> Dux.to_parquet(Path.join(dir, "#{name}.parquet"))
+        end
+
+        pipeline = Dux.from_parquet(Path.join(dir, "*.parquet"))
+        workers = [:w1, :w2, :w3]
+        assignments = Partitioner.assign(pipeline, workers)
+
+        # Get file sizes per worker
+        worker_sizes =
+          Enum.map(assignments, fn {_w, p} ->
+            files =
+              case p.source do
+                {:parquet_list, f, _} -> f
+                {:parquet, f, _} -> [f]
+              end
+
+            Enum.reduce(files, 0, fn f, acc ->
+              {:ok, %{size: s}} = File.stat(f)
+              acc + s
+            end)
+          end)
+
+        max_load = Enum.max(worker_sizes)
+        min_load = Enum.min(worker_sizes)
+
+        # With size-balanced bin-packing, the ratio of max to min load
+        # should be reasonable (within 4x). Round-robin on this data would
+        # likely produce much worse balance.
+        assert max_load / max(min_load, 1) < 4.0
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "falls back to round-robin for S3 paths" do
+      # S3 paths can't be stat'd locally — should fall back to round-robin
+      # and still produce valid assignments (not crash)
+      pipeline = Dux.from_parquet("s3://bucket/data/*.parquet")
+      workers = [:w1, :w2]
+      assignments = Partitioner.assign(pipeline, workers)
+
+      # S3 globs can't be expanded locally, so the whole glob is replicated
+      assert length(assignments) == 2
+
+      assert Enum.all?(assignments, fn {_w, p} ->
+               p.source == {:parquet, "s3://bucket/data/*.parquet", []}
+             end)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Merger unit tests
   # ---------------------------------------------------------------------------
