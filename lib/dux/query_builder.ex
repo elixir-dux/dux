@@ -125,6 +125,22 @@ defmodule Dux.QueryBuilder do
     {"SELECT * FROM read_parquet([#{file_list}])", []}
   end
 
+  # Distributed scan — worker ATTACHes the database and reads a hash-partitioned slice.
+  # The ATTACH SQL goes into source_setup; the SELECT includes the hash filter.
+  # DuckDB's hash() returns UBIGINT — cast to BIGINT for safe modulo.
+  defp source_to_sql({:distributed_scan, conn, type, table, col, idx, n}, _db) do
+    escaped_conn = escape_sql_string(conn)
+    alias_name = "__dscan_#{:erlang.unique_integer([:positive])}"
+    install_sql = "INSTALL #{type}; LOAD #{type};"
+    attach_sql = "ATTACH '#{escaped_conn}' AS #{alias_name} (TYPE #{type}, READ_ONLY)"
+    col_quoted = quote_ident(col)
+
+    select_sql =
+      "SELECT * FROM #{alias_name}.#{table} WHERE hash(#{col_quoted}) % #{n} = #{idx}"
+
+    {select_sql, [install_sql, attach_sql]}
+  end
+
   defp source_to_sql({:csv, path, opts}, _db) do
     escaped = escape_sql_string(path)
     options = csv_read_options(opts)
