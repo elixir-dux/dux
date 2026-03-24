@@ -83,6 +83,8 @@ defmodule Dux do
   penguins, gapminder, nycflights13 (flights, airlines, airports, planes).
   """
 
+  import Dux.SQL.Helpers, only: [qi: 1]
+
   defstruct [:source, :remote, :workers, ops: [], names: [], dtypes: %{}, groups: []]
 
   @type source ::
@@ -302,6 +304,9 @@ defmodule Dux do
 
     * `:compression` - compression codec: `:snappy` (default), `:zstd`, `:gzip`, `:none`
     * `:row_group_size` - rows per row group
+    * `:partition_by` - column(s) for Hive-style partitioned output.
+      Pass an atom, string, or list. Writes to a directory tree:
+      `path/col=value/data_0.parquet`.
 
   ## Examples
 
@@ -310,6 +315,10 @@ defmodule Dux do
 
       Dux.from_query("SELECT * FROM range(10) t(x)")
       |> Dux.to_parquet("/tmp/output.parquet", compression: :zstd)
+
+      # Hive-partitioned output
+      Dux.from_parquet("events.parquet")
+      |> Dux.to_parquet("/tmp/events/", partition_by: [:year, :month])
   """
   def to_parquet(%Dux{} = dux, path, opts \\ []) when is_binary(path) do
     write_copy(dux, path, "PARQUET", opts)
@@ -1736,6 +1745,9 @@ defmodule Dux do
     meta = %{format: fmt_atom, path: base_path, n_workers: n_workers}
 
     :telemetry.span([:dux, :distributed, :write], meta, fn ->
+      # Ensure output directory exists for local paths
+      ensure_output_dir(base_path)
+
       # Warn if output directory is non-empty
       warn_if_non_empty(base_path)
 
@@ -1753,14 +1765,27 @@ defmodule Dux do
 
   defp fan_out_writes(assignments, base_path, ext, copy_opts, n_workers) do
     alias Dux.Remote.Worker
+    partitioned? = String.contains?(copy_opts, "PARTITION_BY")
 
     assignments
     |> Enum.with_index()
     |> Task.async_stream(
       fn {{worker, worker_pipeline}, idx} ->
         unique = :erlang.unique_integer([:positive])
-        file_path = Path.join(base_path, "part_#{idx}_#{unique}.#{ext}")
-        {worker, Worker.write(worker, worker_pipeline, file_path, copy_opts)}
+
+        {write_path, worker_copy_opts} =
+          if partitioned? do
+            # PARTITION_BY writes to a directory. Each worker gets its own
+            # subdirectory to avoid races on concurrent directory creation.
+            # The Hive partition dirs nest under each worker's subdir.
+            # Readers use **/*.parquet to find all files across worker dirs.
+            worker_dir = Path.join(base_path, "__w#{idx}")
+            {worker_dir, copy_opts}
+          else
+            {Path.join(base_path, "part_#{idx}_#{unique}.#{ext}"), copy_opts}
+          end
+
+        {worker, Worker.write(worker, worker_pipeline, write_path, worker_copy_opts)}
       end,
       max_concurrency: n_workers,
       timeout: :infinity
@@ -1786,6 +1811,12 @@ defmodule Dux do
     end
 
     Enum.map(successes, fn {_w, {:ok, path}} -> path end)
+  end
+
+  defp ensure_output_dir(path) do
+    unless String.starts_with?(path, "s3://") or String.starts_with?(path, "http") do
+      File.mkdir_p(path)
+    end
   end
 
   defp format_extension("CSV"), do: "csv"
@@ -1842,6 +1873,19 @@ defmodule Dux do
       case Keyword.get(opts, :row_group_size) do
         nil -> parts
         n -> parts ++ ["ROW_GROUP_SIZE #{n}"]
+      end
+
+    parts =
+      case Keyword.get(opts, :partition_by) do
+        nil ->
+          parts
+
+        cols when is_list(cols) ->
+          col_list = Enum.map_join(cols, ", ", &qi/1)
+          parts ++ ["PARTITION_BY (#{col_list})"]
+
+        col ->
+          parts ++ ["PARTITION_BY (#{qi(col)})"]
       end
 
     Enum.join(parts, ", ")
