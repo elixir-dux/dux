@@ -17,11 +17,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - otp: "27"
-            elixir: "1.18"
-          - otp: "28"
-            elixir: "1.19"
+        otp: ["27", "28"]
+        elixir: ["1.18", "1.19"]
 
     steps:
       - uses: actions/checkout@v4
