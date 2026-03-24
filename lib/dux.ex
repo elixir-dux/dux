@@ -771,6 +771,29 @@ defmodule Dux do
     :ok
   end
 
+  @doc group: :io
+  @doc """
+  Execute raw SQL against the DuckDB connection.
+
+  Use this for DDL and statements that aren't queries — `SET`, `INSTALL`,
+  `LOAD`, `CREATE SECRET`, `CREATE TABLE`, etc. These can't go through
+  `from_query/1` because it wraps SQL in `SELECT * FROM (...)`.
+
+  Returns `:ok` on success.
+
+  ## Examples
+
+      Dux.exec("INSTALL httpfs; LOAD httpfs;")
+      Dux.exec("SET s3_region = 'us-east-1'")
+      Dux.exec("CREATE SECRET (TYPE s3, PROVIDER config, REGION 'us-east-1')")
+
+  """
+  def exec(sql) when is_binary(sql) do
+    conn = Dux.Connection.get_conn()
+    Adbc.Connection.query!(conn, sql)
+    :ok
+  end
+
   defp secret_param(:key_id, v), do: "KEY_ID '#{escape(v)}'"
   defp secret_param(:secret, v), do: "SECRET '#{escape(v)}'"
   defp secret_param(:region, v), do: "REGION '#{escape(v)}'"
