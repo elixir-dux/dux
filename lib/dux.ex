@@ -280,6 +280,12 @@ defmodule Dux do
     * `:header` — whether the first row is a header (default: `true`)
     * `:all_varchar` — read all columns as VARCHAR (default: `false`).
       Useful when type inference fails on mixed-type columns.
+    * `:ignore_errors` — replace type-cast failures with NULL instead of
+      raising (default: `true`). DuckDB infers column types from the first
+      data row only — if a column has NULL or a number in row 1 but strings
+      later, this prevents hard failures.
+    * `:empty_as_varchar` — infer empty cells as VARCHAR instead of DOUBLE
+      (default: `true`)
     * `:stop_at_empty` — stop reading at the first empty row (default: `true`)
 
   ## Examples
@@ -288,9 +294,19 @@ defmodule Dux do
       df = Dux.from_excel("data.xlsx", sheet: "Q1 2024", range: "A1:F100")
       df = Dux.from_excel("messy.xlsx", all_varchar: true)
   """
+  @excel_read_defaults [
+    sheet: nil,
+    range: nil,
+    header: true,
+    all_varchar: false,
+    ignore_errors: true,
+    empty_as_varchar: true,
+    stop_at_empty: nil
+  ]
+
   def from_excel(path, opts \\ []) when is_binary(path) do
+    opts = Keyword.validate!(opts, @excel_read_defaults)
     escaped = String.replace(path, "'", "''")
-    opts = Keyword.put_new(opts, :header, true)
     read_opts = excel_read_options(opts)
     %Dux{source: {:sql, "SELECT * FROM read_xlsx('#{escaped}'#{read_opts})"}}
   end
@@ -2070,6 +2086,14 @@ defmodule Dux do
         excel_opt(opts, :header, fn v -> "header = #{v}" end),
         excel_opt(opts, :all_varchar, fn
           true -> "all_varchar = true"
+          _ -> nil
+        end),
+        excel_opt(opts, :ignore_errors, fn
+          true -> "ignore_errors = true"
+          _ -> nil
+        end),
+        excel_opt(opts, :empty_as_varchar, fn
+          true -> "empty_as_varchar = true"
           _ -> nil
         end),
         excel_opt(opts, :stop_at_empty, fn v -> "stop_at_empty = #{v}" end)

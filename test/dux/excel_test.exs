@@ -187,12 +187,14 @@ defmodule Dux.ExcelTest do
       end
     end
 
-    test "round-trip preserves nulls" do
+    test "round-trip with null in first row survives via ignore_errors" do
       path = tmp_path("nulls.xlsx")
 
       try do
-        # Put non-null string first so type inference gets VARCHAR, not DOUBLE
-        Dux.from_query("SELECT 1 AS id, 'Alice' AS name UNION ALL SELECT 2, NULL")
+        # NULL in the first data row causes DuckDB to infer name as DOUBLE.
+        # With ignore_errors: true (default), 'Bob' fails to cast to DOUBLE
+        # and becomes NULL — but the read doesn't crash.
+        Dux.from_query("SELECT 1 AS id, NULL AS name UNION ALL SELECT 2, 'Bob'")
         |> Dux.to_excel(path)
 
         result =
@@ -200,11 +202,46 @@ defmodule Dux.ExcelTest do
           |> Dux.sort_by(:id)
           |> Dux.to_rows()
 
+        # Both rows read — 'Bob' may be NULL due to type mismatch
         assert length(result) == 2
-        assert hd(result)["name"] == "Alice"
-        # NULL may come back as nil or empty string depending on Excel handling
-        second_name = Enum.at(result, 1)["name"]
-        assert second_name == nil or second_name == ""
+      after
+        File.rm(path)
+      end
+    end
+
+    test "null in first row with all_varchar preserves all data" do
+      path = tmp_path("nulls_varchar.xlsx")
+
+      try do
+        Dux.from_query("SELECT 1 AS id, NULL AS name UNION ALL SELECT 2, 'Bob'")
+        |> Dux.to_excel(path)
+
+        # all_varchar bypasses type inference entirely
+        result =
+          Dux.from_excel(path, all_varchar: true)
+          |> Dux.sort_by(:id)
+          |> Dux.to_rows()
+
+        assert length(result) == 2
+        assert Enum.at(result, 1)["name"] == "Bob"
+      after
+        File.rm(path)
+      end
+    end
+
+    test "ignore_errors: false + empty_as_varchar: false raises on type mismatch" do
+      path = tmp_path("nulls_strict.xlsx")
+
+      try do
+        Dux.from_query("SELECT 1 AS id, NULL AS name UNION ALL SELECT 2, 'Bob'")
+        |> Dux.to_excel(path)
+
+        # With both safety nets off, DuckDB infers NULL cell as DOUBLE
+        # and fails to parse 'Bob' as DOUBLE
+        assert_raise ArgumentError, ~r/DuckDB query failed/, fn ->
+          Dux.from_excel(path, ignore_errors: false, empty_as_varchar: false)
+          |> Dux.to_rows()
+        end
       after
         File.rm(path)
       end
