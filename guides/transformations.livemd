@@ -1,7 +1,7 @@
 # Transformations
 
 ```elixir
-Mix.install([{:dux, github: "elixir-dux/dux"}])
+Mix.install([{:dux, "~> 0.2.0"}])
 ```
 
 ## Setup

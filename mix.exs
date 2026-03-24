@@ -1,7 +1,7 @@
 defmodule Dux.MixProject do
   use Mix.Project
 
-  @version "0.1.2-dev"
+  @version "0.2.0"
   @source_url "https://github.com/elixir-dux/dux"
 
   def project do

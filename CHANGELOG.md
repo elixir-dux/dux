@@ -4,9 +4,14 @@ All notable changes to Dux are documented here.
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Nx zero-copy types, connected components convergence, ADBC v0.10.0 (#14)
+
 ### Documentation
 
 - Comprehensive documentation uplift (#3)
+- Comprehensive distributed execution guide + docs uplift (#24)
 
 ### Features
 
@@ -20,10 +25,27 @@ All notable changes to Dux are documented here.
 - Streaming merger for lattice-compatible distributed aggregation (#8)
 - ASOF JOIN + JSON processing verbs (#9)
 - Cross-source joins via ATTACH (#10)
+- Update ADBC + zero-copy IPC ingest and Nx tensor path (#12)
+- Insert_into verb + distributed DuckLake reads (#13)
+- Size-balanced file assignment in Partitioner (#15)
+- Hive partition pruning in distributed reads (#18)
+- Distributed writes — workers write directly to storage (#19)
+- Distributed Postgres reads via hash-partitioned ATTACH (#20)
+- Partition_by option for Hive-partitioned Parquet output (#21)
+- Distributed insert_into — workers INSERT in parallel (#22)
+- Excel IO — from_excel/2 and to_excel/2 (#23)
 
 ### Miscellaneous
 
 - Bump to dev version
+- Docs touchups (#11)
+- Expand CI matrix to full OTP × Elixir lattice (#17)
+- Prep for v0.2.0 release
+- Update all guide versions to ~> 0.2.0
+
+### Testing
+
+- Add peer tests for size-balanced partitioner (#16)
 
 ## [0.1.1] - 2026-03-22
 
