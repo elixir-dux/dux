@@ -235,12 +235,12 @@ Dux.from_parquet("s3://data/**/*.parquet")
 |> Dux.filter(amount > 100)
 |> Dux.group_by(:region)
 |> Dux.summarise(total: sum(amount))
-|> Dux.to_rows()
+|> Dux.compute()
 
 # Hash-partitioned Postgres reads
 Dux.from_attached(:pg, "public.orders", partition_by: :id)
 |> Dux.distribute(workers)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ### Writes

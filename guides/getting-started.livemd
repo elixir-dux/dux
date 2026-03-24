@@ -35,7 +35,9 @@ penguins
 
 ## Materialization
 
-Call `to_rows/1` to get a list of maps, or `to_columns/1` for a column-oriented map:
+Pipelines are lazy — nothing executes until you materialise. `compute/1`
+executes and returns a `%Dux{}` with the data. `to_rows/1` and `to_columns/1`
+extract raw Elixir data structures:
 
 ```elixir
 penguins
@@ -68,7 +70,7 @@ penguins
   max_mass: max(body_mass_g)
 )
 |> Dux.sort_by([:species, :sex])
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 > #### Raw SQL alternative {: .tip}
@@ -92,7 +94,7 @@ penguins
 |> Dux.select([:species, :bill_length_mm, :bill_depth_mm, :bill_ratio])
 |> Dux.sort_by(desc: :bill_ratio)
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Interpolation
@@ -108,7 +110,7 @@ penguins
 |> Dux.group_by(:species)
 |> Dux.summarise(n: count(species))
 |> Dux.sort_by(desc: :n)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## See the SQL
@@ -141,7 +143,7 @@ penguins
 # Read it back
 Dux.from_parquet(path)
 |> Dux.head(3)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ```elixir
@@ -165,7 +167,7 @@ penguins
 |> Dux.join(habitat, on: :island)
 |> Dux.group_by(:climate)
 |> Dux.summarise(n: count(species))
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## What's Next

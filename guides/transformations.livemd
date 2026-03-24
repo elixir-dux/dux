@@ -22,7 +22,7 @@ Bare identifiers are column names. Standard comparison and boolean operators wor
 penguins
 |> Dux.filter(species == "Adelie" and island == "Torgersen")
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ### Interpolation with `^`
@@ -36,7 +36,7 @@ min_mass = 5000
 penguins
 |> Dux.filter(species == ^target_species and body_mass_g > ^min_mass)
 |> Dux.head(3)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ### Raw SQL with `filter_with`
@@ -47,7 +47,7 @@ For complex DuckDB expressions:
 penguins
 |> Dux.filter_with("bill_length_mm BETWEEN 40 AND 45")
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Mutate: Computing New Columns
@@ -63,7 +63,7 @@ penguins
 )
 |> Dux.select([:species, :bill_ratio, :mass_kg])
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ### Raw SQL with `mutate_with`
@@ -78,7 +78,7 @@ penguins
 )
 |> Dux.select([:species_upper, :size_category, :body_mass_g])
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ### Window Functions
@@ -95,7 +95,7 @@ penguins
 |> Dux.select([:species, :body_mass_g, :rank_in_species, :species_avg])
 |> Dux.sort_by([:species, :rank_in_species])
 |> Dux.head(6)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Select & Discard
@@ -105,7 +105,7 @@ penguins
 penguins
 |> Dux.select([:species, :island, :body_mass_g])
 |> Dux.head(3)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ```elixir
@@ -113,7 +113,7 @@ penguins
 penguins
 |> Dux.discard([:year])
 |> Dux.head(3)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Rename
@@ -123,7 +123,7 @@ penguins
 |> Dux.rename(body_mass_g: :weight, bill_length_mm: :bill_length)
 |> Dux.select([:species, :weight, :bill_length])
 |> Dux.head(3)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Drop Nil: Null Handling
@@ -141,12 +141,12 @@ IO.puts("After drop_nil: #{Dux.n_rows(clean)}")
 
 ```elixir
 # Ascending (default)
-penguins |> Dux.sort_by(:body_mass_g) |> Dux.head(3) |> Dux.to_rows()
+penguins |> Dux.sort_by(:body_mass_g) |> Dux.head(3) |> Dux.compute()
 ```
 
 ```elixir
 # Descending
-penguins |> Dux.sort_by(desc: :body_mass_g) |> Dux.head(3) |> Dux.to_rows()
+penguins |> Dux.sort_by(desc: :body_mass_g) |> Dux.head(3) |> Dux.compute()
 ```
 
 ```elixir
@@ -155,19 +155,19 @@ penguins
 |> Dux.drop_nil([:body_mass_g])
 |> Dux.sort_by(asc: :species, desc: :body_mass_g)
 |> Dux.head(6)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Head, Slice, Distinct
 
 ```elixir
 # First N rows (default 10)
-penguins |> Dux.head(3) |> Dux.to_rows()
+penguins |> Dux.head(3) |> Dux.compute()
 ```
 
 ```elixir
 # Offset + limit
-penguins |> Dux.slice(5, 3) |> Dux.to_rows()
+penguins |> Dux.slice(5, 3) |> Dux.compute()
 ```
 
 ```elixir
@@ -176,7 +176,7 @@ penguins
 |> Dux.select([:species, :island])
 |> Dux.distinct()
 |> Dux.sort_by([:species, :island])
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## A Complex Pipeline
@@ -193,7 +193,7 @@ penguins
   avg_bill_ratio: avg(bill_ratio)
 )
 |> Dux.sort_by(desc: :avg_mass)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 > #### See the SQL {: .tip}

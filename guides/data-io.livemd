@@ -16,7 +16,7 @@ tmp_dir = System.tmp_dir!()
 
 ```elixir
 penguins = Dux.Datasets.penguins()
-penguins |> Dux.head(3) |> Dux.to_rows()
+penguins |> Dux.head(3) |> Dux.compute()
 ```
 
 > #### CSV options {: .info}
@@ -39,7 +39,7 @@ Dux.from_list(Enum.map(1..1000, &%{id: &1, value: :rand.uniform(100)}))
 
 Dux.from_parquet(path)
 |> Dux.summarise_with(n: "COUNT(*)", avg_val: "AVG(value)")
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Glob Patterns
@@ -54,7 +54,7 @@ end
 
 Dux.from_parquet(Path.join(tmp_dir, "part_*.parquet"))
 |> Dux.summarise_with(n: "COUNT(*)", total: "SUM(value)")
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Reading NDJSON
@@ -68,7 +68,7 @@ File.write!(ndjson_path, """
 {"event":"click","ts":"2024-01-02","user":1}
 """)
 
-Dux.from_ndjson(ndjson_path) |> Dux.to_rows()
+Dux.from_ndjson(ndjson_path) |> Dux.compute()
 ```
 
 ## Writing Files
@@ -104,7 +104,7 @@ and `empty_as_varchar: true` for safe handling of messy spreadsheets:
 
 ```elixir
 # xlsx_path = "sales.xlsx"
-# Dux.from_excel(xlsx_path) |> Dux.to_rows()
+# Dux.from_excel(xlsx_path) |> Dux.compute()
 #
 # # With options
 # Dux.from_excel("data.xlsx", sheet: "Q1 2024", range: "A1:F100")
@@ -157,7 +157,7 @@ Adbc.Connection.query(conn, "DROP TABLE IF EXISTS my_table")
 
 ```elixir
 Dux.from_query("SELECT range AS n, n * n AS square FROM range(1, 11)")
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ```elixir
@@ -170,7 +170,7 @@ Dux.from_query("""
 """)
 |> Dux.group_by(:region)
 |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Cleanup

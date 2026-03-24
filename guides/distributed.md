@@ -15,7 +15,7 @@ Dux.from_parquet("s3://lake/events/**/*.parquet")
 |> Dux.filter(amount > 100)
 |> Dux.group_by(:region)
 |> Dux.summarise(total: sum(amount))
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 `distribute/2` is the only change. The same verbs work — Dux handles
@@ -200,7 +200,7 @@ pipeline filters before distributing:
 Dux.from_parquet("s3://lake/events/**/*.parquet")
 |> Dux.distribute(workers)
 |> Dux.filter(year == 2024)    # only year=2024 files are read
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 Pruning handles simple equality and AND predicates on partition columns.
@@ -216,7 +216,7 @@ Dux.attach(:pg, "host=db.internal dbname=analytics", type: :postgres)
 
 Dux.from_attached(:pg, "public.orders", partition_by: :id)
 |> Dux.distribute(workers)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 Each worker executes `WHERE hash(id) % N = worker_idx` — DuckDB pushes
@@ -260,7 +260,7 @@ facts
 |> Dux.join(dim, on: :customer_id)
 |> Dux.group_by(:region)
 |> Dux.summarise(total: sum(amount))
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 The Coordinator:

@@ -35,7 +35,7 @@ flights
 |> Dux.summarise_with(n_flights: "COUNT(*)")
 |> Dux.sort_by(desc: :n_flights)
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Different Column Names
@@ -48,7 +48,7 @@ flights
 |> Dux.group_by(:name)
 |> Dux.summarise_with(n: "COUNT(*)")
 |> Dux.sort_by(desc: :n)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Left Join: Keep All Flights
@@ -64,7 +64,7 @@ flights
 |> Dux.summarise_with(n: "COUNT(*)", avg_seats: "AVG(seats)")
 |> Dux.sort_by(desc: :n)
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Anti Join: Missing Records
@@ -79,7 +79,7 @@ flights
 |> Dux.select([:tailnum])
 |> Dux.distinct()
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 > #### All join types {: .info}
@@ -96,7 +96,7 @@ flights
 |> Dux.join(airports, on: [{:dest, :faa}])
 |> Dux.select([:carrier, :name, :dest])
 |> Dux.head(10)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## ASOF Join: Time Series Alignment
@@ -119,7 +119,7 @@ quotes = Dux.from_list([
 
 # Match each trade to the most recent quote for that symbol
 Dux.asof_join(trades, quotes, on: :symbol, by: {:timestamp, :>=})
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 The `by:` option specifies the inequality column and operator. Each trade gets
@@ -140,7 +140,7 @@ flights
 |> Dux.summarise_with(n: "COUNT(*)")
 |> Dux.pivot_wider(:carrier, :n)
 |> Dux.sort_by(:origin)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Pivot Longer: Wide to Long
@@ -156,7 +156,7 @@ wide = Dux.from_list([
 wide
 |> Dux.pivot_longer([:q1, :q2, :q3, :q4], names_to: "quarter", values_to: "revenue")
 |> Dux.sort_by([:region, :quarter])
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Concat Rows: UNION ALL
@@ -169,7 +169,7 @@ jan2 = Dux.from_list([%{day: 2, temp: 28}])
 jan3 = Dux.from_list([%{day: 3, temp: 32}])
 
 Dux.concat_rows([jan1, jan2, jan3])
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 > #### Cross-source joins {: .tip}

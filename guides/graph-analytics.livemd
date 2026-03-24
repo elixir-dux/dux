@@ -42,7 +42,7 @@ graph
 |> Dux.Graph.out_degree()
 |> Dux.sort_by(desc: :out_degree)
 |> Dux.head(5)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 > #### Graph results are DataFrames {: .info}
@@ -60,7 +60,7 @@ graph
 |> Dux.Graph.pagerank(iterations: 20)
 |> Dux.sort_by(desc: :rank)
 |> Dux.head(10)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 Node 34 (the club "Officer") and node 1 (the "Instructor") are the two leaders
@@ -76,7 +76,7 @@ graph
 |> Dux.Graph.shortest_paths(1)
 |> Dux.sort_by(:dist)
 |> Dux.head(10)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Connected Components
@@ -118,7 +118,7 @@ graph
 |> Dux.Graph.pagerank(iterations: 20)
 |> Dux.join(factions, on: :id)
 |> Dux.sort_by(desc: :rank)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## Building Graphs from Scratch
@@ -147,7 +147,7 @@ small_graph = Dux.Graph.new(
 small_graph
 |> Dux.Graph.pagerank(iterations: 10)
 |> Dux.sort_by(desc: :rank)
-|> Dux.to_rows()
+|> Dux.compute()
 ```
 
 ## What's Next
