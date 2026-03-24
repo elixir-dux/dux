@@ -4,6 +4,8 @@
 [![Docs](https://img.shields.io/badge/hex.pm-docs-green.svg?style=flat)](https://hexdocs.pm/dux)
 [![Hex.pm](https://img.shields.io/hexpm/v/dux.svg)](https://hex.pm/packages/dux)
 
+> **Note:** Dux is under active development and not yet production ready. APIs may change between releases.
+
 **DuckDB-native dataframes for Elixir.**
 
 Dux gives you a [dplyr](https://dplyr.tidyverse.org)-style verb API backed by DuckDB's analytical engine, with built-in distributed execution across the BEAM. Pipelines are lazy, operations compile to SQL, and DuckDB handles columnar execution, vectorised aggregation, and predicate pushdown.
