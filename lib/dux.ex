@@ -1679,6 +1679,11 @@ defmodule Dux do
   defp encode_param(false), do: "false"
   defp encode_param(nil), do: "NULL"
 
+  defp write_copy(%Dux{workers: workers} = dux, path, format, opts)
+       when is_list(workers) and workers != [] do
+    distributed_write(dux, path, format, opts)
+  end
+
   defp write_copy(%Dux{} = dux, path, format, opts) do
     fmt_atom = format |> String.downcase() |> String.to_atom()
     meta = %{format: fmt_atom, path: path}
@@ -1704,6 +1709,97 @@ defmodule Dux do
       Process.delete(:dux_write_ref)
       {:ok, meta}
     end)
+  end
+
+  defp distributed_write(%Dux{workers: workers} = dux, base_path, format, opts) do
+    alias Dux.Remote.{Partitioner, Worker}
+    require Logger
+
+    fmt_atom = format |> String.downcase() |> String.to_atom()
+    ext = format_extension(format)
+    copy_opts = build_copy_options(format, opts)
+    n_workers = length(workers)
+    meta = %{format: fmt_atom, path: base_path, n_workers: n_workers}
+
+    :telemetry.span([:dux, :distributed, :write], meta, fn ->
+      # Warn if output directory is non-empty
+      warn_if_non_empty(base_path)
+
+      # Partition the source across workers
+      pipeline = %{dux | workers: nil}
+      assignments = Partitioner.assign(pipeline, workers)
+
+      # Fan out: each worker writes its partition to a unique file
+      results = fan_out_writes(assignments, base_path, ext, copy_opts, n_workers)
+      files = handle_write_results(results, n_workers, base_path)
+
+      {:ok, Map.merge(meta, %{files: files, n_files: length(files)})}
+    end)
+  end
+
+  defp fan_out_writes(assignments, base_path, ext, copy_opts, n_workers) do
+    alias Dux.Remote.Worker
+
+    assignments
+    |> Enum.with_index()
+    |> Task.async_stream(
+      fn {{worker, worker_pipeline}, idx} ->
+        unique = :erlang.unique_integer([:positive])
+        file_path = Path.join(base_path, "part_#{idx}_#{unique}.#{ext}")
+        {worker, Worker.write(worker, worker_pipeline, file_path, copy_opts)}
+      end,
+      max_concurrency: n_workers,
+      timeout: :infinity
+    )
+    |> Enum.map(fn {:ok, result} -> result end)
+  end
+
+  defp handle_write_results(results, n_workers, base_path) do
+    require Logger
+
+    {successes, failures} =
+      Enum.split_with(results, fn {_w, result} -> match?({:ok, _}, result) end)
+
+    if successes == [] and failures != [] do
+      reasons = Enum.map(failures, fn {_w, {:error, r}} -> r end)
+      raise ArgumentError, "all workers failed distributed write: #{inspect(reasons)}"
+    end
+
+    if failures != [] do
+      Logger.warning(
+        "#{length(failures)} of #{n_workers} workers failed during distributed write to #{base_path}"
+      )
+    end
+
+    Enum.map(successes, fn {_w, {:ok, path}} -> path end)
+  end
+
+  defp format_extension("CSV"), do: "csv"
+  defp format_extension("PARQUET"), do: "parquet"
+  defp format_extension("JSON"), do: "ndjson"
+
+  defp warn_if_non_empty(path) do
+    require Logger
+
+    cond do
+      String.starts_with?(path, "s3://") or String.starts_with?(path, "http") ->
+        # Skip check for remote paths — glob would be expensive
+        :ok
+
+      File.dir?(path) ->
+        case File.ls(path) do
+          {:ok, entries} when entries != [] ->
+            Logger.warning(
+              "distributed write target #{path} is not empty (#{length(entries)} existing entries)"
+            )
+
+          _ ->
+            :ok
+        end
+
+      true ->
+        :ok
+    end
   end
 
   defp build_copy_options("CSV", opts) do

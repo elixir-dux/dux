@@ -103,6 +103,18 @@ defmodule Dux.Remote.Worker do
   end
 
   @doc """
+  Execute a pipeline and write the results directly to a file.
+
+  The worker compiles the pipeline to SQL, then runs
+  `COPY (query) TO 'path' (format_opts)`. Returns `{:ok, path}` or
+  `{:error, reason}`.
+  """
+  def write(worker, %Dux{} = pipeline, path, copy_opts_sql, timeout \\ :infinity)
+      when is_binary(path) and is_binary(copy_opts_sql) do
+    GenServer.call(worker, {:write, pipeline, path, copy_opts_sql}, timeout)
+  end
+
+  @doc """
   Get worker info (node, connection status).
   """
   def info(worker) do
@@ -260,6 +272,32 @@ defmodule Dux.Remote.Worker do
       end
 
     {:reply, result, %{state | tables: tables}}
+  end
+
+  @impl true
+  def handle_call({:write, %Dux{} = pipeline, path, copy_opts_sql}, _from, %{conn: conn} = state) do
+    result =
+      try do
+        source_ref = extract_source_ref(pipeline)
+        {sql, source_setup} = Dux.QueryBuilder.build(pipeline, conn)
+        Enum.each(source_setup, fn s -> Dux.Backend.execute(conn, s) end)
+
+        escaped_path = String.replace(path, "'", "''")
+        copy_sql = "COPY (#{sql}) TO '#{escaped_path}' (#{copy_opts_sql})"
+
+        result =
+          case Adbc.Connection.query(conn, copy_sql) do
+            {:ok, _} -> {:ok, path}
+            {:error, err} -> {:error, Exception.message(err)}
+          end
+
+        :erlang.phash2(source_ref, 1)
+        result
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true
