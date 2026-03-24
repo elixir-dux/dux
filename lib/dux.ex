@@ -461,7 +461,10 @@ defmodule Dux do
   """
   def list_attached do
     conn = Dux.Connection.get_conn()
-    ref = Dux.Backend.query(conn, "PRAGMA database_list")
+
+    ref =
+      Dux.Backend.query(conn, "SELECT database_name AS name, type, path FROM duckdb_databases()")
+
     Dux.Backend.table_to_rows(conn, ref)
   end
 
@@ -475,6 +478,10 @@ defmodule Dux do
 
     * `:version` — snapshot/version number for time-travel (Iceberg, Delta, DuckLake)
     * `:as_of` — timestamp for time-travel
+    * `:partition_by` — column to hash-partition on for distributed reads.
+      When set and the pipeline is distributed, each worker ATTACHes the
+      database independently and reads a disjoint hash partition. Without
+      this, attached sources are read on the coordinator only.
 
   ## Examples
 
@@ -483,13 +490,20 @@ defmodule Dux do
 
       # Time travel
       Dux.from_attached(:lake, "events", version: 5)
+
+      # Distributed reads from Postgres (each worker reads 1/N)
+      Dux.from_attached(:pg, "public.orders", partition_by: :id)
+      |> Dux.distribute(workers)
+      |> Dux.to_rows()
   """
   def from_attached(db_name, table_name, opts \\ []) do
     version = Keyword.get(opts, :version)
     as_of = Keyword.get(opts, :as_of)
+    partition_by = Keyword.get(opts, :partition_by)
 
     source =
       cond do
+        partition_by -> {:attached, db_name, table_name, partition_by: partition_by}
         version -> {:attached, db_name, table_name, version: version}
         as_of -> {:attached, db_name, table_name, as_of: as_of}
         true -> {:attached, db_name, table_name}

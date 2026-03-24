@@ -49,6 +49,26 @@ defmodule Dux.Remote.Partitioner do
     distribute_parquet_files(files, workers, pipeline, [], opts)
   end
 
+  # Distributed scan — each worker gets its own hash partition index.
+  # The coordinator resolved an attached DB (Postgres, etc.) with partition_by
+  # into a {:distributed_scan, conn_string, type, table, col} source.
+  # We assign each worker a {worker_idx, n_workers} slice.
+  defp assign_strategy(
+         %Dux{source: {:distributed_scan, conn, type, table, col}} = pipeline,
+         workers,
+         :round_robin,
+         _opts
+       ) do
+    n = length(workers)
+
+    workers
+    |> Enum.with_index()
+    |> Enum.map(fn {worker, idx} ->
+      source = {:distributed_scan, conn, type, table, col, idx, n}
+      {worker, %{pipeline | source: source}}
+    end)
+  end
+
   # Other sources — no splitting
   defp assign_strategy(pipeline, workers, :round_robin, _opts) do
     replicate(pipeline, workers)

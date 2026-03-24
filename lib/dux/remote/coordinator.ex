@@ -553,10 +553,15 @@ defmodule Dux.Remote.Coordinator do
   # DuckLake source resolution
   # ---------------------------------------------------------------------------
 
-  # Resolve a DuckLake attached source into a list of backing Parquet file paths.
-  # The coordinator queries the DuckLake catalog's file manifest and replaces
-  # the {:attached, ...} source with {:ducklake_files, paths} so workers can
-  # read the underlying Parquet files directly — no DuckLake extension needed.
+  # Resolve attached sources that can be distributed:
+  # - DuckLake: resolve file manifest → {:ducklake_files, paths}
+  # - Postgres/MySQL with partition_by: → {:distributed_scan, ...} (handled by Partitioner)
+  defp resolve_ducklake_source(
+         %Dux{source: {:attached, db_name, table_name, partition_by: col}} = pipeline
+       ) do
+    resolve_distributed_attached(pipeline, db_name, table_name, col)
+  end
+
   defp resolve_ducklake_source(%Dux{source: {:attached, db_name, table_name}} = pipeline) do
     try_resolve_ducklake(pipeline, db_name, table_name)
   end
@@ -566,6 +571,24 @@ defmodule Dux.Remote.Coordinator do
   end
 
   defp resolve_ducklake_source(pipeline), do: pipeline
+
+  # Resolve an attached database with partition_by into a distributed_scan source.
+  # Workers will each ATTACH the database and read a hash-partitioned slice.
+  defp resolve_distributed_attached(pipeline, db_name, table_name, partition_col) do
+    conn = Dux.Connection.get_conn()
+    db_str = to_string(db_name)
+
+    case attached_db_info(conn, db_str) do
+      {type, path} when type in ["postgres", "mysql", "sqlite", "duckdb"] ->
+        col_str = to_string(partition_col)
+
+        %{pipeline | source: {:distributed_scan, path, type, table_name, col_str}}
+
+      _ ->
+        # Unknown type or can't resolve — keep as attached (coordinator-only)
+        pipeline
+    end
+  end
 
   defp try_resolve_ducklake(pipeline, db_name, table_name) do
     conn = Dux.Connection.get_conn()
@@ -578,11 +601,31 @@ defmodule Dux.Remote.Coordinator do
   end
 
   defp attached_db_type(conn, db_name) do
-    sql = "SELECT type FROM pragma_database_list() WHERE name = '#{db_name}'"
+    case attached_db_info(conn, db_name) do
+      {type, _path} -> type
+      nil -> nil
+    end
+  end
+
+  defp attached_db_info(conn, db_name) do
+    sql = "SELECT type, path FROM duckdb_databases() WHERE database_name = '#{db_name}'"
 
     case Adbc.Connection.query(conn, sql) do
-      {:ok, result} -> extract_first_value(Adbc.Result.materialize(result))
-      {:error, _} -> nil
+      {:ok, result} ->
+        materialized = Adbc.Result.materialize(result)
+        type = extract_column_first(materialized, "type")
+        path = extract_column_first(materialized, "path")
+        if type, do: {type, path}, else: nil
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp extract_column_first(materialized, col_name) do
+    case extract_column(materialized, col_name) do
+      [val | _] -> val
+      _ -> nil
     end
   end
 
@@ -602,18 +645,12 @@ defmodule Dux.Remote.Coordinator do
     end
   end
 
-  defp extract_first_value(%{data: [col | _]}) do
-    case Enum.to_list(col) do
-      [val | _] -> val
-      _ -> nil
-    end
-  end
+  # ADBC 0.10 materialize returns %{data: [[col1, col2, ...]]} — list of batches.
+  defp extract_column(%{data: batches}, name) when is_list(batches) do
+    columns = List.flatten(batches)
 
-  defp extract_first_value(_), do: nil
-
-  defp extract_column(%{data: columns}, name) do
     Enum.find_value(columns, [], fn col ->
-      if col.field.name == name, do: Enum.to_list(col)
+      if col.field.name == name, do: Adbc.Column.to_list(col)
     end)
   end
 
@@ -626,6 +663,7 @@ defmodule Dux.Remote.Coordinator do
   defp worker_safe_source?({:parquet, _, _}), do: true
   defp worker_safe_source?({:parquet_list, _, _}), do: true
   defp worker_safe_source?({:ducklake_files, _}), do: true
+  defp worker_safe_source?({:distributed_scan, _, _, _, _, _, _}), do: true
   defp worker_safe_source?({:csv, _, _}), do: true
   defp worker_safe_source?({:ndjson, _, _}), do: true
   defp worker_safe_source?({:sql, _}), do: true
