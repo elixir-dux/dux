@@ -80,8 +80,7 @@ defmodule Dux.MixProject do
         "guides/data-io.livemd",
         "guides/transformations.livemd",
         "guides/joins-and-reshape.livemd",
-        "guides/distributed-queries.livemd",
-        "guides/distributed-io.md",
+        "guides/distributed.md",
         "guides/graph-analytics.livemd",
         "guides/cheatsheet.cheatmd",
         "CHANGELOG.md"

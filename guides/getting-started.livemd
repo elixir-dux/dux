@@ -173,5 +173,5 @@ penguins
 - [Data IO](data-io.livemd) — CSV, Parquet, NDJSON, S3, glob patterns
 - [Transformations](transformations.livemd) — deep dive on filter, mutate, window functions
 - [Joins & Reshape](joins-and-reshape.livemd) — star schema joins, pivot_wider/longer
-- [Distributed Queries](distributed-queries.livemd) — scale across BEAM nodes with `distribute/2`
+- [Distributed Execution](distributed.md) — scale across BEAM nodes with `distribute/2`
 - [Graph Analytics](graph-analytics.livemd) — PageRank, shortest paths, connected components

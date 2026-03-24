@@ -175,12 +175,11 @@ Dux.concat_rows([jan1, jan2, jan3])
 > #### Cross-source joins {: .tip}
 >
 > Dux can join across different data sources — Parquet files with Postgres
-> tables, S3 data with local CSVs. See the [Distributed IO](distributed-io.md)
+> tables, S3 data with local CSVs. See the [Distributed Execution](distributed.md)
 > guide for `Dux.attach/3` and `Dux.from_attached/3`.
 
 ## What's Next
 
 - [Getting Started](getting-started.livemd) — core Dux concepts
 - [Transformations](transformations.livemd) — filter, mutate, window functions
-- [Distributed IO](distributed-io.md) — distributed reads, writes, and cross-source joins
-- [Distributed Queries](distributed-queries.livemd) — the execution model
+- [Distributed Execution](distributed.md) — architecture, partitioning, distributed IO

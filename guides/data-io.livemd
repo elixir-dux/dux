@@ -149,7 +149,7 @@ Adbc.Connection.query(conn, "DROP TABLE IF EXISTS my_table")
 > Dux.from_parquet("data.parquet")
 > |> Dux.insert_into("pg.public.events", create: true)
 > ```
-> See the [Distributed IO](distributed-io.md) guide for parallel writes.
+> See the [Distributed Execution](distributed.md) guide for parallel writes.
 
 ## The SQL Escape Hatch
 
