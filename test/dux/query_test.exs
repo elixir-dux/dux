@@ -1,3 +1,4 @@
+# credo:disable-for-this-file Credo.Check.Refactor.CondStatements
 defmodule Dux.QueryTest do
   use ExUnit.Case, async: false
   require Dux
@@ -303,6 +304,345 @@ defmodule Dux.QueryTest do
                %{"region" => "EU", "total" => 150, "n" => 1},
                %{"region" => "US", "total" => 200, "n" => 1}
              ] = result
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # CASE WHEN (cond/if)
+  # ---------------------------------------------------------------------------
+
+  describe "cond → CASE WHEN" do
+    test "basic cond with else" do
+      result =
+        Dux.from_list([%{"x" => 10}, %{"x" => 200}, %{"x" => 1500}])
+        |> Dux.mutate(
+          tier:
+            cond do
+              x > 1000 -> "gold"
+              x > 100 -> "silver"
+              true -> "bronze"
+            end
+        )
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      assert result["tier"] == ["bronze", "silver", "gold"]
+    end
+
+    test "cond without else (no true branch)" do
+      result =
+        Dux.from_list([%{"x" => 5}, %{"x" => 15}])
+        |> Dux.mutate(
+          label:
+            cond do
+              x > 10 -> "big"
+            end
+        )
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      # No else → NULL for non-matching rows
+      assert result["label"] == [nil, "big"]
+    end
+
+    test "cond with pins" do
+      threshold = 100
+
+      result =
+        Dux.from_list([%{"x" => 50}, %{"x" => 150}])
+        |> Dux.mutate(
+          over:
+            cond do
+              x > ^threshold -> "yes"
+              true -> "no"
+            end
+        )
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      assert result["over"] == ["no", "yes"]
+    end
+
+    test "cond in filter" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}])
+        |> Dux.filter(
+          cond do
+            x > 2 -> true
+            true -> false
+          end
+        )
+        |> Dux.to_columns()
+
+      assert result["x"] == [3]
+    end
+
+    test "nested cond with arithmetic" do
+      result =
+        Dux.from_list([%{"amount" => 50}, %{"amount" => 500}, %{"amount" => 5000}])
+        |> Dux.mutate(
+          discount:
+            cond do
+              amount > 1000 -> amount * 0.2
+              amount > 100 -> amount * 0.1
+              true -> 0
+            end
+        )
+        |> Dux.sort_by(:amount)
+        |> Dux.to_rows()
+
+      assert Enum.map(result, & &1["discount"]) == [0, 50.0, 1000.0]
+    end
+  end
+
+  describe "if/else → CASE WHEN" do
+    test "basic if/else" do
+      result =
+        Dux.from_list([%{"x" => -5}, %{"x" => 10}])
+        |> Dux.mutate(sign: if(x > 0, do: "positive", else: "non-positive"))
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      assert result["sign"] == ["non-positive", "positive"]
+    end
+
+    test "if without else (NULL)" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 5}])
+        |> Dux.mutate(big: if(x > 3, do: "yes"))
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      assert result["big"] == [nil, "yes"]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # IN operator
+  # ---------------------------------------------------------------------------
+
+  describe "in operator" do
+    test "literal list" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}, %{"x" => 4}])
+        |> Dux.filter(x in [2, 4])
+        |> Dux.to_columns()
+
+      assert result["x"] == [2, 4]
+    end
+
+    test "pinned list" do
+      allowed = [1, 3]
+
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}, %{"x" => 4}])
+        |> Dux.filter(x in ^allowed)
+        |> Dux.to_columns()
+
+      assert result["x"] == [1, 3]
+    end
+
+    test "string values" do
+      result =
+        Dux.from_list([
+          %{"status" => "active"},
+          %{"status" => "pending"},
+          %{"status" => "deleted"}
+        ])
+        |> Dux.filter(status in ["active", "pending"])
+        |> Dux.sort_by(:status)
+        |> Dux.to_columns()
+
+      assert result["status"] == ["active", "pending"]
+    end
+
+    test "pinned string list" do
+      allowed = ["active", "pending"]
+
+      result =
+        Dux.from_list([
+          %{"status" => "active"},
+          %{"status" => "pending"},
+          %{"status" => "deleted"}
+        ])
+        |> Dux.filter(status in ^allowed)
+        |> Dux.sort_by(:status)
+        |> Dux.to_columns()
+
+      assert result["status"] == ["active", "pending"]
+    end
+
+    test "single value" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}])
+        |> Dux.filter(x in [1])
+        |> Dux.to_columns()
+
+      assert result["x"] == [1]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # CASE WHEN / IN — adversarial
+  # ---------------------------------------------------------------------------
+
+  describe "cond/in adversarial" do
+    test "cond with SQL-injection-like strings" do
+      result =
+        Dux.from_list([%{"x" => 1}])
+        |> Dux.mutate(
+          label:
+            cond do
+              x > 0 -> "it's a 'test'"
+              true -> "other"
+            end
+        )
+        |> Dux.to_rows()
+
+      assert hd(result)["label"] == "it's a 'test'"
+    end
+
+    test "cond with many branches" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}, %{"x" => 3}, %{"x" => 4}, %{"x" => 5}])
+        |> Dux.mutate(
+          label:
+            cond do
+              x == 1 -> "one"
+              x == 2 -> "two"
+              x == 3 -> "three"
+              x == 4 -> "four"
+              true -> "other"
+            end
+        )
+        |> Dux.sort_by(:x)
+        |> Dux.to_columns()
+
+      assert result["label"] == ["one", "two", "three", "four", "other"]
+    end
+
+    test "in with empty result" do
+      result =
+        Dux.from_list([%{"x" => 1}, %{"x" => 2}])
+        |> Dux.filter(x in [99, 100])
+        |> Dux.to_columns()
+
+      assert result["x"] == []
+    end
+
+    test "in combined with cond" do
+      result =
+        Dux.from_list([
+          %{"status" => "active", "amount" => 50},
+          %{"status" => "pending", "amount" => 200},
+          %{"status" => "deleted", "amount" => 100}
+        ])
+        |> Dux.filter(status in ["active", "pending"])
+        |> Dux.mutate(
+          tier:
+            cond do
+              amount > 100 -> "high"
+              true -> "low"
+            end
+        )
+        |> Dux.sort_by(:amount)
+        |> Dux.to_rows()
+
+      assert length(result) == 2
+      assert Enum.map(result, & &1["tier"]) == ["low", "high"]
+    end
+
+    test "cond with null values" do
+      result =
+        Dux.from_query("SELECT NULL AS x UNION ALL SELECT 5 AS x")
+        |> Dux.mutate(
+          label:
+            cond do
+              x > 3 -> "big"
+              true -> "small"
+            end
+        )
+        |> Dux.sort_by(:label)
+        |> Dux.to_columns()
+
+      # NULL > 3 is NULL (falsy), so falls to else
+      assert result["label"] == ["big", "small"]
+    end
+
+    test "pinned in with special characters in strings" do
+      targets = ["it's", "a \"test\""]
+
+      result =
+        Dux.from_list([
+          %{"name" => "it's"},
+          %{"name" => "a \"test\""},
+          %{"name" => "other"}
+        ])
+        |> Dux.filter(name in ^targets)
+        |> Dux.sort_by(:name)
+        |> Dux.to_columns()
+
+      assert length(result["name"]) == 2
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # DuckDB function pass-through
+  # ---------------------------------------------------------------------------
+
+  describe "DuckDB function pass-through" do
+    test "date functions" do
+      result =
+        Dux.from_query("SELECT DATE '2024-06-15' AS d")
+        |> Dux.mutate(y: year(d), m: month(d), day_of: day(d))
+        |> Dux.to_rows()
+
+      row = hd(result)
+      assert row["y"] == 2024
+      assert row["m"] == 6
+      assert row["day_of"] == 15
+    end
+
+    test "string functions" do
+      result =
+        Dux.from_list([%{"name" => "Hello World"}])
+        |> Dux.mutate(low: lower(name), up: upper(name), len: length(name))
+        |> Dux.to_rows()
+
+      row = hd(result)
+      assert row["low"] == "hello world"
+      assert row["up"] == "HELLO WORLD"
+      assert row["len"] == 11
+    end
+
+    test "math functions" do
+      result =
+        Dux.from_list([%{"x" => 100}])
+        |> Dux.mutate(sq: sqrt(x), lg: log2(x), ab: abs(-1 * x))
+        |> Dux.to_rows()
+
+      row = hd(result)
+      assert row["sq"] == 10.0
+      assert_in_delta row["lg"], 6.644, 0.01
+      assert row["ab"] == 100
+    end
+
+    test "coalesce" do
+      result =
+        Dux.from_query("SELECT NULL AS x, 42 AS y")
+        |> Dux.mutate(z: coalesce(x, y))
+        |> Dux.to_rows()
+
+      assert hd(result)["z"] == 42
+    end
+
+    test "regexp_matches" do
+      result =
+        Dux.from_list([%{"email" => "a@gmail.com"}, %{"email" => "b@yahoo.com"}])
+        |> Dux.filter(regexp_matches(email, ".*@gmail\\.com"))
+        |> Dux.to_columns()
+
+      assert result["email"] == ["a@gmail.com"]
     end
   end
 end

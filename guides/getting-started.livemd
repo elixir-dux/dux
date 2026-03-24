@@ -35,9 +35,18 @@ penguins
 
 ## Materialization
 
-Pipelines are lazy — nothing executes until you materialise. `compute/1`
-executes and returns a `%Dux{}` with the data. `to_rows/1` and `to_columns/1`
-extract raw Elixir data structures:
+Pipelines are lazy — nothing executes until you materialise:
+
+- `compute/1` — execute and return a `%Dux{}` with the data
+- `to_rows/1` — execute and return a list of maps
+- `to_columns/1` — execute and return a map of lists
+
+```elixir
+penguins
+|> Dux.filter(species == "Adelie")
+|> Dux.head(3)
+|> Dux.compute()
+```
 
 ```elixir
 penguins
@@ -112,6 +121,106 @@ penguins
 |> Dux.sort_by(desc: :n)
 |> Dux.compute()
 ```
+
+## Conditional Expressions
+
+Elixir's `cond` compiles to SQL `CASE WHEN` — classify rows directly in your pipeline:
+
+```elixir
+penguins
+|> Dux.drop_nil([:body_mass_g])
+|> Dux.mutate(
+  size: cond do
+    body_mass_g > 5000 -> "large"
+    body_mass_g > 3500 -> "medium"
+    true -> "small"
+  end
+)
+|> Dux.group_by(:size)
+|> Dux.summarise(n: count(species))
+|> Dux.compute()
+```
+
+For simple two-branch logic, use `if/else`:
+
+```elixir
+penguins
+|> Dux.drop_nil([:body_mass_g])
+|> Dux.mutate(heavy: if(body_mass_g > 4500, do: "yes", else: "no"))
+|> Dux.group_by(:heavy)
+|> Dux.summarise(n: count(species))
+|> Dux.compute()
+```
+
+## Membership Tests
+
+Use `in` to filter by a set of values:
+
+```elixir
+penguins
+|> Dux.filter(species in ["Adelie", "Chinstrap"])
+|> Dux.group_by(:species)
+|> Dux.summarise(n: count(species))
+|> Dux.compute()
+```
+
+Works with interpolated lists too:
+
+```elixir
+target_islands = ["Biscoe", "Dream"]
+
+penguins
+|> Dux.filter(island in ^target_islands)
+|> Dux.group_by(:island)
+|> Dux.summarise(n: count(species))
+|> Dux.compute()
+```
+
+## Using DuckDB Functions
+
+All DuckDB functions work inside the query macro — they pass through as SQL
+function calls. Here are some useful ones:
+
+```elixir
+# String functions
+penguins
+|> Dux.mutate(
+  species_lower: lower(species),
+  first_char: left(species, 1)
+)
+|> Dux.select([:species, :species_lower, :first_char])
+|> Dux.distinct()
+|> Dux.compute()
+```
+
+```elixir
+# Math and rounding
+penguins
+|> Dux.drop_nil([:bill_length_mm, :bill_depth_mm])
+|> Dux.mutate(
+  bill_ratio: round(bill_length_mm / bill_depth_mm, 2),
+  log_mass: round(ln(body_mass_g), 2)
+)
+|> Dux.select([:species, :bill_ratio, :log_mass])
+|> Dux.head(5)
+|> Dux.compute()
+```
+
+```elixir
+# Null handling with coalesce
+penguins
+|> Dux.mutate(safe_sex: coalesce(sex, "unknown"))
+|> Dux.group_by(:safe_sex)
+|> Dux.summarise(n: count(species))
+|> Dux.compute()
+```
+
+> #### Any DuckDB function works {: .info}
+>
+> `lower()`, `upper()`, `trim()`, `year()`, `month()`, `date_diff()`,
+> `regexp_matches()`, `list_extract()`, `struct_extract()`, `coalesce()`,
+> `cast()`, and [hundreds more](https://duckdb.org/docs/sql/functions/overview).
+> If DuckDB has it, you can call it in a Dux expression.
 
 ## See the SQL
 

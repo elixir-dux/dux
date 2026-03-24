@@ -8,42 +8,122 @@ defmodule Dux.Query do
   Use `^` to interpolate Elixir variables — these become parameter bindings
   in the generated SQL, preventing SQL injection by construction.
 
-  ## Supported in queries
-
   Queries are used in `Dux.filter/2`, `Dux.mutate/2`, `Dux.summarise/2`,
   and `Dux.sort_by/2`.
 
   ## Operators
 
-  Comparison: `==`, `!=`, `>`, `>=`, `<`, `<=`
-  Arithmetic: `+`, `-`, `*`, `/`
-  Logical: `and`, `or`, `not`
-  String: `<>` (concatenation)
+  | Elixir | SQL |
+  |--------|-----|
+  | `==`, `!=`, `>`, `>=`, `<`, `<=` | `=`, `!=`, `>`, `>=`, `<`, `<=` |
+  | `+`, `-`, `*`, `/` | `+`, `-`, `*`, `/` |
+  | `and`, `or`, `not` | `AND`, `OR`, `NOT` |
+  | `<>` | `\|\|` (string concatenation) |
+  | `in [...]` | `IN (...)` |
 
-  ## Aggregation functions
+  ## Conditional expressions
 
-  `sum(col)`, `mean(col)`, `min(col)`, `max(col)`, `count(col)`,
-  `count_distinct(col)`, `avg(col)`, `std(col)`, `variance(col)`
+  Elixir's `cond` maps to SQL `CASE WHEN`:
 
-  ## Other functions
+      Dux.mutate(df,
+        tier: cond do
+          amount > 1000 -> "gold"
+          amount > 100 -> "silver"
+          true -> "bronze"
+        end
+      )
 
-  `col("name")` for columns with unusual names.
-  `cast(expr, type)` for type casting.
+  Elixir's `if/else` for simple two-branch conditionals:
+
+      Dux.mutate(df, label: if(amount > 0, do: "positive", else: "negative"))
+
+  ## Membership test
+
+  Elixir's `in` works with literal and pinned lists:
+
+      Dux.filter(df, status in ["active", "pending"])
+
+      allowed = ["active", "pending"]
+      Dux.filter(df, status in ^allowed)
 
   ## Interpolation
 
-  Use `^` to access variables defined outside the query:
+  Use `^` to interpolate Elixir values as parameter bindings:
 
       min_val = 10
       Dux.filter(df, x > ^min_val)
+
+  ## Aggregation functions
+
+  `sum`, `avg`/`mean`, `min`, `max`, `count`, `count_distinct`, `std`, `variance`
+
+  ## DuckDB functions
+
+  **All DuckDB functions work in queries.** Function calls pass through
+  to DuckDB unchanged. A few examples by category:
+
+  **Date/time:**
+
+      Dux.mutate(df, y: year(d), m: month(d), trunc: date_trunc("month", d))
+      Dux.mutate(df, age_days: date_diff("day", created_at, current_date()))
+
+  **String:**
+
+      Dux.mutate(df, low: lower(name), parts: string_split(path, "/"))
+      Dux.filter(df, starts_with(name, "A"))
+      Dux.mutate(df, clean: trim(replace(name, "  ", " ")))
+
+  **Regex:**
+
+      Dux.filter(df, regexp_matches(email, ".*@gmail\\\\.com"))
+      Dux.mutate(df, domain: regexp_extract(email, "@(.+)", 1))
+
+  **List/Array:**
+
+      Dux.mutate(df, first: list_extract(tags, 1), n: len(tags))
+
+  **Struct:**
+
+      Dux.mutate(df, city: struct_extract(address, "city"))
+
+  **Math:**
+
+      Dux.mutate(df, log_amt: ln(amount), pct: round(ratio * 100, 2))
+
+  **Null handling:**
+
+      Dux.mutate(df, safe: coalesce(nullable_col, 0))
+
+  **Type casting:**
+
+      Dux.mutate(df, as_text: cast(id, "VARCHAR"), as_int: cast(amount, "INTEGER"))
+
+  For the full list, see the
+  [DuckDB Functions reference](https://duckdb.org/docs/sql/functions/overview).
+
+  For anything the macro doesn't support (window functions, subqueries),
+  use the `_with` variants (`mutate_with/2`, `filter_with/2`) which accept
+  raw DuckDB SQL strings.
+
+  ## Column references
+
+  `col("name")` for columns with spaces or special characters:
+
+      Dux.filter(df, col("Total Amount") > 100)
 
   ## Examples
 
       # Filter
       Dux.filter(df, age > 18 and status == "active")
 
-      # Mutate
-      Dux.mutate(df, revenue: price * quantity, tax: price * ^tax_rate)
+      # Mutate with conditional
+      Dux.mutate(df,
+        revenue: price * quantity,
+        tier: cond do
+          price > 100 -> "premium"
+          true -> "standard"
+        end
+      )
 
       # Summarise
       Dux.summarise(df, total: sum(amount), n: count(id))
@@ -135,6 +215,49 @@ defmodule Dux.Query do
   defp traverse({:-, _meta, [expr]}, pins) when not is_number(expr) do
     {ast, pins} = traverse(expr, pins)
     {{:negate, ast}, pins}
+  end
+
+  # cond → CASE WHEN ... THEN ... ELSE ... END
+  defp traverse({:cond, _meta, [[do: clauses]]}, pins) do
+    {pairs, else_expr, pins} =
+      Enum.reduce(clauses, {[], nil, pins}, fn {:->, _m, [[condition], result]},
+                                               {pairs, _else, pins} ->
+        {cond_ast, pins} = traverse(condition, pins)
+        {result_ast, pins} = traverse(result, pins)
+
+        case cond_ast do
+          {:lit, true} ->
+            # `true -> expr` becomes the ELSE branch
+            {pairs, result_ast, pins}
+
+          _ ->
+            {pairs ++ [{cond_ast, result_ast}], nil, pins}
+        end
+      end)
+
+    {{:case_when, pairs, else_expr}, pins}
+  end
+
+  # if/else → CASE WHEN cond THEN then_expr ELSE else_expr END
+  defp traverse({:if, _meta, [condition, [do: then_expr, else: else_expr]]}, pins) do
+    {cond_ast, pins} = traverse(condition, pins)
+    {then_ast, pins} = traverse(then_expr, pins)
+    {else_ast, pins} = traverse(else_expr, pins)
+    {{:case_when, [{cond_ast, then_ast}], else_ast}, pins}
+  end
+
+  # if without else → CASE WHEN cond THEN then_expr ELSE NULL END
+  defp traverse({:if, _meta, [condition, [do: then_expr]]}, pins) do
+    {cond_ast, pins} = traverse(condition, pins)
+    {then_ast, pins} = traverse(then_expr, pins)
+    {{:case_when, [{cond_ast, then_ast}], {:lit, nil}}, pins}
+  end
+
+  # in operator → SQL IN
+  defp traverse({:in, _meta, [left, right]}, pins) do
+    {l_ast, pins} = traverse(left, pins)
+    {r_ast, pins} = traverse(right, pins)
+    {{:in, l_ast, r_ast}, pins}
   end
 
   # String concatenation: <>

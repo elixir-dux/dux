@@ -65,7 +65,21 @@ min_amount = 500
 Dux.filter(df, amount > ^min_amount and status == "active")
 ```
 
-The `_with` variants accept raw DuckDB SQL for anything the macro doesn't cover:
+All DuckDB functions work inside expressions — `year()`, `lower()`, `coalesce()`, `regexp_matches()`, and [hundreds more](https://duckdb.org/docs/sql/functions/overview). `cond` maps to `CASE WHEN`, `in` maps to `IN`:
+
+```elixir
+Dux.mutate(df,
+  tier: cond do
+    amount > 1000 -> "gold"
+    amount > 100 -> "silver"
+    true -> "bronze"
+  end
+)
+
+Dux.filter(df, status in ["active", "pending"])
+```
+
+The `_with` variants accept raw DuckDB SQL for window functions and other constructs the macro doesn't cover:
 
 ```elixir
 Dux.mutate_with(df, rank: "ROW_NUMBER() OVER (PARTITION BY dept ORDER BY salary DESC)")
