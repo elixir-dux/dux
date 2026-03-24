@@ -1,29 +1,35 @@
 if Code.ensure_loaded?(FLAME) do
   defmodule Dux.Flame do
     @moduledoc """
-    Elastic compute via FLAME for distributed Dux queries.
+    Spin up Dux workers on FLAME runners for distributed queries.
 
-    FLAME boots ephemeral cloud machines with a full copy of your application,
-    starts `Dux.Remote.Worker` on each, and auto-terminates when idle. No Docker
-    builds, no cluster management.
+    FLAME handles pool management and machine lifecycle — see the
+    [FLAME docs](https://hexdocs.pm/flame) for pool configuration.
+    This module provides `spin_up/2` to place `Dux.Remote.Worker`
+    processes on FLAME runners, and `status/1` to inspect the cluster.
 
-    ## Quick start
+    ## Livebook
 
-    Works in both Livebook and deployed Elixir apps — `start_pool/1`
-    auto-detects the environment and configures `code_sync` and supervision
-    accordingly.
-
-        # Start a FLAME pool
-        Dux.Flame.start_pool(
-          backend: {FLAME.FlyBackend,
-            token: System.fetch_env!("FLY_API_TOKEN"),
-            cpus: 4,
-            memory_mb: 16_384},
-          max: 10
+        # 1. Start a FLAME pool (see FLAME docs for backend options)
+        Kino.start_child!(
+          {FLAME.Pool,
+            name: :dux_pool,
+            code_sync: [
+              start_apps: true,
+              sync_beams: [Path.join(System.tmp_dir!(), "livebook_runtime")]
+            ],
+            min: 0,
+            max: 10,
+            backend: {FLAME.FlyBackend,
+              cpu_kind: "performance", cpus: 4, memory_mb: 8192,
+              token: System.fetch_env!("FLY_API_TOKEN"),
+              env: Map.take(System.get_env(), ["LIVEBOOK_COOKIE"])
+            },
+            idle_shutdown_after: :timer.minutes(5)}
         )
 
-        # Spin up workers and distribute
-        workers = Dux.Flame.spin_up(5)
+        # 2. Spin up workers and distribute
+        workers = Dux.Flame.spin_up(5, pool: :dux_pool)
 
         Dux.from_parquet("s3://bucket/data/**/*.parquet")
         |> Dux.distribute(workers)
@@ -32,110 +38,24 @@ if Code.ensure_loaded?(FLAME) do
         |> Dux.summarise(total: sum(amount))
         |> Dux.compute()
 
+    ## Deployed app
+
+        # In your application supervisor children:
+        {FLAME.Pool,
+          name: :dux_pool,
+          backend: {FLAME.FlyBackend, ...},
+          max: 10,
+          code_sync: [start_apps: [:dux], copy_apps: true],
+          idle_shutdown_after: :timer.minutes(5)}
+
+        # Then at runtime:
+        workers = Dux.Flame.spin_up(5, pool: :dux_pool)
+
     Workers read S3 data directly — nothing flows through your machine.
-    After 5 minutes idle (configurable), machines auto-terminate.
-
-    ## Pools
-
-    You can run multiple pools for different workloads:
-
-        Dux.Flame.start_pool(name: Dux.CpuPool, backend: cpu_backend, max: 10)
-        Dux.Flame.start_pool(name: Dux.GpuPool, backend: gpu_backend, max: 4)
-
-        cpu_workers = Dux.Flame.spin_up(5, pool: Dux.CpuPool)
-        gpu_workers = Dux.Flame.spin_up(2, pool: Dux.GpuPool)
+    After idle timeout, FLAME auto-terminates the runners.
     """
 
     @default_pool Dux.FlamePool
-
-    @doc """
-    Start a FLAME pool for Dux workers.
-
-    Automatically detects whether it's running inside Livebook and adjusts
-    the supervisor strategy and `code_sync` configuration accordingly.
-
-    ## Options
-
-      * `:name` — pool name (default: `Dux.FlamePool`)
-      * `:backend` — FLAME backend (required). E.g. `{FLAME.FlyBackend, token: ..., cpus: 4}`
-      * `:max` — maximum number of runners (default: 10)
-      * `:min` — minimum runners to keep warm (default: 0)
-      * `:idle_shutdown_after` — ms before idle runner terminates (default: 5 minutes)
-      * `:boot_timeout` — ms to wait for runner boot (default: 30 seconds)
-      * `:env` — environment variables to pass to runners (auto-includes `LIVEBOOK_COOKIE` in Livebook)
-
-    Returns `{:ok, pid}` of the pool supervisor.
-
-    ## Livebook
-
-        Dux.Flame.start_pool(
-          backend: {FLAME.FlyBackend,
-            token: System.fetch_env!("FLY_API_TOKEN"),
-            cpus: 4, memory_mb: 16_384},
-          max: 10
-        )
-
-    ## Deployed app
-
-        Dux.Flame.start_pool(
-          backend: {FLAME.FlyBackend,
-            token: System.fetch_env!("FLY_API_TOKEN"),
-            cpus: 4, memory_mb: 16_384},
-          max: 10
-        )
-    """
-    def start_pool(opts \\ []) do
-      backend = Keyword.fetch!(opts, :backend)
-      livebook? = Code.ensure_loaded?(Kino)
-
-      code_sync =
-        cond do
-          is_atom(backend) and backend == FLAME.LocalBackend ->
-            []
-
-          livebook? ->
-            [
-              code_sync: [
-                start_apps: true,
-                sync_beams: [Path.join(System.tmp_dir!(), "livebook_runtime")]
-              ]
-            ]
-
-          true ->
-            [code_sync: [start_apps: [:dux], copy_apps: true]]
-        end
-
-      # In Livebook, inject LIVEBOOK_COOKIE into runner env for node connectivity
-      backend =
-        if livebook? and is_tuple(backend) do
-          {mod, backend_opts} = backend
-          env = Keyword.get(backend_opts, :env, %{})
-          env = Map.merge(Map.take(System.get_env(), ["LIVEBOOK_COOKIE"]), env)
-          {mod, Keyword.put(backend_opts, :env, env)}
-        else
-          backend
-        end
-
-      pool_opts =
-        [
-          name: Keyword.get(opts, :name, @default_pool),
-          max: Keyword.get(opts, :max, 10),
-          min: Keyword.get(opts, :min, 0),
-          max_concurrency: 1,
-          idle_shutdown_after: Keyword.get(opts, :idle_shutdown_after, :timer.minutes(5)),
-          boot_timeout: Keyword.get(opts, :boot_timeout, 30_000),
-          backend: backend
-        ] ++ code_sync
-
-      if livebook? do
-        apply(Kino, :start_child!, [{FLAME.Pool, pool_opts}])
-      else
-        DynamicSupervisor.start_child(
-          Dux.DynamicSupervisor,
-          {FLAME.Pool, pool_opts}
-        )
-      end
-    end
 
     @doc """
     Spin up `n` Dux workers on FLAME runners.

@@ -81,18 +81,84 @@ workers = Dux.Remote.Worker.list()
 
 ### FLAME: Elastic Cloud Workers
 
-With [FLAME](https://github.com/phoenixframework/flame), spin up ephemeral
-cloud machines with DuckDB on demand:
+[FLAME](https://github.com/phoenixframework/flame) boots ephemeral cloud
+machines with a full copy of your application. Combined with Dux, each runner
+gets its own DuckDB, reads S3 data directly, and auto-terminates when idle.
+
+#### Livebook on Fly.io
 
 ```elixir
-Dux.Flame.start_pool(
-  backend: {FLAME.FlyBackend, token: "...", cpus: 4, memory_mb: 16_384},
-  max: 10
+# 1. Start a FLAME pool
+Kino.start_child!(
+  {FLAME.Pool,
+    name: :dux_pool,
+    code_sync: [
+      start_apps: true,
+      sync_beams: [Path.join(System.tmp_dir!(), "livebook_runtime")]
+    ],
+    min: 0,
+    max: 10,
+    backend: {FLAME.FlyBackend,
+      cpu_kind: "performance", cpus: 4, memory_mb: 8192,
+      token: System.fetch_env!("FLY_API_TOKEN"),
+      env: Map.take(System.get_env(), ["LIVEBOOK_COOKIE"])
+    },
+    idle_shutdown_after: :timer.minutes(5)}
 )
 
-workers = Dux.Flame.spin_up(5)
-# 5 cloud machines with DuckDB, auto-terminate after idle timeout
+# 2. Spin up workers
+workers = Dux.Flame.spin_up(5, pool: :dux_pool)
 ```
+
+Key Livebook-specific settings:
+
+- **`Kino.start_child!/1`** — supervises the pool under Livebook's runtime
+- **`sync_beams`** — syncs notebook-compiled beam files to runners
+- **`start_apps: true`** — starts all applications (including `:dux`) on runners
+- **`LIVEBOOK_COOKIE`** — required for BEAM distribution between nodes
+
+#### Deployed Elixir app
+
+Add the FLAME pool to your application supervision tree:
+
+```elixir
+# In your application.ex children:
+children = [
+  {FLAME.Pool,
+    name: :dux_pool,
+    backend: {FLAME.FlyBackend,
+      token: System.fetch_env!("FLY_API_TOKEN"),
+      cpus: 4, memory_mb: 16_384},
+    max: 10,
+    code_sync: [start_apps: [:dux], copy_apps: true],
+    idle_shutdown_after: :timer.minutes(5)}
+]
+```
+
+Then at runtime:
+
+```elixir
+workers = Dux.Flame.spin_up(5, pool: :dux_pool)
+```
+
+#### Using FLAME workers
+
+Once spun up, FLAME workers are just worker PIDs — `distribute/2` doesn't
+know or care whether they're FLAME runners or static cluster nodes:
+
+```elixir
+workers = Dux.Flame.spin_up(5, pool: :dux_pool)
+
+Dux.from_parquet("s3://lake/events/**/*.parquet")
+|> Dux.distribute(workers)
+|> Dux.filter(amount > 100)
+|> Dux.group_by(:region)
+|> Dux.summarise(total: sum(amount))
+|> Dux.compute()
+```
+
+Workers read S3 directly — no data flows through your machine. After the
+idle timeout, FLAME terminates the runners automatically.
 
 ## Query Decomposition
 
