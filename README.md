@@ -144,6 +144,19 @@ graph |> Dux.Graph.shortest_paths(start_node)
 graph |> Dux.Graph.connected_components()
 ```
 
+## Livebook
+
+Add [`kino_dux`](https://github.com/elixir-dux/kino_dux) for rich rendering and smart cells in Livebook:
+
+```elixir
+Mix.install([
+  {:dux, "~> 0.2.0"},
+  {:kino_dux, "~> 0.1"}
+])
+```
+
+Lazy pipelines render with source provenance, operations, and generated SQL. Computed results become interactive data tables.
+
 ## Guides
 
 - [Getting Started](https://hexdocs.pm/dux/getting-started.html) — core concepts, expressions, pipelines
