@@ -254,6 +254,97 @@ defmodule Dux.PartitionerPeerTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Hive partition pruning across peers
+  # ---------------------------------------------------------------------------
+
+  describe "partition pruning across peer workers" do
+    test "reads only matching partitions from Hive-partitioned data" do
+      dir = tmp_path("hive_peer")
+      File.mkdir_p!(dir)
+
+      {peer1, node1} = start_peer(:hive_prune1)
+      {peer2, node2} = start_peer(:hive_prune2)
+
+      try do
+        # Create Hive-partitioned dataset: year=2023 and year=2024
+        for year <- [2023, 2024], month <- 1..3 do
+          part_dir =
+            Path.join([dir, "year=#{year}", "month=#{String.pad_leading("#{month}", 2, "0")}"])
+
+          File.mkdir_p!(part_dir)
+
+          rows = for i <- 1..100, do: %{"value" => year * 1000 + month * 10 + i}
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(part_dir, "data.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        # Filter to year=2024 — should prune year=2023 files
+        result =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.distribute([w1, w2])
+          |> Dux.filter_with("year = 2024")
+          |> Dux.summarise_with(n: "COUNT(*)", min_v: "MIN(value)", max_v: "MAX(value)")
+          |> Dux.to_rows()
+
+        row = hd(result)
+        # 3 months × 100 rows = 300 rows for year=2024
+        assert row["n"] == 300
+        # All values should be in the 2024xxx range
+        assert row["min_v"] >= 2_024_000
+        assert row["max_v"] < 2_025_000
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "pruned distributed result matches local result" do
+      dir = tmp_path("hive_peer_match")
+      File.mkdir_p!(dir)
+
+      {peer1, node1} = start_peer(:hive_match1)
+      {peer2, node2} = start_peer(:hive_match2)
+
+      try do
+        for region <- ["US", "EU", "APAC"] do
+          part_dir = Path.join(dir, "region=#{region}")
+          File.mkdir_p!(part_dir)
+
+          rows = for i <- 1..50, do: %{"amount" => i * 10, "region_col" => region}
+
+          Dux.from_list(rows)
+          |> Dux.to_parquet(Path.join(part_dir, "data.parquet"))
+        end
+
+        {:ok, w1} = start_worker_on(node1)
+        {:ok, w2} = start_worker_on(node2)
+        Process.sleep(200)
+
+        query =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.filter_with("region = 'US'")
+          |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
+
+        local = query |> Dux.to_rows()
+        distributed = query |> Dux.distribute([w1, w2]) |> Dux.to_rows()
+
+        assert hd(local)["total"] == hd(distributed)["total"]
+        assert hd(local)["n"] == hd(distributed)["n"]
+      after
+        :peer.stop(peer1)
+        :peer.stop(peer2)
+        File.rm_rf!(dir)
+      end
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Sad path
   # ---------------------------------------------------------------------------
 

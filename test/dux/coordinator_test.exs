@@ -307,6 +307,116 @@ defmodule Dux.CoordinatorTest do
     end
   end
 
+  describe "Partitioner partition pruning" do
+    test "prunes Hive-partitioned files based on filter ops" do
+      dir = tmp_path("hive_pruning")
+      File.mkdir_p!(dir)
+
+      try do
+        # Create Hive-partitioned structure
+        for year <- [2023, 2024], month <- ["01", "02"] do
+          part_dir = Path.join([dir, "year=#{year}", "month=#{month}"])
+          File.mkdir_p!(part_dir)
+
+          Dux.from_list([%{"x" => year * 100 + String.to_integer(month)}])
+          |> Dux.to_parquet(Path.join(part_dir, "data.parquet"))
+        end
+
+        pipeline =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.filter_with("year = 2024")
+
+        workers = [:w1, :w2]
+        assignments = Partitioner.assign(pipeline, workers)
+
+        # Should only have year=2024 files (2 files), not year=2023
+        all_files =
+          Enum.flat_map(assignments, fn {_w, p} ->
+            case p.source do
+              {:parquet, f, _} -> [f]
+              {:parquet_list, f, _} -> f
+            end
+          end)
+
+        assert length(all_files) == 2
+        assert Enum.all?(all_files, &String.contains?(&1, "year=2024"))
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "prunes on multiple partition columns" do
+      dir = tmp_path("hive_multi_prune")
+      File.mkdir_p!(dir)
+
+      try do
+        for year <- [2023, 2024], month <- ["01", "02"] do
+          part_dir = Path.join([dir, "year=#{year}", "month=#{month}"])
+          File.mkdir_p!(part_dir)
+
+          Dux.from_list([%{"x" => 1}])
+          |> Dux.to_parquet(Path.join(part_dir, "data.parquet"))
+        end
+
+        pipeline =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.filter_with("year = 2024 AND month = '01'")
+
+        workers = [:w1, :w2]
+        assignments = Partitioner.assign(pipeline, workers)
+
+        all_files =
+          Enum.flat_map(assignments, fn {_w, p} ->
+            case p.source do
+              {:parquet, f, _} -> [f]
+              {:parquet_list, f, _} -> f
+            end
+          end)
+
+        assert length(all_files) == 1
+        assert hd(all_files) |> String.contains?("year=2024")
+        assert hd(all_files) |> String.contains?("month=01")
+      after
+        File.rm_rf!(dir)
+      end
+    end
+
+    test "no pruning when filter doesn't match partition columns" do
+      dir = tmp_path("hive_no_prune")
+      File.mkdir_p!(dir)
+
+      try do
+        for year <- [2023, 2024] do
+          part_dir = Path.join(dir, "year=#{year}")
+          File.mkdir_p!(part_dir)
+
+          Dux.from_list([%{"x" => year}])
+          |> Dux.to_parquet(Path.join(part_dir, "data.parquet"))
+        end
+
+        pipeline =
+          Dux.from_parquet(Path.join(dir, "**/*.parquet"))
+          |> Dux.filter_with("x > 100")
+
+        workers = [:w1, :w2]
+        assignments = Partitioner.assign(pipeline, workers)
+
+        all_files =
+          Enum.flat_map(assignments, fn {_w, p} ->
+            case p.source do
+              {:parquet, f, _} -> [f]
+              {:parquet_list, f, _} -> f
+            end
+          end)
+
+        # x is not a partition column, so all files pass through
+        assert length(all_files) == 2
+      after
+        File.rm_rf!(dir)
+      end
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Merger unit tests
   # ---------------------------------------------------------------------------

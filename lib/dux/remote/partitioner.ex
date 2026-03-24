@@ -1,6 +1,8 @@
 defmodule Dux.Remote.Partitioner do
   @moduledoc false
 
+  alias Dux.Remote.PartitionPruner
+
   # Assigns data partitions to workers.
   #
   # For Parquet glob sources and DuckLake file manifests, splits files
@@ -57,6 +59,18 @@ defmodule Dux.Remote.Partitioner do
   # ---------------------------------------------------------------------------
 
   defp distribute_parquet_files(files, workers, pipeline, source_opts, assign_opts) do
+    # Prune files whose Hive partition values don't match pipeline filters
+    files = PartitionPruner.prune(files, pipeline.ops)
+
+    if files == [] do
+      # All files pruned — return empty result from one worker
+      [{hd(workers), %{pipeline | source: {:sql, "SELECT 1 WHERE false"}}}]
+    else
+      distribute_pruned_files(files, workers, pipeline, source_opts, assign_opts)
+    end
+  end
+
+  defp distribute_pruned_files(files, workers, pipeline, source_opts, assign_opts) do
     files_with_sizes = fetch_file_sizes(files, assign_opts)
 
     assignments =
