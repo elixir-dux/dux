@@ -1,6 +1,6 @@
 # Distributed Execution
 
-Dux distributes queries across a cluster of DuckDB instances connected by BEAM.
+Dux distributes queries across a cluster of DuckDB instances connected by the BEAM.
 Each worker has its own embedded DuckDB — no shared state, no coordinator
 bottleneck for data. This guide covers the architecture, how queries decompose,
 how data moves, and how to get the best performance.
