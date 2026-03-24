@@ -15,15 +15,20 @@ defmodule Dux.Remote.Partitioner do
   """
   def assign(%Dux{} = pipeline, workers, opts \\ []) do
     strategy = Keyword.get(opts, :strategy, :round_robin)
-    assign_strategy(pipeline, workers, strategy)
+    assign_strategy(pipeline, workers, strategy, opts)
   end
 
   # Parquet glob — split files across workers
-  defp assign_strategy(%Dux{source: {:parquet, path, opts}} = pipeline, workers, :round_robin)
+  defp assign_strategy(
+         %Dux{source: {:parquet, path, source_opts}} = pipeline,
+         workers,
+         :round_robin,
+         opts
+       )
        when is_binary(path) do
     case expand_glob(path) do
       {:ok, files} when length(files) > 1 ->
-        distribute_parquet_files(files, workers, pipeline, opts)
+        distribute_parquet_files(files, workers, pipeline, source_opts, opts)
 
       _ ->
         replicate(pipeline, workers)
@@ -36,13 +41,14 @@ defmodule Dux.Remote.Partitioner do
   defp assign_strategy(
          %Dux{source: {:ducklake_files, files}} = pipeline,
          workers,
-         :round_robin
+         :round_robin,
+         opts
        ) do
-    distribute_parquet_files(files, workers, pipeline, [])
+    distribute_parquet_files(files, workers, pipeline, [], opts)
   end
 
   # Other sources — no splitting
-  defp assign_strategy(pipeline, workers, :round_robin) do
+  defp assign_strategy(pipeline, workers, :round_robin, _opts) do
     replicate(pipeline, workers)
   end
 
@@ -50,8 +56,8 @@ defmodule Dux.Remote.Partitioner do
   # File distribution (size-balanced or round-robin fallback)
   # ---------------------------------------------------------------------------
 
-  defp distribute_parquet_files(files, workers, pipeline, opts) do
-    files_with_sizes = fetch_file_sizes(files)
+  defp distribute_parquet_files(files, workers, pipeline, source_opts, assign_opts) do
+    files_with_sizes = fetch_file_sizes(files, assign_opts)
 
     assignments =
       if files_with_sizes do
@@ -65,9 +71,9 @@ defmodule Dux.Remote.Partitioner do
     |> Enum.map(fn {file_group, worker} ->
       source =
         case file_group do
-          [] -> {:parquet_list, [], opts}
-          [single] -> {:parquet, single, opts}
-          multiple -> {:parquet_list, multiple, opts}
+          [] -> {:parquet_list, [], source_opts}
+          [single] -> {:parquet, single, source_opts}
+          multiple -> {:parquet_list, multiple, source_opts}
         end
 
       {worker, %{pipeline | source: source}}
@@ -109,14 +115,19 @@ defmodule Dux.Remote.Partitioner do
   # ---------------------------------------------------------------------------
 
   # Returns [{file, size}] or nil if sizes unavailable.
-  # Tiered: local File.stat (instant) > nil for remote (can't stat S3 locally).
-  defp fetch_file_sizes(files) do
-    if all_local?(files) do
-      Enum.map(files, &stat_file/1)
-    else
-      # Remote files (S3/HTTP) — can't get sizes locally.
-      # Falls back to round-robin via the nil return.
-      nil
+  # Local files: File.stat (instant). Remote files: nil (round-robin)
+  # unless :fetch_remote_sizes is set, in which case parquet_file_metadata
+  # is used (reads Parquet footers via HTTP range requests).
+  defp fetch_file_sizes(files, opts) do
+    cond do
+      all_local?(files) ->
+        Enum.map(files, &stat_file/1)
+
+      Keyword.get(opts, :fetch_remote_sizes, false) ->
+        fetch_remote_file_sizes(files)
+
+      true ->
+        nil
     end
   end
 
@@ -125,6 +136,44 @@ defmodule Dux.Remote.Partitioner do
       {:ok, %{size: size}} -> {file, size}
       _ -> {file, 0}
     end
+  end
+
+  # Query DuckDB's parquet_file_metadata for remote files.
+  # Uses HTTP range requests to read just the Parquet footer — returns num_rows
+  # which is a good proxy for work. Falls back to nil (round-robin) on error.
+  defp fetch_remote_file_sizes(files) do
+    conn = Dux.Connection.get_conn()
+    file_list = Enum.map_join(files, ", ", &"'#{String.replace(&1, "'", "''")}'")
+    sql = "SELECT file_name, num_rows FROM parquet_file_metadata([#{file_list}])"
+
+    case Adbc.Connection.query(conn, sql) do
+      {:ok, result} ->
+        materialized = Adbc.Result.materialize(result)
+        build_size_map(materialized, files)
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp build_size_map(materialized, files) do
+    # Build a map from file_name → num_rows
+    file_col = find_column(materialized.data, "file_name")
+    rows_col = find_column(materialized.data, "num_rows")
+
+    if file_col && rows_col do
+      size_map =
+        Enum.zip(Enum.to_list(file_col), Enum.to_list(rows_col))
+        |> Map.new()
+
+      Enum.map(files, fn f -> {f, Map.get(size_map, f, 0)} end)
+    else
+      nil
+    end
+  end
+
+  defp find_column(columns, name) do
+    Enum.find(columns, fn col -> col.field.name == name end)
   end
 
   defp all_local?(files) do
@@ -164,24 +213,39 @@ defmodule Dux.Remote.Partitioner do
   defp pad_to(groups, n), do: groups ++ List.duplicate([], n - length(groups))
 
   # Expand a glob pattern to a list of files.
-  # For local files, use Path.wildcard. For S3/HTTP, return the glob as-is
-  # (DuckDB handles remote globs natively).
+  # Local: Path.wildcard. Remote (S3/HTTP): DuckDB's glob() via ListObjectsV2.
   defp expand_glob(path) do
     cond do
       String.starts_with?(path, "s3://") or String.starts_with?(path, "http") ->
-        # Can't expand remote globs locally — let DuckDB handle it per worker
-        {:ok, [path]}
+        expand_remote_glob(path)
 
       String.contains?(path, "*") or String.contains?(path, "?") ->
-        files = Path.wildcard(path)
-
-        if files == [] do
-          {:ok, [path]}
-        else
-          {:ok, files}
+        case Path.wildcard(path) do
+          [] -> {:ok, [path]}
+          files -> {:ok, files}
         end
 
       true ->
+        {:ok, [path]}
+    end
+  end
+
+  # Expand S3/HTTP globs via DuckDB's glob() which uses ListObjectsV2.
+  # Falls back to passing the glob as-is if expansion fails.
+  defp expand_remote_glob(path) do
+    conn = Dux.Connection.get_conn()
+    escaped = String.replace(path, "'", "''")
+
+    case Adbc.Connection.query(conn, "SELECT file FROM glob('#{escaped}')") do
+      {:ok, result} ->
+        materialized = Adbc.Result.materialize(result)
+
+        case find_column(materialized.data, "file") do
+          nil -> {:ok, [path]}
+          col -> {:ok, Enum.to_list(col)}
+        end
+
+      {:error, _} ->
         {:ok, [path]}
     end
   end
