@@ -2,7 +2,7 @@
 
 All notable changes to Dux are documented here.
 
-## [Unreleased]
+## [0.2.0] - 2026-03-24
 
 ### Bug Fixes
 
@@ -40,8 +40,7 @@ All notable changes to Dux are documented here.
 - Bump to dev version
 - Docs touchups (#11)
 - Expand CI matrix to full OTP × Elixir lattice (#17)
-- Prep for v0.2.0 release
-- Update all guide versions to ~> 0.2.0
+- Prep for v0.2.0 (#25)
 
 ### Testing
 
