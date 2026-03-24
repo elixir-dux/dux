@@ -153,4 +153,4 @@ small_graph
 ## What's Next
 
 - [Getting Started](getting-started.livemd) — core Dux concepts
-- [Distributed Queries](distributed-queries.livemd) — distribute graph algorithms across workers
+- [Distributed Execution](distributed.md) — distribute queries and graph algorithms across workers

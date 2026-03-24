@@ -80,7 +80,7 @@ defmodule Dux.MixProject do
         "guides/data-io.livemd",
         "guides/transformations.livemd",
         "guides/joins-and-reshape.livemd",
-        "guides/distributed-queries.livemd",
+        "guides/distributed.md",
         "guides/graph-analytics.livemd",
         "guides/cheatsheet.cheatmd",
         "CHANGELOG.md"
@@ -98,7 +98,7 @@ defmodule Dux.MixProject do
         Integrations: [Dux.Telemetry, Dux.Flame]
       ],
       groups_for_extras: [
-        Guides: ~r/guides\/.*\.livemd/,
+        Guides: ~r/guides\/.*\.(livemd|md)$/,
         Cheatsheets: ~r/.*\.cheatmd/
       ],
       groups_for_docs: [
