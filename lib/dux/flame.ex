@@ -73,55 +73,52 @@ if Code.ensure_loaded?(FLAME) do
     def spin_up(n, opts \\ []) when is_integer(n) and n > 0 do
       pool = Keyword.get(opts, :pool, @default_pool)
 
-      workers =
+      # Place workers concurrently via Task.async. With max_concurrency: 1,
+      # the pool boots N separate runners in parallel rather than sequentially
+      # waiting for each machine to start before requesting the next.
+      tasks =
         for _ <- 1..n do
-          {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
-          pid
+          Task.async(fn ->
+            {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
+            pid
+          end)
         end
 
-      await_pg_registration(workers)
+      workers = Task.await_many(tasks, 300_000)
       workers
     end
 
-    defp await_pg_registration(workers, timeout_ms \\ 5_000) do
-      expected = MapSet.new(workers)
-      deadline = System.monotonic_time(:millisecond) + timeout_ms
-      do_await_pg(expected, deadline)
-    end
-
-    defp do_await_pg(expected, deadline) do
-      registered =
-        :pg.get_members(:dux, Dux.Remote.Worker)
-        |> MapSet.new()
-
-      if MapSet.subset?(expected, registered) do
-        :ok
-      else
-        if System.monotonic_time(:millisecond) > deadline do
-          # Best-effort: proceed even if not all registered yet
-          :ok
-        else
-          Process.sleep(10)
-          do_await_pg(expected, deadline)
-        end
-      end
-    end
 
     @doc """
     Get status of the FLAME-backed Dux cluster.
 
-    Returns worker count and PIDs, grouped by node.
-    """
-    alias Dux.Remote.Worker
+    Pass the workers list returned by `spin_up/2`, or omit to
+    discover workers via `:pg` (may not find remote FLAME workers).
 
-    def status(pool \\ @default_pool) do
-      workers = Worker.list()
+    Returns worker count grouped by node, with alive status.
+    """
+    def status(workers_or_pool \\ @default_pool)
+
+    def status(workers) when is_list(workers) do
+      nodes =
+        workers
+        |> Enum.group_by(&node/1)
+        |> Map.new(fn {n, pids} -> {n, length(pids)} end)
+
+      %{
+        total_workers: length(workers),
+        nodes: nodes,
+        worker_pids: workers
+      }
+    end
+
+    def status(pool) when is_atom(pool) do
+      workers = Dux.Remote.Worker.list()
 
       nodes =
         workers
         |> Enum.group_by(&node/1)
-        |> Enum.map(fn {node, pids} -> {node, length(pids)} end)
-        |> Map.new()
+        |> Map.new(fn {n, pids} -> {n, length(pids)} end)
 
       %{
         pool: pool,
