@@ -70,19 +70,11 @@ if Code.ensure_loaded?(FLAME) do
     def spin_up(n, opts \\ []) when is_integer(n) and n > 0 do
       pool = Keyword.get(opts, :pool, @default_pool)
 
-      # Place workers sequentially. With max_concurrency: 1, each placed
-      # child permanently holds a concurrency slot on its runner. The pool
-      # won't assign new work to a full runner, forcing new runner boot.
       workers =
         for i <- 1..n do
+          IO.puts("[Dux.Flame] placing worker #{i}/#{n}...")
           {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
-
-          if i < n do
-            # Brief yield to let the pool process the slot replacement
-            # before the next checkout attempt
-            Process.sleep(100)
-          end
-
+          IO.puts("[Dux.Flame] worker #{i} placed on #{inspect(node(pid))} (pid: #{inspect(pid)})")
           pid
         end
 
