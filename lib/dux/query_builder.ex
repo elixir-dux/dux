@@ -512,6 +512,8 @@ defmodule Dux.QueryBuilder do
   end
 
   # Convert row-oriented list of maps to Adbc.Column format for ingest.
+  # Assumes all rows have the same key type (all atoms or all strings).
+  # Mixed key types will raise on Map.fetch! — callers should normalize first.
   defp rows_to_columns(rows) do
     first_row = hd(rows)
     raw_keys = Map.keys(first_row)
@@ -520,7 +522,7 @@ defmodule Dux.QueryBuilder do
       case hd(raw_keys) do
         k when is_atom(k) ->
           names = raw_keys |> Enum.map(&to_string/1) |> Enum.sort()
-          {names, fn row, name -> Map.fetch!(row, String.to_existing_atom(name)) end}
+          {names, fn row, name -> Map.fetch!(row, String.to_atom(name)) end}
 
         k when is_binary(k) ->
           {Enum.sort(raw_keys), fn row, name -> Map.fetch!(row, name) end}

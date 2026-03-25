@@ -1425,6 +1425,7 @@ defmodule Dux do
       result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
 
       Process.delete(:dux_compute_ref)
+      Dux.QueryBuilder.clear_ipc_refs()
       {:table, table_ref} = result.source
       {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
     end)
