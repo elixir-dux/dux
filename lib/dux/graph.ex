@@ -1196,22 +1196,33 @@ defmodule Dux.Graph do
   defp get_vertex_ids(graph, conn, vid) do
     {v_sql, _} = Dux.QueryBuilder.build(graph.vertices, conn)
     ref = Dux.Backend.query(conn, "SELECT #{qi(vid)} FROM (#{v_sql}) __v ORDER BY #{qi(vid)}")
-    cols = Dux.Backend.table_to_columns(conn, ref)
-    cols[vid] || []
+    rows = Dux.Backend.table_to_rows(conn, ref)
+    Enum.map(rows, & &1[vid])
   end
 
+  # Build a bidirectional adjacency map using DuckDB's LIST aggregation.
+  # DuckDB computes grouped neighbor lists in a single SQL pass, avoiding
+  # Elixir-side MapSet construction from raw edge columns.
   defp build_adjacency(graph, conn, src_col, dst_col) do
     {edges_sql, _} = Dux.QueryBuilder.build(graph.edges, conn)
-    edges_ref = Dux.Backend.query(conn, edges_sql)
-    edge_cols = Dux.Backend.table_to_columns(conn, edges_ref)
-    srcs = edge_cols[src_col] || []
-    dsts = edge_cols[dst_col] || []
 
-    (Enum.zip(srcs, dsts) ++ Enum.zip(dsts, srcs))
-    |> Enum.reduce(%{}, fn {s, d}, a ->
-      Map.update(a, s, MapSet.new([d]), &MapSet.put(&1, d))
-    end)
-    |> Map.new(fn {k, v} -> {k, MapSet.to_list(v)} end)
+    adj_sql = """
+    WITH bidir AS (
+      SELECT #{qi(src_col)} AS node, #{qi(dst_col)} AS neighbor FROM (#{edges_sql}) __e
+      UNION ALL
+      SELECT #{qi(dst_col)} AS node, #{qi(src_col)} AS neighbor FROM (#{edges_sql}) __e
+    )
+    SELECT node, LIST(DISTINCT neighbor) AS neighbors
+    FROM bidir
+    GROUP BY node
+    """
+
+    ref = Dux.Backend.query(conn, adj_sql)
+    cols = Dux.Backend.table_to_columns(conn, ref)
+    nodes = cols["node"] || []
+    neighbors = cols["neighbors"] || []
+
+    Enum.zip(nodes, neighbors) |> Map.new()
   end
 
   # Brandes' algorithm from a single source vertex, entirely in Elixir.
