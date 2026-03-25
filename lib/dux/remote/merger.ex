@@ -176,25 +176,22 @@ defmodule Dux.Remote.Merger do
   # SUM → SUM, COUNT → SUM, MIN → MIN, MAX → MAX
   # AVG columns should have been rewritten by PipelineSplitter before reaching here.
   # Uses word-boundary regex to prevent substring matches (e.g. COUNT_DISTINCT matching COUNT).
-  @re_agg_rules [
-    {~r/\bMIN\s*\(/i, "MIN"},
-    {~r/\bMAX\s*\(/i, "MAX"},
-    {~r/\bSUM\s*\(/i, "SUM"},
-    {~r/\bAPPROX_COUNT_DISTINCT\s*\(/i, "SUM"},
-    {~r/\bCOUNT_DISTINCT\s*\(/i, "SUM"},
-    {~r/\bCOUNT\s*\(/i, "SUM"}
-  ]
-
+  # Order matters: more specific patterns (APPROX_COUNT_DISTINCT, COUNT_DISTINCT) before COUNT.
   defp re_aggregate_expr(name, expr) when is_binary(expr) do
     quoted = qi(name)
 
-    re_agg =
-      Enum.find_value(@re_agg_rules, fn {regex, agg_fn} ->
-        if Regex.match?(regex, expr), do: agg_fn
-      end)
+    agg_fn =
+      cond do
+        Regex.match?(~r/\bMIN\s*\(/i, expr) -> "MIN"
+        Regex.match?(~r/\bMAX\s*\(/i, expr) -> "MAX"
+        Regex.match?(~r/\bSUM\s*\(/i, expr) -> "SUM"
+        Regex.match?(~r/\bAPPROX_COUNT_DISTINCT\s*\(/i, expr) -> "SUM"
+        Regex.match?(~r/\bCOUNT_DISTINCT\s*\(/i, expr) -> "SUM"
+        Regex.match?(~r/\bCOUNT\s*\(/i, expr) -> "SUM"
+        # Default: SUM (safe for additive aggregates)
+        true -> "SUM"
+      end
 
-    # Default: SUM (safe for additive aggregates)
-    agg_fn = re_agg || "SUM"
     "#{agg_fn}(#{quoted}) AS #{quoted}"
   end
 
