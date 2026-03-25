@@ -40,76 +40,25 @@ defmodule Dux.Backend do
 
   @doc false
   def query(conn, sql) do
-    result =
-      case Adbc.Connection.query(conn, sql) do
-        {:ok, r} ->
-          r
+    # Data stays in DuckDB — no Elixir materialization.
+    # GC ref via Adbc.Nif.adbc_delete_on_gc_new/2 auto-drops the table
+    # when the TableRef is garbage collected (same mechanism ADBC uses
+    # internally for Adbc.Connection.ingest!/2 results).
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
 
-        {:error, %Adbc.Error{} = err} ->
-          raise ArgumentError, "DuckDB query failed: #{err.message}"
+    case Adbc.Connection.query(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS (#{sql})") do
+      {:ok, _} ->
+        :ok
 
-        {:error, err} ->
-          raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
-      end
+      {:error, %Adbc.Error{} = err} ->
+        raise ArgumentError, "DuckDB query failed: #{err.message}"
 
-    materialized = Adbc.Result.materialize(result)
-
-    case flatten_batches(materialized.data) do
-      [] ->
-        # ADBC returns empty data for 0-row results. Can't ingest empty columns.
-        # Create the temp table via SQL to preserve the schema.
-        create_table_from_sql(conn, sql)
-
-      :multi_batch ->
-        # Multiple record batches — fall back to SQL to avoid concatenation.
-        create_table_with_data(conn, sql)
-
-      columns ->
-        # Single batch — ingest directly (avoids SQL round-trip).
-        if has_special_column_names?(columns) do
-          create_table_with_data(conn, sql)
-        else
-          try do
-            ingest_result = Adbc.Connection.ingest!(conn, columns)
-
-            %TableRef{
-              name: ingest_result.table,
-              gc_ref: ingest_result,
-              node: node()
-            }
-          rescue
-            ArgumentError ->
-              # ADBC ingest doesn't support all DuckDB types (e.g. timestamps
-              # from postgres_scanner). Fall back to CREATE TABLE AS SELECT.
-              create_table_with_data(conn, sql)
-          end
-        end
+      {:error, err} ->
+        raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
     end
-  end
 
-  # Create a temp table from SQL, preserving schema but no data.
-  defp create_table_from_sql(conn, sql) do
-    name = "__dux_#{:erlang.unique_integer([:positive])}"
-
-    Adbc.Connection.query!(
-      conn,
-      "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM (#{sql}) __src WHERE false"
-    )
-
-    %TableRef{name: name, gc_ref: nil, node: node()}
-  end
-
-  # Create a temp table from SQL, preserving both schema and data.
-  # Used when column names contain special characters that break ADBC ingest.
-  defp create_table_with_data(conn, sql) do
-    name = "__dux_#{:erlang.unique_integer([:positive])}"
-
-    Adbc.Connection.query!(
-      conn,
-      "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT * FROM (#{sql}) __src"
-    )
-
-    %TableRef{name: name, gc_ref: nil, node: node()}
+    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
   # ---------------------------------------------------------------------------
@@ -205,14 +154,15 @@ defmodule Dux.Backend do
 
   defp build_rows_from_map(map) do
     col_names = Map.keys(map)
-    values = Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
-    n = values |> Map.values() |> hd() |> length()
 
-    for i <- 0..(n - 1) do
-      Map.new(col_names, fn col ->
-        {col, Enum.at(Map.fetch!(values, col), i)}
+    columns =
+      Enum.map(col_names, fn col ->
+        Enum.map(Map.fetch!(map, col), &normalize_value/1)
       end)
-    end
+
+    Enum.zip_with(columns, fn values ->
+      Enum.zip(col_names, values) |> Map.new()
+    end)
   end
 
   # ---------------------------------------------------------------------------
@@ -258,7 +208,8 @@ defmodule Dux.Backend do
     # Empty sentinel — no columns
     name = "__dux_#{:erlang.unique_integer([:positive])}"
     Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
-    %TableRef{name: name, gc_ref: nil, node: node()}
+    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
   def table_from_ipc(conn, <<"DUX_EMPTY"::binary, ipc::binary>>) do
@@ -302,7 +253,8 @@ defmodule Dux.Backend do
           "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false"
         )
 
-        %TableRef{name: name, gc_ref: nil, node: node()}
+        gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+        %TableRef{name: name, gc_ref: gc_ref, node: node()}
       else
         ingest_result = ingest_safe(conn, columns)
         %TableRef{name: ingest_result.table, gc_ref: ingest_result, node: node()}
@@ -352,15 +304,6 @@ defmodule Dux.Backend do
       table: final_name,
       num_rows: ingest_result.num_rows
     }
-  end
-
-  defp has_special_column_names?(columns) do
-    Enum.any?(columns, fn col ->
-      name = col.field.name
-
-      name != String.replace(name, ~r/[^a-zA-Z0-9_]/, "") or
-        String.downcase(name) in @sql_reserved
-    end)
   end
 
   # ---------------------------------------------------------------------------

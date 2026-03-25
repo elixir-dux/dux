@@ -200,6 +200,100 @@ defmodule Dux.BackendTest do
     end
   end
 
+  # ---------- GC cleanup ----------
+
+  describe "automatic table cleanup via GC" do
+    test "temp table is dropped when TableRef is garbage collected", %{conn: conn} do
+      # Create table in a Task so the ref goes out of scope when the task exits
+      name =
+        Task.async(fn ->
+          ref = Dux.Backend.query(conn, "SELECT 42 AS x")
+          ref.name
+        end)
+        |> Task.await()
+
+      :erlang.garbage_collect()
+      Process.sleep(100)
+
+      # Table should have been dropped by the GC finalizer
+      assert_raise ArgumentError, fn ->
+        Dux.Backend.query(conn, ~s{SELECT * FROM "#{name}"})
+      end
+    end
+
+    test "query/2 always returns a non-nil gc_ref", %{conn: conn} do
+      ref = Dux.Backend.query(conn, "SELECT 1 AS x")
+      assert ref.gc_ref != nil
+    end
+
+    test "table_from_ipc returns non-nil gc_ref", %{conn: conn} do
+      ref = Dux.Backend.query(conn, "SELECT 42 AS x")
+      ipc = Dux.Backend.table_to_ipc(conn, ref)
+      restored = Dux.Backend.table_from_ipc(conn, ipc)
+      assert restored.gc_ref != nil
+    end
+  end
+
+  # ---------- Performance ----------
+
+  describe "performance" do
+    test "query/2 handles large datasets without excess memory", %{conn: conn} do
+      Dux.Backend.execute(
+        conn,
+        "CREATE TABLE perf_src AS SELECT i, CONCAT('row_', i) AS name FROM generate_series(1, 100000) t(i)"
+      )
+
+      {time_us, ref} =
+        :timer.tc(fn ->
+          Dux.Backend.query(conn, "SELECT * FROM perf_src")
+        end)
+
+      assert Dux.Backend.table_n_rows(conn, ref) == 100_000
+      # Should complete in well under 1 second (old materialize+ingest path was much slower)
+      assert time_us < 1_000_000
+    end
+
+    test "to_rows scales linearly (not O(n²))", %{conn: conn} do
+      ref =
+        Dux.Backend.query(
+          conn,
+          "SELECT i AS id, i * 2 AS val FROM generate_series(1, 10000) t(i)"
+        )
+
+      {time_us, rows} =
+        :timer.tc(fn ->
+          Dux.Backend.table_to_rows(conn, ref)
+        end)
+
+      assert length(rows) == 10_000
+      # O(n) should be well under 1 second; O(n²) would be ~160ms+ for 10K
+      assert time_us < 500_000
+    end
+  end
+
+  # ---------- nil/false preservation ----------
+
+  describe "nil and false value preservation" do
+    test "to_rows preserves nil and false values", %{conn: conn} do
+      ref =
+        Dux.Backend.query(
+          conn,
+          "SELECT 1 AS a, NULL AS b, false AS c UNION ALL SELECT 2, 'x', true"
+        )
+
+      rows = Dux.Backend.table_to_rows(conn, ref)
+      assert [%{"a" => 1, "b" => nil, "c" => false}, %{"a" => 2, "b" => "x", "c" => true}] = rows
+    end
+
+    test "to_columns preserves nil and false values", %{conn: conn} do
+      ref =
+        Dux.Backend.query(conn, "SELECT NULL::INTEGER AS x, false AS y UNION ALL SELECT 42, true")
+
+      cols = Dux.Backend.table_to_columns(conn, ref)
+      assert %{"x" => [nil, 42], "y" => [false, true]} = cols
+    end
+  end
+
   # ---------- Wicked / pathological ----------
 
   describe "pathological cases" do

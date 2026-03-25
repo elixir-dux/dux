@@ -107,6 +107,9 @@ defmodule Dux.QueryBuilder do
         else
           columns = rows_to_columns(rows)
           table_ref = ingest_columns(conn, columns)
+          # Keep ref alive in process dictionary to prevent GC before query executes.
+          existing = Process.get(:dux_ipc_refs, [])
+          Process.put(:dux_ipc_refs, [table_ref | existing])
           {~s(SELECT * FROM "#{escape_sql_string(table_ref.name)}"), []}
         end
     end
@@ -510,21 +513,21 @@ defmodule Dux.QueryBuilder do
 
   # Convert row-oriented list of maps to Adbc.Column format for ingest.
   defp rows_to_columns(rows) do
-    # Get all column names from the first row
-    col_names =
-      rows
-      |> hd()
-      |> Map.keys()
-      |> Enum.map(&to_string/1)
-      |> Enum.sort()
+    first_row = hd(rows)
+    raw_keys = Map.keys(first_row)
+
+    {col_names, accessor} =
+      case hd(raw_keys) do
+        k when is_atom(k) ->
+          names = raw_keys |> Enum.map(&to_string/1) |> Enum.sort()
+          {names, fn row, name -> Map.fetch!(row, String.to_existing_atom(name)) end}
+
+        k when is_binary(k) ->
+          {Enum.sort(raw_keys), fn row, name -> Map.fetch!(row, name) end}
+      end
 
     Enum.map(col_names, fn name ->
-      values =
-        Enum.map(rows, fn row ->
-          # Try both string and atom keys
-          Map.get(row, name) || Map.get(row, String.to_atom(name))
-        end)
-
+      values = Enum.map(rows, fn row -> accessor.(row, name) end)
       Adbc.Column.new(values, name: name)
     end)
   end
