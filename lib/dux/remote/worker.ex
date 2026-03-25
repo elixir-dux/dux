@@ -59,6 +59,20 @@ defmodule Dux.Remote.Worker do
   end
 
   @doc """
+  Run a setup function on the worker's node.
+
+  The function runs in the worker's GenServer process. Use this to configure
+  the worker's DuckDB (e.g. create S3 secrets, load extensions).
+
+      Worker.setup(worker, fn ->
+        Dux.create_secret(:s3, type: :s3, region: "us-west-2")
+      end)
+  """
+  def setup(worker, fun, timeout \\ 30_000) when is_function(fun, 0) do
+    GenServer.call(worker, {:setup, fun}, timeout)
+  end
+
+  @doc """
   Execute a `%Dux{}` pipeline on a worker. Returns `{:ok, ipc_binary}` or `{:error, reason}`.
 
   The pipeline is compiled to SQL on the worker node and executed against
@@ -155,6 +169,21 @@ defmodule Dux.Remote.Worker do
     :pg.join(@pg_group, self())
 
     {:ok, %{db: db, conn: conn, tables: %{}}}
+  end
+
+  @impl true
+  def handle_call({:setup, fun}, _from, state) when is_function(fun, 0) do
+    # Setup runs on the worker's node. Dux.exec/1 and Dux.create_secret/2
+    # will use this node's Dux.Connection (the worker's DuckDB).
+    result =
+      try do
+        fun.()
+        :ok
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true

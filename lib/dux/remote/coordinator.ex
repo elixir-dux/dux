@@ -51,6 +51,8 @@ defmodule Dux.Remote.Coordinator do
       raise ArgumentError, "no workers available for distributed execution"
     end
 
+    start_time = System.monotonic_time()
+
     # Resolve sources that can be partitioned at the coordinator level.
     # DuckLake attached sources → file manifest for direct parquet reads.
     pipeline = resolve_ducklake_source(pipeline)
@@ -64,42 +66,61 @@ defmodule Dux.Remote.Coordinator do
     } = split = PipelineSplitter.split(pipeline.ops)
 
     # Preprocess joins: broadcast/shuffle right sides that aren't worker-safe
-    case preprocess_joins(worker_ops, workers, timeout, bcast_threshold) do
-      {:ok, processed_ops, broadcast_tables} ->
-        # All joins handled inline (broadcast or push-down)
-        worker_pipeline = %{pipeline | ops: processed_ops}
+    result =
+      case preprocess_joins(worker_ops, workers, timeout, bcast_threshold) do
+        {:ok, processed_ops, broadcast_tables} ->
+          # All joins handled inline (broadcast or push-down)
+          worker_pipeline = %{pipeline | ops: processed_ops}
 
-        try do
-          result =
-            execute_fan_out(worker_pipeline, workers, strategy, timeout, streaming?, split)
+          try do
+            result =
+              execute_fan_out(worker_pipeline, workers, strategy, timeout, streaming?, split)
 
-          result = apply_avg_rewrites(result, rewrites)
-          finalize(result, coord_ops)
-        after
-          cleanup_broadcast_tables(workers, broadcast_tables)
-        end
+            result = apply_avg_rewrites(result, rewrites)
+            finalize(result, coord_ops)
+          after
+            cleanup_broadcast_tables(workers, broadcast_tables)
+          end
 
-      {:shuffle, ops_before, {right_computed, how, on_cols, suffix}, ops_after, broadcast_tables} ->
-        # Pipeline needs a shuffle stage: execute pre-join → shuffle → post-join
-        try do
-          execute_with_shuffle(%{
-            pipeline: pipeline,
-            ops_before: ops_before,
-            right: right_computed,
-            how: how,
-            on_cols: on_cols,
-            suffix: suffix,
-            ops_after: ops_after,
-            coord_ops: coord_ops,
-            rewrites: rewrites,
-            workers: workers,
-            strategy: strategy,
-            timeout: timeout
-          })
-        after
-          cleanup_broadcast_tables(workers, broadcast_tables)
-        end
-    end
+        {:shuffle, ops_before, {right_computed, how, on_cols, suffix}, ops_after,
+         broadcast_tables} ->
+          # Pipeline needs a shuffle stage: execute pre-join → shuffle → post-join
+          try do
+            execute_with_shuffle(%{
+              pipeline: pipeline,
+              ops_before: ops_before,
+              right: right_computed,
+              how: how,
+              on_cols: on_cols,
+              suffix: suffix,
+              ops_after: ops_after,
+              coord_ops: coord_ops,
+              rewrites: rewrites,
+              workers: workers,
+              strategy: strategy,
+              timeout: timeout
+            })
+          after
+            cleanup_broadcast_tables(workers, broadcast_tables)
+          end
+      end
+
+    # Attach execution metadata
+    total_ms =
+      System.convert_time_unit(System.monotonic_time() - start_time, :native, :millisecond)
+
+    nodes = workers |> Enum.map(&node/1) |> Enum.uniq()
+
+    meta = %{
+      distributed: true,
+      n_workers: length(workers),
+      n_nodes: length(nodes),
+      nodes: nodes,
+      merge_strategy: if(streaming?, do: :streaming, else: :batch),
+      total_duration_ms: total_ms
+    }
+
+    %{result | meta: meta}
   end
 
   @doc """
@@ -290,12 +311,11 @@ defmodule Dux.Remote.Coordinator do
 
         case result do
           {:ok, ipc} ->
+            duration = System.monotonic_time() - start_time
+
             :telemetry.execute(
               [:dux, :distributed, :worker, :stop],
-              %{
-                duration: System.monotonic_time() - start_time,
-                ipc_bytes: byte_size(ipc)
-              },
+              %{duration: duration, ipc_bytes: byte_size(ipc)},
               %{worker: worker, worker_index: idx, n_workers: n_workers}
             )
 

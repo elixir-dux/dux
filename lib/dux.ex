@@ -85,7 +85,7 @@ defmodule Dux do
 
   import Dux.SQL.Helpers, only: [qi: 1]
 
-  defstruct [:source, :remote, :workers, ops: [], names: [], dtypes: %{}, groups: []]
+  defstruct [:source, :remote, :workers, :meta, ops: [], names: [], dtypes: %{}, groups: []]
 
   @type source ::
           {:parquet, String.t()}

@@ -58,6 +58,8 @@ if Code.ensure_loaded?(FLAME) do
     After idle timeout, FLAME auto-terminates the runners.
     """
 
+    alias Dux.Remote.Worker
+
     @default_pool Dux.FlamePool
 
     @doc """
@@ -72,6 +74,7 @@ if Code.ensure_loaded?(FLAME) do
     """
     def spin_up(n, opts \\ []) when is_integer(n) and n > 0 do
       pool = Keyword.get(opts, :pool, @default_pool)
+      setup = Keyword.get(opts, :setup)
 
       # Place workers concurrently via Task.async. With max_concurrency: 1,
       # the pool boots N separate runners in parallel rather than sequentially
@@ -85,9 +88,23 @@ if Code.ensure_loaded?(FLAME) do
         end
 
       workers = Task.await_many(tasks, 300_000)
+
+      # Run setup callback on each worker (e.g. create S3 secrets, load extensions)
+      if setup do
+        workers
+        |> Task.async_stream(
+          fn worker -> GenServer.call(worker, {:setup, setup}, 30_000) end,
+          timeout: 60_000
+        )
+        |> Enum.each(fn
+          {:ok, :ok} -> :ok
+          {:ok, {:error, reason}} -> raise "Worker setup failed: #{reason}"
+          {:exit, reason} -> raise "Worker setup crashed: #{inspect(reason)}"
+        end)
+      end
+
       workers
     end
-
 
     @doc """
     Get status of the FLAME-backed Dux cluster.
@@ -113,7 +130,7 @@ if Code.ensure_loaded?(FLAME) do
     end
 
     def status(pool) when is_atom(pool) do
-      workers = Dux.Remote.Worker.list()
+      workers = Worker.list()
 
       nodes =
         workers
