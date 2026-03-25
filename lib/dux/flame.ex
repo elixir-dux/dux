@@ -70,11 +70,18 @@ if Code.ensure_loaded?(FLAME) do
     def spin_up(n, opts \\ []) when is_integer(n) and n > 0 do
       pool = Keyword.get(opts, :pool, @default_pool)
 
-      workers =
+      # Place each worker concurrently — FLAME's pool checkout ensures
+      # each goes to a separate runner when max_concurrency is 1.
+      # Concurrent placement forces the pool to boot new runners.
+      tasks =
         for _ <- 1..n do
-          {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
-          pid
+          Task.async(fn ->
+            {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
+            pid
+          end)
         end
+
+      workers = Task.await_many(tasks, 180_000)
 
       await_pg_registration(workers)
       workers
