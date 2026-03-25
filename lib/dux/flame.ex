@@ -20,11 +20,13 @@ if Code.ensure_loaded?(FLAME) do
             ],
             min: 0,
             max: 10,
+            max_concurrency: 1,
             backend: {FLAME.FlyBackend,
               cpu_kind: "performance", cpus: 4, memory_mb: 8192,
               token: System.fetch_env!("FLY_API_TOKEN"),
-              env: Map.take(System.get_env(), ["LIVEBOOK_COOKIE"])
+              env: %{"LIVEBOOK_COOKIE" => Atom.to_string(Node.get_cookie())}
             },
+            boot_timeout: 120_000,
             idle_shutdown_after: :timer.minutes(5)}
         )
 
@@ -45,6 +47,7 @@ if Code.ensure_loaded?(FLAME) do
           name: :dux_pool,
           backend: {FLAME.FlyBackend, ...},
           max: 10,
+          max_concurrency: 1,
           code_sync: [start_apps: [:dux], copy_apps: true],
           idle_shutdown_after: :timer.minutes(5)}
 
@@ -71,10 +74,8 @@ if Code.ensure_loaded?(FLAME) do
       pool = Keyword.get(opts, :pool, @default_pool)
 
       workers =
-        for i <- 1..n do
-          IO.puts("[Dux.Flame] placing worker #{i}/#{n}...")
+        for _ <- 1..n do
           {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
-          IO.puts("[Dux.Flame] worker #{i} placed on #{inspect(node(pid))} (pid: #{inspect(pid)})")
           pid
         end
 

@@ -98,11 +98,13 @@ Kino.start_child!(
     ],
     min: 0,
     max: 10,
+    max_concurrency: 1,
     backend: {FLAME.FlyBackend,
       cpu_kind: "performance", cpus: 4, memory_mb: 8192,
       token: System.fetch_env!("FLY_API_TOKEN"),
-      env: Map.take(System.get_env(), ["LIVEBOOK_COOKIE"])
+      env: %{"LIVEBOOK_COOKIE" => Atom.to_string(Node.get_cookie())}
     },
+    boot_timeout: 120_000,
     idle_shutdown_after: :timer.minutes(5)}
 )
 
@@ -115,7 +117,8 @@ Key Livebook-specific settings:
 - **`Kino.start_child!/1`** — supervises the pool under Livebook's runtime
 - **`sync_beams`** — syncs notebook-compiled beam files to runners
 - **`start_apps: true`** — starts all applications (including `:dux`) on runners
-- **`LIVEBOOK_COOKIE`** — required for BEAM distribution between nodes
+- **`LIVEBOOK_COOKIE`** — required for BEAM distribution between nodes (use `Node.get_cookie()`, not the env var)
+- **`max_concurrency: 1`** — one DuckDB worker per machine. DuckDB saturates cores internally; multiple workers on one machine just adds contention.
 
 #### Deployed Elixir app
 
@@ -126,6 +129,7 @@ Add the FLAME pool to your application supervision tree:
 children = [
   {FLAME.Pool,
     name: :dux_pool,
+    max_concurrency: 1,
     backend: {FLAME.FlyBackend,
       token: System.fetch_env!("FLY_API_TOKEN"),
       cpus: 4, memory_mb: 16_384},
