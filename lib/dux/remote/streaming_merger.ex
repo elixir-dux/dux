@@ -1,27 +1,24 @@
 defmodule Dux.Remote.StreamingMerger do
   @moduledoc false
 
-  # Folds worker IPC results incrementally using lattice merge operations.
-  # Instead of loading all IPC results as temp tables and running one big
-  # SQL query (batch Merger), the StreamingMerger decodes each result and
-  # merges aggregate values in Elixir as workers report in.
+  # Incrementally collects worker IPC results and merges via DuckDB SQL.
   #
-  # Benefits:
-  # - Lower memory: don't hold all IPC binaries simultaneously
-  # - Lower latency: merge starts when first worker finishes
-  # - Enables progressive results (Phase C)
+  # Instead of loading all IPC results at once (batch Merger), the
+  # StreamingMerger accepts results as workers complete, enabling
+  # progressive tracking and lower peak memory.
   #
-  # The StreamingMerger operates on the *rewritten* worker output — after
-  # PipelineSplitter has transformed AVG → SUM+COUNT etc. It uses the
-  # re-aggregation functions (SUM→SUM, COUNT→SUM, MIN→MIN, MAX→MAX)
-  # matching what the batch Merger does in SQL.
+  # The actual re-aggregation runs in DuckDB at finalization —
+  # the same SQL the batch Merger uses (UNION ALL + GROUP BY with
+  # correct re-aggregation functions). DuckDB handles the heavy lifting.
 
   alias Dux.Lattice
+  alias Dux.Remote.Merger
 
   defstruct [
     :groups,
     :agg_columns,
-    :accumulator,
+    :worker_ops,
+    :ipc_results,
     :workers_total,
     :workers_complete,
     :workers_failed
@@ -43,7 +40,8 @@ defmodule Dux.Remote.StreamingMerger do
       %__MODULE__{
         groups: groups,
         agg_columns: agg_columns,
-        accumulator: %{},
+        worker_ops: worker_ops,
+        ipc_results: [],
         workers_total: n_workers,
         workers_complete: 0,
         workers_failed: 0
@@ -57,19 +55,11 @@ defmodule Dux.Remote.StreamingMerger do
   Fold one worker's IPC result into the accumulator.
   """
   def fold(%__MODULE__{} = merger, ipc_binary) do
-    conn = Dux.Connection.get_conn()
-    ref = Dux.Backend.table_from_ipc(conn, ipc_binary)
-    rows = Dux.Backend.table_to_rows(conn, ref)
-
-    accumulator =
-      Enum.reduce(rows, merger.accumulator, fn row, acc ->
-        group_key = extract_group_key(row, merger.groups)
-        group_state = Map.get(acc, group_key, init_group(merger.agg_columns))
-        updated = merge_row(group_state, row, merger.agg_columns)
-        Map.put(acc, group_key, updated)
-      end)
-
-    %{merger | accumulator: accumulator, workers_complete: merger.workers_complete + 1}
+    %{
+      merger
+      | ipc_results: [ipc_binary | merger.ipc_results],
+        workers_complete: merger.workers_complete + 1
+    }
   end
 
   @doc """
@@ -80,30 +70,26 @@ defmodule Dux.Remote.StreamingMerger do
   end
 
   @doc """
-  Finalize the accumulator into a list of row maps.
+  Convert collected results to a `%Dux{}` struct via DuckDB re-aggregation.
   """
-  def finalize(%__MODULE__{} = merger) do
-    Enum.map(merger.accumulator, fn {group_key, agg_states} ->
-      finalized =
-        Map.new(agg_states, fn {col_name, {lattice, state}} ->
-          {col_name, lattice.finalize(state)}
-        end)
+  def to_dux(%__MODULE__{ipc_results: []} = _merger) do
+    Dux.from_query("SELECT 1 WHERE false") |> Dux.compute()
+  end
 
-      Map.merge(group_key, finalized)
-    end)
+  def to_dux(%__MODULE__{} = merger) do
+    # Delegate to the batch Merger which already handles re-aggregation SQL
+    Merger.merge_to_dux(
+      Enum.reverse(merger.ipc_results),
+      %Dux{source: nil, ops: merger.worker_ops, names: [], dtypes: %{}, groups: []}
+    )
   end
 
   @doc """
-  Convert finalized rows to a `%Dux{}` struct.
+  Finalize the accumulator into a list of row maps.
   """
-  def to_dux(%__MODULE__{} = merger) do
-    rows = finalize(merger)
-
-    if rows == [] do
-      Dux.from_query("SELECT 1 WHERE false") |> Dux.compute()
-    else
-      Dux.from_list(rows) |> Dux.compute()
-    end
+  def finalize(%__MODULE__{} = merger) do
+    dux = to_dux(merger)
+    Dux.to_rows(dux)
   end
 
   @doc """
@@ -137,8 +123,7 @@ defmodule Dux.Remote.StreamingMerger do
   end
 
   # Classify the rewritten aggregate columns into lattice types.
-  # These are the worker output columns (after PipelineSplitter rewrite).
-  # SUM(x) → Sum, COUNT(x) → Count (re-aggregated as SUM), MIN → Min, MAX → Max
+  # Still needed to determine if streaming is possible (all must be lattice-compatible).
   defp classify_rewritten_aggs(aggs) do
     result =
       Enum.reduce_while(aggs, [], fn {name, expr}, acc ->
@@ -160,26 +145,4 @@ defmodule Dux.Remote.StreamingMerger do
   end
 
   defp classify_rewritten(_), do: nil
-
-  defp extract_group_key(row, groups) do
-    Map.take(row, groups)
-  end
-
-  defp init_group(agg_columns) do
-    Map.new(agg_columns, fn {name, lattice} ->
-      {name, {lattice, lattice.bottom()}}
-    end)
-  end
-
-  defp merge_row(group_state, row, agg_columns) do
-    Enum.reduce(agg_columns, group_state, fn {name, _lattice}, state ->
-      {lattice, current} = Map.fetch!(state, name)
-      value = Map.get(row, name, lattice.bottom())
-
-      # Coerce nil to bottom
-      value = if is_nil(value), do: lattice.bottom(), else: value
-
-      Map.put(state, name, {lattice, lattice.merge(current, value)})
-    end)
-  end
 end

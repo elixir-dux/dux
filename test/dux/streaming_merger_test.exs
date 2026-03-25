@@ -316,8 +316,8 @@ defmodule Dux.StreamingMergerTest do
 
       merger = StreamingMerger.fold(merger, ipc)
       rows = StreamingMerger.finalize(merger)
-      # Empty fold should leave accumulator at bottom
-      assert rows == [] or hd(rows)["total"] == 0
+      # Empty fold: SUM over zero rows is NULL in DuckDB, or rows may be empty
+      assert rows == [] or hd(rows)["total"] in [0, nil]
     end
 
     test "to_dux with no folds returns empty Dux" do
