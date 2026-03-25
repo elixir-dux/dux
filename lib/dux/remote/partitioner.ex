@@ -206,8 +206,10 @@ defmodule Dux.Remote.Partitioner do
     end
   end
 
-  defp find_column(columns, name) do
-    Enum.find(columns, fn col -> col.field.name == name end)
+  defp find_column(batches, name) do
+    batches
+    |> List.flatten()
+    |> Enum.find(fn col -> col.field.name == name end)
   end
 
   defp all_local?(files) do
