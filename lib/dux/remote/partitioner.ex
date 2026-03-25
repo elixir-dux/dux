@@ -197,7 +197,7 @@ defmodule Dux.Remote.Partitioner do
 
     if file_col && rows_col do
       size_map =
-        Enum.zip(Enum.to_list(file_col), Enum.to_list(rows_col))
+        Enum.zip(Adbc.Column.to_list(file_col), Adbc.Column.to_list(rows_col))
         |> Map.new()
 
       Enum.map(files, fn f -> {f, Map.get(size_map, f, 0)} end)
@@ -279,7 +279,7 @@ defmodule Dux.Remote.Partitioner do
 
         case find_column(materialized.data, "file") do
           nil -> {:ok, [path]}
-          col -> {:ok, Enum.to_list(col)}
+          col -> {:ok, Adbc.Column.to_list(col)}
         end
 
       {:error, _} ->
