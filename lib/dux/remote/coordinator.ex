@@ -110,12 +110,14 @@ defmodule Dux.Remote.Coordinator do
       System.convert_time_unit(System.monotonic_time() - start_time, :native, :millisecond)
 
     nodes = workers |> Enum.map(&node/1) |> Enum.uniq()
+    worker_stats = Process.delete(:dux_worker_stats) || []
 
     meta = %{
       distributed: true,
       n_workers: length(workers),
       n_nodes: length(nodes),
       nodes: nodes,
+      worker_stats: worker_stats,
       merge_strategy: if(streaming?, do: :streaming, else: :batch),
       total_duration_ms: total_ms
     }
@@ -167,7 +169,8 @@ defmodule Dux.Remote.Coordinator do
         {r, %{n_workers: n_workers}}
       end)
 
-    {successes, failures} = partition_results(results)
+    {successes, worker_stats, failures} = partition_results(results)
+    Process.put(:dux_worker_stats, worker_stats)
 
     if successes == [] do
       reasons = Enum.map(failures, fn {:error, reason} -> reason end)
@@ -312,6 +315,7 @@ defmodule Dux.Remote.Coordinator do
         case result do
           {:ok, ipc} ->
             duration = System.monotonic_time() - start_time
+            duration_ms = System.convert_time_unit(duration, :native, :millisecond)
 
             :telemetry.execute(
               [:dux, :distributed, :worker, :stop],
@@ -319,18 +323,19 @@ defmodule Dux.Remote.Coordinator do
               %{worker: worker, worker_index: idx, n_workers: n_workers}
             )
 
-          _ ->
-            :ok
-        end
+            stat = %{node: node(worker), duration_ms: duration_ms, ipc_bytes: byte_size(ipc)}
+            {:ok, ipc, stat}
 
-        result
+          _ ->
+            result
+        end
       end,
       timeout: timeout,
       max_concurrency: n_workers,
       ordered: false
     )
     |> Enum.map(fn
-      {:ok, {:ok, ipc}} -> {:ok, ipc}
+      {:ok, {:ok, ipc, stat}} -> {:ok, ipc, stat}
       {:ok, {:error, reason}} -> {:error, reason}
       {:exit, reason} -> {:error, {:worker_crash, reason}}
     end)
@@ -338,11 +343,13 @@ defmodule Dux.Remote.Coordinator do
 
   defp partition_results(results) do
     Enum.split_with(results, fn
-      {:ok, _} -> true
+      {:ok, _, _} -> true
       _ -> false
     end)
     |> then(fn {ok, err} ->
-      {Enum.map(ok, fn {:ok, ipc} -> ipc end), err}
+      ipcs = Enum.map(ok, fn {:ok, ipc, _stat} -> ipc end)
+      stats = Enum.map(ok, fn {:ok, _ipc, stat} -> stat end)
+      {ipcs, stats, err}
     end)
   end
 
