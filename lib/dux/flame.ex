@@ -58,8 +58,6 @@ if Code.ensure_loaded?(FLAME) do
     After idle timeout, FLAME auto-terminates the runners.
     """
 
-    alias Dux.Remote.Worker
-
     @default_pool Dux.FlamePool
 
     @doc """
@@ -104,15 +102,16 @@ if Code.ensure_loaded?(FLAME) do
     end
 
     @doc """
-    Get status of the FLAME-backed Dux cluster.
+    Get status of the Dux worker cluster.
 
-    Pass the workers list returned by `spin_up/2`, or omit to
-    discover workers via `:pg` (may not find remote FLAME workers).
+    Pass the workers list returned by `spin_up/2`.
 
-    Returns worker count grouped by node, with alive status.
+        workers = Dux.Flame.spin_up(3, pool: :dux_pool)
+        Dux.Flame.status(workers)
+        # => %{total_workers: 3, nodes: %{:"flame-abc@..." => 1, ...}, ...}
+
+    Returns worker count grouped by node.
     """
-    def status(workers_or_pool \\ @default_pool)
-
     def status(workers) when is_list(workers) do
       nodes =
         workers
@@ -123,21 +122,6 @@ if Code.ensure_loaded?(FLAME) do
         total_workers: length(workers),
         nodes: nodes,
         worker_pids: workers
-      }
-    end
-
-    def status(pool) when is_atom(pool) do
-      workers = Worker.list()
-
-      nodes =
-        workers
-        |> Enum.group_by(&node/1)
-        |> Map.new(fn {n, pids} -> {n, length(pids)} end)
-
-      %{
-        pool: pool,
-        total_workers: length(workers),
-        nodes: nodes
       }
     end
   end

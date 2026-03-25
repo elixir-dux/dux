@@ -94,14 +94,6 @@ if Code.ensure_loaded?(FLAME) do
         assert is_map(status.nodes)
         assert is_list(status.worker_pids)
       end
-
-      test "returns cluster info with pool name", %{pool: pool} do
-        _workers = Dux.Flame.spin_up(2, pool: pool)
-        status = Dux.Flame.status(pool)
-
-        assert status.total_workers >= 0
-        assert is_map(status.nodes)
-      end
     end
   end
 end
