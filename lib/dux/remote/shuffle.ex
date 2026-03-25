@@ -172,8 +172,8 @@ defmodule Dux.Remote.Shuffle do
 
   defp ensure_worker_safe(%Dux{source: {:table, %Dux.TableRef{} = ref}} = pipeline) do
     conn = Dux.Connection.get_conn()
-    rows = Dux.Backend.table_to_rows(conn, ref)
-    %{pipeline | source: {:list, rows}}
+    ipc = Dux.Backend.table_to_ipc(conn, ref)
+    %{pipeline | source: {:ipc, ipc}}
   end
 
   defp ensure_worker_safe(pipeline), do: pipeline

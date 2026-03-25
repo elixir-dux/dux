@@ -176,6 +176,8 @@ defmodule Dux.Remote.Worker do
         {:ok, ipc}
       rescue
         e -> {:error, Exception.message(e)}
+      after
+        Dux.QueryBuilder.clear_ipc_refs()
       end
 
     {:reply, result, state}
@@ -247,6 +249,8 @@ defmodule Dux.Remote.Worker do
         {:ok, buckets}
       rescue
         e -> {:error, Exception.message(e)}
+      after
+        Dux.QueryBuilder.clear_ipc_refs()
       end
 
     {:reply, result, state}
@@ -309,6 +313,8 @@ defmodule Dux.Remote.Worker do
         result
       rescue
         e -> {:error, Exception.message(e)}
+      after
+        Dux.QueryBuilder.clear_ipc_refs()
       end
 
     {:reply, result, state}
@@ -346,6 +352,8 @@ defmodule Dux.Remote.Worker do
         result
       rescue
         e -> {:error, Exception.message(e)}
+      after
+        Dux.QueryBuilder.clear_ipc_refs()
       end
 
     {:reply, result, state}

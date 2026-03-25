@@ -221,11 +221,12 @@ defmodule Dux.Remote.Partitioner do
   # ---------------------------------------------------------------------------
 
   # Replicate: every worker gets the same pipeline.
-  # Table refs are connection-local — convert to list source for workers.
+  # Table refs are connection-local — serialize to IPC for workers.
+  # IPC is compact Arrow binary that workers deserialize via zero-copy ingest.
   defp replicate(%Dux{source: {:table, %Dux.TableRef{} = ref}} = pipeline, workers) do
     conn = Dux.Connection.get_conn()
-    rows = Dux.Backend.table_to_rows(conn, ref)
-    worker_pipeline = %{pipeline | source: {:list, rows}}
+    ipc = Dux.Backend.table_to_ipc(conn, ref)
+    worker_pipeline = %{pipeline | source: {:ipc, ipc}}
     Enum.map(workers, fn worker -> {worker, worker_pipeline} end)
   end
 

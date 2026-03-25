@@ -160,6 +160,7 @@ defimpl Inspect, for: Dux do
   defp describe_source({:parquet, path, _}), do: "parquet: #{Path.basename(path)}"
   defp describe_source({:ndjson, path, _}), do: "ndjson: #{Path.basename(path)}"
   defp describe_source({:list, rows}), do: "list: #{length(rows)} rows"
+  defp describe_source({:ipc, binary}), do: "ipc: #{div(byte_size(binary), 1024)} KB"
   defp describe_source({:table, _}), do: "table"
   defp describe_source(nil), do: "empty"
   defp describe_source(other), do: Kernel.inspect(other)

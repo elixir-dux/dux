@@ -33,6 +33,17 @@ defmodule Dux.QueryBuilder do
     end
   end
 
+  @doc """
+  Clear any IPC table refs stored in the process dictionary.
+
+  Call this after query execution to allow temp tables created from
+  `{:ipc, binary}` sources to be garbage collected.
+  """
+  def clear_ipc_refs do
+    Process.delete(:dux_ipc_refs)
+    :ok
+  end
+
   # ---------------------------------------------------------------------------
   # Source SQL generation
   # ---------------------------------------------------------------------------
@@ -99,6 +110,15 @@ defmodule Dux.QueryBuilder do
           {~s(SELECT * FROM "#{escape_sql_string(table_ref.name)}"), []}
         end
     end
+  end
+
+  defp source_to_sql({:ipc, binary}, conn) when is_binary(binary) do
+    table_ref = Dux.Backend.table_from_ipc(conn, binary)
+    # Keep ref alive in process dictionary to prevent GC before query executes.
+    # Cleaned up by clear_ipc_refs/0 after query completion.
+    existing = Process.get(:dux_ipc_refs, [])
+    Process.put(:dux_ipc_refs, [table_ref | existing])
+    {~s(SELECT * FROM "#{escape_sql_string(table_ref.name)}"), []}
   end
 
   defp source_to_sql({:parquet, path, opts}, _db) do
