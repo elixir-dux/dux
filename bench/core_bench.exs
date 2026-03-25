@@ -9,8 +9,13 @@ alias Dux.Remote.Worker
 
 IO.puts("Setting up benchmark data...")
 
-# Small dataset (1K rows)
+# Small dataset (100 rows)
 small_data = for i <- 1..100, do: %{"id" => i, "group" => rem(i, 10), "value" => i * 1.5}
+
+# Large from_list dataset (5K rows, atom keys)
+large_list_data =
+  for i <- 1..5_000,
+      do: %{id: i, group: rem(i, 100), value: i * 1.5, label: "item_#{i}"}
 
 # Medium dataset (100K via DuckDB)
 medium_sql = "SELECT x AS id, x % 100 AS grp, x * 1.5 AS value FROM range(100000) t(x)"
@@ -39,6 +44,9 @@ Benchee.run(
     # --- Construction ---
     "from_list (100 rows)" => fn ->
       Dux.from_list(small_data) |> Dux.compute()
+    end,
+    "from_list (5K rows)" => fn ->
+      Dux.from_list(large_list_data) |> Dux.compute()
     end,
     "from_query (100K rows)" => fn ->
       Dux.from_query(medium_sql) |> Dux.compute()
@@ -89,6 +97,44 @@ Benchee.run(
     # --- Computed base + chained ops ---
     "chained from computed (100K): filter → head" => fn ->
       medium_computed |> Dux.filter_with("value > 75000") |> Dux.head(100) |> Dux.compute()
+    end
+  },
+  warmup: 1,
+  time: 5,
+  memory_time: 2,
+  print: [configuration: false]
+)
+
+# ---------------------------------------------------------------------------
+# Scale benchmarks (1M rows — catches materialization regressions)
+# ---------------------------------------------------------------------------
+
+IO.puts("\n--- Scale benchmarks (1M rows) ---\n")
+
+large_computed = Dux.from_query(large_sql) |> Dux.compute()
+
+Benchee.run(
+  %{
+    "filter (1M → ~500K)" => fn ->
+      Dux.from_query(large_sql) |> Dux.filter_with("value > 750000") |> Dux.compute()
+    end,
+    "filter from computed (1M → ~500K)" => fn ->
+      large_computed |> Dux.filter_with("value > 750000") |> Dux.compute()
+    end,
+    "mutate (1M rows)" => fn ->
+      large_computed |> Dux.mutate_with(doubled: "value * 2") |> Dux.compute()
+    end,
+    "group_by + summarise (1M → 1K groups)" => fn ->
+      large_computed
+      |> Dux.group_by(:grp)
+      |> Dux.summarise_with(total: "SUM(value)", n: "COUNT(*)")
+      |> Dux.compute()
+    end,
+    "to_rows (10K)" => fn ->
+      large_computed |> Dux.head(10_000) |> Dux.to_rows()
+    end,
+    "to_rows (50K)" => fn ->
+      large_computed |> Dux.head(50_000) |> Dux.to_rows()
     end
   },
   warmup: 1,
