@@ -135,7 +135,25 @@ defmodule Dux do
       %{"age" => [30, 25], "name" => ["Alice", "Bob"]}
   """
   def from_list(rows) when is_list(rows) do
-    %Dux{source: {:list, rows}}
+    if length(rows) > 500 do
+      # Eagerly ingest large lists into DuckDB so the data lives in the engine.
+      # Without this, every compute() re-transposes and re-ingests from Elixir maps.
+      conn = Dux.Connection.get_conn()
+      columns = Dux.QueryBuilder.rows_to_columns(rows)
+      ingest_result = Adbc.Connection.ingest!(conn, columns)
+
+      table_ref = %Dux.TableRef{
+        name: ingest_result.table,
+        gc_ref: ingest_result,
+        node: node()
+      }
+
+      names = Dux.Backend.table_names(conn, table_ref)
+      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+    else
+      %Dux{source: {:list, rows}}
+    end
   end
 
   # ---------------------------------------------------------------------------

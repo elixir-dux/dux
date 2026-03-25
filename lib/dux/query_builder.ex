@@ -511,10 +511,11 @@ defmodule Dux.QueryBuilder do
     end
   end
 
+  @doc false
   # Convert row-oriented list of maps to Adbc.Column format for ingest.
   # Assumes all rows have the same key type (all atoms or all strings).
   # Mixed key types will raise on Map.fetch! — callers should normalize first.
-  defp rows_to_columns(rows) do
+  def rows_to_columns(rows) do
     first_row = hd(rows)
     raw_keys = Map.keys(first_row)
 
