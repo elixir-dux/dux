@@ -44,6 +44,13 @@ defmodule Dux.Connection do
 
     {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
     {:ok, conn} = Adbc.Connection.start_link(database: db)
+
+    # Disable insertion order preservation for temp table materialization.
+    # This lets DuckDB parallelize CREATE TABLE AS across threads without
+    # coordinating row order — ~5x faster for large result sets.
+    # Users who need ordered output use Dux.sort_by/2 explicitly.
+    Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+
     {:ok, %{db: db, conn: conn}}
   end
 
