@@ -518,19 +518,20 @@ defmodule Dux.QueryBuilder do
     first_row = hd(rows)
     raw_keys = Map.keys(first_row)
 
-    {col_names, accessor} =
+    # Build {string_name, map_key} pairs — string names for ADBC columns,
+    # original keys (atom or string) for Map.fetch! on each row.
+    col_pairs =
       case hd(raw_keys) do
         k when is_atom(k) ->
-          names = raw_keys |> Enum.map(&to_string/1) |> Enum.sort()
-          {names, fn row, name -> Map.fetch!(row, String.to_atom(name)) end}
+          raw_keys |> Enum.map(fn k -> {Atom.to_string(k), k} end) |> Enum.sort()
 
         k when is_binary(k) ->
-          {Enum.sort(raw_keys), fn row, name -> Map.fetch!(row, name) end}
+          raw_keys |> Enum.map(fn k -> {k, k} end) |> Enum.sort()
       end
 
-    Enum.map(col_names, fn name ->
-      values = Enum.map(rows, fn row -> accessor.(row, name) end)
-      Adbc.Column.new(values, name: name)
+    Enum.map(col_pairs, fn {col_name, map_key} ->
+      values = Enum.map(rows, fn row -> Map.fetch!(row, map_key) end)
+      Adbc.Column.new(values, name: col_name)
     end)
   end
 
