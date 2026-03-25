@@ -76,18 +76,15 @@ if Code.ensure_loaded?(FLAME) do
       pool = Keyword.get(opts, :pool, @default_pool)
       setup = Keyword.get(opts, :setup)
 
-      # Place workers concurrently via Task.async. With max_concurrency: 1,
-      # the pool boots N separate runners in parallel rather than sequentially
-      # waiting for each machine to start before requesting the next.
-      tasks =
+      # Place workers sequentially. With max_concurrency: 1, each placed
+      # child holds its concurrency slot permanently, so the next
+      # place_child boots a new runner. Sequential avoids internal FLAME
+      # GenServer timeouts that occur with concurrent placement.
+      workers =
         for _ <- 1..n do
-          Task.async(fn ->
-            {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
-            pid
-          end)
+          {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
+          pid
         end
-
-      workers = Task.await_many(tasks, 300_000)
 
       # Run setup callback on each worker (e.g. create S3 secrets, load extensions)
       if setup do
