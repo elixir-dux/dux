@@ -1,0 +1,117 @@
+Setting up benchmark data...
+Benchmark data ready.
+
+Benchmarking chained from computed (100K): filter → head ...
+Benchmarking filter (100K → ~50K) ...
+Benchmarking from_list (100 rows) ...
+Benchmarking from_parquet (100K rows) ...
+Benchmarking from_query (100K rows) ...
+Benchmarking from_query (1M rows) ...
+Benchmarking full pipeline (100K): filter → mutate → group → summarise → sort ...
+Benchmarking group_by + summarise (100K → 100 groups) ...
+Benchmarking mutate add column (100K) ...
+Benchmarking sort_by (100K rows) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                                       ips        average  deviation         median         99th %
+chained from computed (100K): filter â head                            76.10       13.14 ms   ±261.84%        3.46 ms      189.88 ms
+full pipeline (100K): filter â mutate â group â summarise â        20.29       49.28 ms   ±113.35%       27.75 ms      262.17 ms
+filter (100K â ~50K)                                                   14.25       70.16 ms   ±152.31%       18.82 ms      521.90 ms
+group_by + summarise (100K â 100 groups)                               11.98       83.49 ms   ±127.61%       34.84 ms      435.70 ms
+from_query (100K rows)                                                   11.20       89.25 ms   ±142.47%       28.83 ms      594.26 ms
+from_list (100 rows)                                                     10.58       94.56 ms   ±157.81%       25.42 ms      602.75 ms
+mutate add column (100K)                                                  8.02      124.69 ms   ±133.44%       59.35 ms      766.17 ms
+from_parquet (100K rows)                                                  5.14      194.69 ms    ±86.43%      100.68 ms      691.56 ms
+sort_by (100K rows)                                                       4.77      209.68 ms    ±78.12%      181.60 ms      713.11 ms
+from_query (1M rows)                                                      3.97      252.08 ms   ±102.32%      148.38 ms     1144.60 ms
+
+Comparison: 
+chained from computed (100K): filter â head                            76.10
+full pipeline (100K): filter â mutate â group â summarise â        20.29 - 3.75x slower +36.14 ms
+filter (100K â ~50K)                                                   14.25 - 5.34x slower +57.02 ms
+group_by + summarise (100K â 100 groups)                               11.98 - 6.35x slower +70.35 ms
+from_query (100K rows)                                                   11.20 - 6.79x slower +76.11 ms
+from_list (100 rows)                                                     10.58 - 7.20x slower +81.41 ms
+mutate add column (100K)                                                  8.02 - 9.49x slower +111.55 ms
+from_parquet (100K rows)                                                  5.14 - 14.82x slower +181.55 ms
+sort_by (100K rows)                                                       4.77 - 15.96x slower +196.54 ms
+from_query (1M rows)                                                      3.97 - 19.18x slower +238.94 ms
+
+Memory usage statistics:
+
+Name                                                                Memory usage
+chained from computed (100K): filter â head                           23.25 KB
+full pipeline (100K): filter â mutate â group â summarise â       30.11 KB - 1.30x memory usage +6.86 KB
+filter (100K â ~50K)                                                  93.99 KB - 4.04x memory usage +70.74 KB
+group_by + summarise (100K â 100 groups)                              65.86 KB - 2.83x memory usage +42.61 KB
+from_query (100K rows)                                                 163.67 KB - 7.04x memory usage +140.42 KB
+from_list (100 rows)                                                   454.92 KB - 19.57x memory usage +431.67 KB
+mutate add column (100K)                                               211.96 KB - 9.12x memory usage +188.71 KB
+from_parquet (100K rows)                                               163.49 KB - 7.03x memory usage +140.24 KB
+sort_by (100K rows)                                                    162.97 KB - 7.01x memory usage +139.72 KB
+from_query (1M rows)                                                  1480.41 KB - 63.67x memory usage +1457.16 KB
+
+**All measurements for memory usage were the same**
+
+--- Distributed benchmark ---
+
+Benchmarking distributed (2 workers): 100K filter + aggregate ...
+Benchmarking single-node baseline: 100K filter + aggregate ...
+Calculating statistics...
+Formatting results...
+
+Name                                                       ips        average  deviation         median         99th %
+single-node baseline: 100K filter + aggregate            10.42       96.01 ms    ±75.19%       70.34 ms      290.98 ms
+distributed (2 workers): 100K filter + aggregate          7.58      132.01 ms    ±76.60%       99.39 ms      454.95 ms
+
+Comparison: 
+single-node baseline: 100K filter + aggregate            10.42
+distributed (2 workers): 100K filter + aggregate          7.58 - 1.37x slower +36.00 ms
+
+--- Streaming vs batch merge ---
+
+Benchmarking streaming merge (MIN + MAX, 2 workers) ...
+Benchmarking streaming merge (SUM + COUNT, 2 workers) ...
+Calculating statistics...
+Formatting results...
+
+Name                                               ips        average  deviation         median         99th %
+streaming merge (MIN + MAX, 2 workers)            9.35      106.98 ms   ±102.07%       63.59 ms      430.57 ms
+streaming merge (SUM + COUNT, 2 workers)          2.03      492.15 ms    ±47.47%      491.47 ms     1038.29 ms
+
+Comparison: 
+streaming merge (MIN + MAX, 2 workers)            9.35
+streaming merge (SUM + COUNT, 2 workers)          2.03 - 4.60x slower +385.17 ms
+
+--- Shuffle join benchmark ---
+
+Benchmarking local join baseline (100K × 100K) ...
+Benchmarking shuffle join (2 workers, 100K × 100K) ...
+Calculating statistics...
+Formatting results...
+
+Name                                            ips        average  deviation         median         99th %
+local join baseline (100K Ã 100K)             0.34         2.95 s     ±0.67%         2.95 s         2.96 s
+shuffle join (2 workers, 100K Ã 100K)         0.32         3.12 s     ±5.14%         3.12 s         3.23 s
+
+Comparison: 
+local join baseline (100K Ã 100K)             0.34
+shuffle join (2 workers, 100K Ã 100K)         0.32 - 1.06x slower +0.170 s
+
+--- Broadcast join (bloom filter) benchmark ---
+
+Benchmarking broadcast join + bloom filter (2 workers, 100K × 20) ...
+Benchmarking local join baseline (100K × 20) ...
+Calculating statistics...
+Formatting results...
+
+Name                                                           ips        average  deviation         median         99th %
+local join baseline (100K Ã 20)                             14.11       70.89 ms    ±82.81%       50.03 ms      265.97 ms
+broadcast join + bloom filter (2 workers, 100K Ã 20)         7.17      139.55 ms    ±67.37%      111.71 ms      402.44 ms
+
+Comparison: 
+local join baseline (100K Ã 20)                             14.11
+broadcast join + bloom filter (2 workers, 100K Ã 20)         7.17 - 1.97x slower +68.66 ms
+
+Benchmarks complete.

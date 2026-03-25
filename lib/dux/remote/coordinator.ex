@@ -43,7 +43,9 @@ defmodule Dux.Remote.Coordinator do
     workers = Keyword.get_lazy(opts, :workers, &Worker.list/0)
     timeout = Keyword.get(opts, :timeout, :infinity)
     strategy = Keyword.get(opts, :strategy, :round_robin)
-    bcast_threshold = Keyword.get(opts, :broadcast_threshold, @broadcast_threshold)
+    # Scale broadcast threshold by worker count so total network cost stays constant
+    raw_threshold = Keyword.get(opts, :broadcast_threshold, @broadcast_threshold)
+    bcast_threshold = div(raw_threshold, max(length(workers), 1))
 
     if workers == [] do
       raise ArgumentError, "no workers available for distributed execution"
@@ -305,7 +307,7 @@ defmodule Dux.Remote.Coordinator do
       end,
       timeout: timeout,
       max_concurrency: n_workers,
-      ordered: true
+      ordered: false
     )
     |> Enum.map(fn
       {:ok, {:ok, ipc}} -> {:ok, ipc}

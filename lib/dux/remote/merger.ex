@@ -175,18 +175,27 @@ defmodule Dux.Remote.Merger do
   # Determine the correct re-aggregation function based on the original expression.
   # SUM → SUM, COUNT → SUM, MIN → MIN, MAX → MAX
   # AVG columns should have been rewritten by PipelineSplitter before reaching here.
+  # Uses word-boundary regex to prevent substring matches (e.g. COUNT_DISTINCT matching COUNT).
+  @re_agg_rules [
+    {~r/\bMIN\s*\(/i, "MIN"},
+    {~r/\bMAX\s*\(/i, "MAX"},
+    {~r/\bSUM\s*\(/i, "SUM"},
+    {~r/\bAPPROX_COUNT_DISTINCT\s*\(/i, "SUM"},
+    {~r/\bCOUNT_DISTINCT\s*\(/i, "SUM"},
+    {~r/\bCOUNT\s*\(/i, "SUM"}
+  ]
+
   defp re_aggregate_expr(name, expr) when is_binary(expr) do
-    upper = String.upcase(expr)
     quoted = qi(name)
 
-    cond do
-      String.contains?(upper, "MIN(") -> "MIN(#{quoted}) AS #{quoted}"
-      String.contains?(upper, "MAX(") -> "MAX(#{quoted}) AS #{quoted}"
-      String.contains?(upper, "SUM(") -> "SUM(#{quoted}) AS #{quoted}"
-      String.contains?(upper, "COUNT(") -> "SUM(#{quoted}) AS #{quoted}"
-      # Default: SUM (safe for additive aggregates)
-      true -> "SUM(#{quoted}) AS #{quoted}"
-    end
+    re_agg =
+      Enum.find_value(@re_agg_rules, fn {regex, agg_fn} ->
+        if Regex.match?(regex, expr), do: agg_fn
+      end)
+
+    # Default: SUM (safe for additive aggregates)
+    agg_fn = re_agg || "SUM"
+    "#{agg_fn}(#{quoted}) AS #{quoted}"
   end
 
   defp re_aggregate_expr(name, _expr) do

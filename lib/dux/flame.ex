@@ -76,9 +76,32 @@ if Code.ensure_loaded?(FLAME) do
           pid
         end
 
-      # Wait for :pg registration to propagate
-      Process.sleep(100)
+      await_pg_registration(workers)
       workers
+    end
+
+    defp await_pg_registration(workers, timeout_ms \\ 5_000) do
+      expected = MapSet.new(workers)
+      deadline = System.monotonic_time(:millisecond) + timeout_ms
+      do_await_pg(expected, deadline)
+    end
+
+    defp do_await_pg(expected, deadline) do
+      registered =
+        :pg.get_members(:dux, Dux.Remote.Worker)
+        |> MapSet.new()
+
+      if MapSet.subset?(expected, registered) do
+        :ok
+      else
+        if System.monotonic_time(:millisecond) > deadline do
+          # Best-effort: proceed even if not all registered yet
+          :ok
+        else
+          Process.sleep(10)
+          do_await_pg(expected, deadline)
+        end
+      end
     end
 
     @doc """
