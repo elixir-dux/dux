@@ -85,7 +85,17 @@ defmodule Dux do
 
   import Dux.SQL.Helpers, only: [qi: 1]
 
-  defstruct [:source, :remote, :workers, :meta, ops: [], names: [], dtypes: %{}, groups: []]
+  defstruct [
+    :source,
+    :remote,
+    :workers,
+    :meta,
+    :conn,
+    ops: [],
+    names: [],
+    dtypes: %{},
+    groups: []
+  ]
 
   @type source ::
           {:parquet, String.t()}
@@ -150,7 +160,7 @@ defmodule Dux do
 
       names = Dux.Backend.table_names(conn, table_ref)
       dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
-      %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+      %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
     else
       %Dux{source: {:list, rows}}
     end
@@ -468,7 +478,7 @@ defmodule Dux do
     meta = %{table: table, create: create?}
 
     :telemetry.span([:dux, :io, :write], meta, fn ->
-      conn = Dux.Connection.get_conn()
+      conn = dux.conn || Dux.Connection.get_conn()
       Process.put(:dux_write_ref, extract_source_ref(dux))
       {query_sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
 
@@ -1426,7 +1436,10 @@ defmodule Dux do
     meta = %{n_ops: length(dux.ops), distributed: false}
 
     :telemetry.span([:dux, :query], meta, fn ->
-      conn = Dux.Connection.get_conn()
+      # Use pinned connection if available (from a prior compute on this pipeline),
+      # otherwise get a connection from the pool. This ensures temp tables created
+      # by compute are visible to downstream operations on the same %Dux{}.
+      conn = dux.conn || Dux.Connection.get_conn()
 
       source_ref = extract_source_ref(dux)
       Process.put(:dux_compute_ref, source_ref)
@@ -1440,7 +1453,7 @@ defmodule Dux do
       table_ref = Dux.Backend.query(conn, sql)
       names = Dux.Backend.table_names(conn, table_ref)
       dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
-      result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
+      result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
 
       Process.delete(:dux_compute_ref)
       Dux.QueryBuilder.clear_ipc_refs()
@@ -1494,7 +1507,7 @@ defmodule Dux do
   def to_rows(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
     {:table, table_ref} = computed.source
-    conn = Dux.Connection.get_conn()
+    conn = computed.conn || Dux.Connection.get_conn()
     rows = Dux.Backend.table_to_rows(conn, table_ref)
 
     if Keyword.get(opts, :atom_keys, false) do
@@ -1527,7 +1540,7 @@ defmodule Dux do
   def to_columns(%Dux{} = dux, opts \\ []) do
     computed = compute(dux)
     {:table, table_ref} = computed.source
-    conn = Dux.Connection.get_conn()
+    conn = computed.conn || Dux.Connection.get_conn()
     columns = Dux.Backend.table_to_columns(conn, table_ref)
 
     if Keyword.get(opts, :atom_keys, false) do
@@ -1557,7 +1570,7 @@ defmodule Dux do
       true
   """
   def sql_preview(%Dux{} = dux, opts \\ []) do
-    conn = Dux.Connection.get_conn()
+    conn = dux.conn || Dux.Connection.get_conn()
     {sql, _setup} = Dux.QueryBuilder.build(dux, conn)
 
     if Keyword.get(opts, :pretty, false) do
@@ -1578,7 +1591,7 @@ defmodule Dux do
   def n_rows(%Dux{} = dux) do
     computed = compute(dux)
     {:table, ref} = computed.source
-    conn = Dux.Connection.get_conn()
+    conn = computed.conn || Dux.Connection.get_conn()
     Dux.Backend.table_n_rows(conn, ref)
   end
 
@@ -1608,7 +1621,7 @@ defmodule Dux do
       col_name = to_col_name(column)
       computed = compute(dux)
       {:table, ref} = computed.source
-      conn = Dux.Connection.get_conn()
+      conn = computed.conn || Dux.Connection.get_conn()
       raw_columns = Dux.Backend.table_to_raw_columns(conn, ref)
 
       case Map.fetch(raw_columns, col_name) do
@@ -1737,8 +1750,9 @@ defmodule Dux do
     computed = dux |> head(limit) |> compute()
     {:table, ref} = computed.source
 
-    names = Dux.Backend.table_names(Dux.Connection.get_conn(), ref)
-    columns = Dux.Backend.table_to_columns(Dux.Connection.get_conn(), ref)
+    conn = computed.conn || Dux.Connection.get_conn()
+    names = Dux.Backend.table_names(conn, ref)
+    columns = Dux.Backend.table_to_columns(conn, ref)
     total_rows = n_rows(dux)
 
     # Calculate column widths
@@ -1929,7 +1943,7 @@ defmodule Dux do
     meta = %{format: fmt_atom, path: path}
 
     :telemetry.span([:dux, :io, :write], meta, fn ->
-      conn = Dux.Connection.get_conn()
+      conn = dux.conn || Dux.Connection.get_conn()
       Process.put(:dux_write_ref, extract_source_ref(dux))
       {query_sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
 
