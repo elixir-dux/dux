@@ -1,11 +1,20 @@
 defmodule Dux.Connection do
   @moduledoc false
 
-  # Manages the ADBC DuckDB connection for this node.
-  # ADBC's Connection is already a GenServer that serializes access,
-  # so this module just holds the pid and provides a lookup API.
+  # Manages the ADBC DuckDB connection(s) for this node.
+  #
+  # Connection PIDs are stored in :persistent_term for zero-cost access
+  # on the query hot path. The GenServer manages lifecycle only (start,
+  # stop, extension loading).
+  #
+  # With pool_size > 1, multiple Adbc.Connection processes share one
+  # Adbc.Database. Queries are dispatched round-robin via :atomics.
 
   use GenServer
+
+  @pt_key :dux_conn
+  @pt_pool_key :dux_conn_pool
+  @pt_counter_key :dux_conn_counter
 
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -13,7 +22,24 @@ defmodule Dux.Connection do
   end
 
   @doc false
-  def get_conn(server \\ __MODULE__) do
+  def get_conn(server \\ __MODULE__)
+
+  def get_conn(__MODULE__) do
+    case :persistent_term.get(@pt_pool_key, nil) do
+      nil ->
+        # Single connection mode
+        :persistent_term.get(@pt_key)
+
+      pool ->
+        # Pool mode — round-robin dispatch
+        counter = :persistent_term.get(@pt_counter_key)
+        idx = :atomics.add_get(counter, 1, 1)
+        elem(pool, rem(idx, tuple_size(pool)))
+    end
+  end
+
+  def get_conn(server) do
+    # Named server — fall back to GenServer call
     GenServer.call(server, :get_conn)
   end
 
@@ -29,6 +55,14 @@ defmodule Dux.Connection do
     :ok
   end
 
+  @doc false
+  def pool_size do
+    case :persistent_term.get(@pt_pool_key, nil) do
+      nil -> 1
+      pool -> tuple_size(pool)
+    end
+  end
+
   # --- Callbacks ---
 
   @impl true
@@ -42,26 +76,65 @@ defmodule Dux.Connection do
         path -> [path: path]
       end
 
+    pool_size = Keyword.get(opts, :pool_size, 1)
+
     {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
-    {:ok, conn} = Adbc.Connection.start_link(database: db)
 
-    # Disable insertion order preservation for temp table materialization.
-    # This lets DuckDB parallelize CREATE TABLE AS across threads without
-    # coordinating row order — ~5x faster for large result sets.
-    # Users who need ordered output use Dux.sort_by/2 explicitly.
-    Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+    conns =
+      for _ <- 1..pool_size do
+        {:ok, conn} = Adbc.Connection.start_link(database: db)
 
-    {:ok, %{db: db, conn: conn}}
+        # Disable insertion order preservation for temp table materialization.
+        # This lets DuckDB parallelize CREATE TABLE AS across threads without
+        # coordinating row order — ~5x faster for large result sets.
+        # Users who need ordered output use Dux.sort_by/2 explicitly.
+        Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+
+        conn
+      end
+
+    name = Keyword.get(opts, :name, __MODULE__)
+
+    # Only store in persistent_term for the default (unnamed) instance.
+    # Named instances (tests, multiple databases) use GenServer.call.
+    if name == __MODULE__ do
+      if pool_size == 1 do
+        :persistent_term.put(@pt_key, hd(conns))
+      else
+        :persistent_term.put(@pt_pool_key, List.to_tuple(conns))
+        :persistent_term.put(@pt_counter_key, :atomics.new(1, []))
+        # Also store first conn for single-conn API callers
+        :persistent_term.put(@pt_key, hd(conns))
+      end
+    end
+
+    {:ok, %{db: db, conns: conns, pool_size: pool_size, name: name}}
   end
 
   @impl true
-  def handle_call(:get_conn, _from, %{conn: conn} = state) do
+  def terminate(_reason, %{name: name}) do
+    if name == __MODULE__ do
+      :persistent_term.erase(@pt_key)
+      :persistent_term.erase(@pt_pool_key)
+      :persistent_term.erase(@pt_counter_key)
+    end
+
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
+  def terminate(_reason, _state), do: :ok
+
+  # Legacy compatibility — keep GenServer call interface working
+  # for any code that bypasses get_conn/0
+  @impl true
+  def handle_call(:get_conn, _from, %{conns: [conn | _]} = state) do
     {:reply, conn, state}
   end
 
-  # Legacy compatibility
   @impl true
-  def handle_call(:get_db, _from, %{conn: conn} = state) do
+  def handle_call(:get_db, _from, %{conns: [conn | _]} = state) do
     {:reply, conn, state}
   end
 end

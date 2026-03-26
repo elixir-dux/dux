@@ -106,6 +106,36 @@ Benchee.run(
 )
 
 # ---------------------------------------------------------------------------
+# Concurrency benchmark (measures pool throughput vs single connection)
+# ---------------------------------------------------------------------------
+
+IO.puts("\n--- Concurrency benchmark ---\n")
+
+concurrency_computed = Dux.from_query(medium_sql) |> Dux.compute()
+
+Benchee.run(
+  %{
+    "sequential: 10 queries" => fn ->
+      for _ <- 1..10 do
+        concurrency_computed |> Dux.filter_with("value > 75000") |> Dux.compute()
+      end
+    end,
+    "concurrent: 10 queries (Task.async)" => fn ->
+      1..10
+      |> Enum.map(fn _ ->
+        Task.async(fn ->
+          concurrency_computed |> Dux.filter_with("value > 75000") |> Dux.compute()
+        end)
+      end)
+      |> Task.await_many(10_000)
+    end
+  },
+  warmup: 1,
+  time: 5,
+  print: [configuration: false]
+)
+
+# ---------------------------------------------------------------------------
 # Scale benchmarks (1M rows — catches materialization regressions)
 # ---------------------------------------------------------------------------
 
@@ -207,8 +237,11 @@ Benchee.run(
 IO.puts("\n--- Shuffle join benchmark ---\n")
 
 # Two large datasets that will trigger shuffle (both too big for broadcast)
-left_large = Dux.from_query("SELECT x AS id, x % 50 AS key, x * 1.5 AS val FROM range(100000) t(x)")
-right_large = Dux.from_query("SELECT x AS id, x % 50 AS key, x * 2.0 AS score FROM range(100000) t(x)")
+left_large =
+  Dux.from_query("SELECT x AS id, x % 50 AS key, x * 1.5 AS val FROM range(100000) t(x)")
+
+right_large =
+  Dux.from_query("SELECT x AS id, x % 50 AS key, x * 2.0 AS score FROM range(100000) t(x)")
 
 Benchee.run(
   %{
@@ -238,7 +271,9 @@ Benchee.run(
 IO.puts("\n--- Broadcast join (bloom filter) benchmark ---\n")
 
 # Large fact table joined with small dimension — triggers broadcast with bloom pre-filter
-fact_table = Dux.from_query("SELECT x AS id, x % 1000 AS dim_key, x * 1.5 AS amount FROM range(100000) t(x)")
+fact_table =
+  Dux.from_query("SELECT x AS id, x % 1000 AS dim_key, x * 1.5 AS amount FROM range(100000) t(x)")
+
 dim_table = Dux.from_list(for i <- 1..20, do: %{dim_key: i, label: "label_#{i}"})
 
 Benchee.run(
