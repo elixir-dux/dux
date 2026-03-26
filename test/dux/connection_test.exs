@@ -122,4 +122,59 @@ defmodule Dux.ConnectionTest do
       assert Dux.Backend.table_n_rows(conn, result) == 100
     end
   end
+
+  # ---------- Connection pool ----------
+
+  describe "pool mode" do
+    test "pool_size returns configured size" do
+      # The app-level connection is pool_size: 1 by default
+      assert Dux.Connection.pool_size() >= 1
+    end
+
+    test "get_conn returns a PID" do
+      conn = Dux.Connection.get_conn()
+      assert is_pid(conn)
+    end
+
+    test "compute pins connection to %Dux{}" do
+      require Dux
+      df = Dux.from_query("SELECT 1 AS x") |> Dux.compute()
+      assert df.conn != nil
+      assert is_pid(df.conn)
+    end
+
+    test "chained operations reuse pinned connection" do
+      require Dux
+      df = Dux.from_query("SELECT x FROM range(100) t(x)") |> Dux.compute()
+      # Downstream compute reuses the same connection
+      filtered = df |> Dux.filter_with("x > 50") |> Dux.compute()
+      assert filtered.conn == df.conn
+    end
+
+    test "from_list pins connection for large lists" do
+      data = for i <- 1..1000, do: %{id: i, val: i * 2}
+      df = Dux.from_list(data)
+      assert df.conn != nil
+      # Can chain from it
+      rows = df |> Dux.filter_with("val > 1000") |> Dux.to_rows()
+      assert length(rows) == 500
+    end
+
+    test "concurrent pipelines all succeed" do
+      require Dux
+
+      tasks =
+        for _ <- 1..20 do
+          Task.async(fn ->
+            Dux.from_query("SELECT x FROM range(100) t(x)")
+            |> Dux.filter_with("x > 50")
+            |> Dux.to_rows()
+            |> length()
+          end)
+        end
+
+      results = Task.await_many(tasks, 10_000)
+      assert Enum.all?(results, &(&1 == 49))
+    end
+  end
 end
