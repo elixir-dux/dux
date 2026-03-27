@@ -856,7 +856,7 @@ defmodule Dux do
   """
   def define(name, params, sql_body)
       when is_atom(name) and is_list(params) and is_binary(sql_body) do
-    param_list = Enum.map_join(params, ", ", &to_string/1)
+    param_list = Enum.map_join(params, ", ", fn p -> qi(to_string(p)) end)
     macro_name = to_string(name)
 
     create_sql =
@@ -890,7 +890,7 @@ defmodule Dux do
   """
   def define_table(name, params, sql_body)
       when is_atom(name) and is_list(params) and is_binary(sql_body) do
-    param_list = Enum.map_join(params, ", ", &to_string/1)
+    param_list = Enum.map_join(params, ", ", fn p -> qi(to_string(p)) end)
     macro_name = to_string(name)
 
     create_sql =
