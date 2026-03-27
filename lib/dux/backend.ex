@@ -207,26 +207,42 @@ defmodule Dux.Backend do
   @doc false
   def table_to_rows(conn, %TableRef{} = ref) do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
-    map = Adbc.Result.to_map(result)
 
-    if map == %{} do
-      []
-    else
-      build_rows_from_map(map)
+    case result.data do
+      [] ->
+        []
+
+      [single_batch] ->
+        # Fast path: single batch — build rows directly
+        build_rows_from_batch(single_batch)
+
+      batches ->
+        # Multi-batch: process each batch independently to avoid
+        # building huge intermediate column lists (400k+ elements).
+        # Each batch is small (~2048 rows), so per-batch transposition is fast.
+        Enum.flat_map(batches, &build_rows_from_batch/1)
     end
   end
 
-  defp build_rows_from_map(map) do
-    col_names = Map.keys(map)
+  defp build_rows_from_batch(batch) do
+    case batch do
+      [] ->
+        []
 
-    columns =
-      Enum.map(col_names, fn col ->
-        maybe_normalize_column(Map.fetch!(map, col))
-      end)
+      columns ->
+        col_data =
+          Enum.map(columns, fn col ->
+            materialized = Adbc.Column.materialize(col)
+            {col.field.name, maybe_normalize_column(Adbc.Column.to_list(materialized))}
+          end)
 
-    Enum.zip_with(columns, fn values ->
-      Enum.zip(col_names, values) |> Map.new()
-    end)
+        col_names = Enum.map(col_data, &elem(&1, 0))
+        col_values = Enum.map(col_data, &elem(&1, 1))
+
+        Enum.zip_with(col_values, fn values ->
+          Enum.zip(col_names, values) |> Map.new()
+        end)
+    end
   end
 
   # Batch normalize: only run normalize_value when the column contains Decimals.
