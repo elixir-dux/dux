@@ -246,7 +246,7 @@ defmodule Dux.Remote.Shuffle do
       # Limitation: always splits left / replicates right regardless of
       # which side is heavy. For right-heavy buckets this means the large
       # side gets replicated N times — correct but wastes memory.
-      # TODO: detect which side is heavier per bucket and swap roles.
+      # Future: detect which side is heavier per bucket and swap roles.
       # but correct, and simpler than tracking directionality per bucket.
       #
       # When a bucket is heavy on both sides, it appears once in all_heavy
