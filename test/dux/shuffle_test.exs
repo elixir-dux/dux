@@ -384,6 +384,46 @@ defmodule Dux.ShuffleTest do
       assert length(rows) == 100
     end
 
+    test "skew mitigation emits telemetry when data is heavily skewed" do
+      workers = start_workers(2)
+
+      ref = make_ref()
+      test_pid = self()
+
+      :telemetry.attach(
+        "skew-test-#{inspect(ref)}",
+        [:dux, :distributed, :shuffle, :skew_detected],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:skew, measurements, metadata})
+        end,
+        nil
+      )
+
+      # Generate enough data that the heavy bucket's IPC byte_size is >5x mean.
+      # 10K rows in key=1, 10 rows each in keys 2-8 — extreme skew.
+      left =
+        Dux.from_query("""
+          SELECT 1 AS key, x AS val, REPEAT('x', 100) AS pad FROM range(10000) t(x)
+          UNION ALL
+          SELECT x % 7 + 2 AS key, x AS val, 'y' AS pad FROM range(70) t(x)
+        """)
+
+      right =
+        Dux.from_query("SELECT x AS key, CONCAT('label_', x) AS label FROM range(1, 9) t(x)")
+
+      _result =
+        Shuffle.execute(left, right,
+          on: :key,
+          workers: workers,
+          skew_min_bytes: 0
+        )
+
+      assert_receive {:skew, measurements, _metadata}, 2000
+      assert measurements.left_heavy_count > 0
+
+      :telemetry.detach("skew-test-#{inspect(ref)}")
+    end
+
     test "skew-mitigated result matches local join" do
       workers = start_workers(2)
 
@@ -432,11 +472,13 @@ defmodule Dux.ShuffleTest do
       end
     end
 
-    test "rejects temp_directory with single quotes" do
+    test "rejects temp_directory with dangerous characters" do
       {_db, conn} = Dux.Backend.open()
 
-      assert_raise ArgumentError, ~r/single quotes/, fn ->
-        Dux.Connection.configure_duckdb(conn, temp_directory: "/tmp/it's bad")
+      for bad_path <- ["/tmp/it's bad", "/tmp/foo;bar", "/tmp/back\\slash"] do
+        assert_raise ArgumentError, ~r/must not contain/, fn ->
+          Dux.Connection.configure_duckdb(conn, temp_directory: bad_path)
+        end
       end
     end
 

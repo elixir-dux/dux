@@ -82,11 +82,15 @@ defmodule Dux.Remote.Shuffle do
       left_partitions = hash_partition_all(left_sliced, left_cols, n_buckets, timeout)
       right_partitions = hash_partition_all(right_sliced, right_cols, n_buckets, timeout)
 
-      # Skew detection + mitigation: split heavy buckets to avoid hot workers
-      skew_min = Keyword.get(opts, :skew_min_bytes, @default_skew_min_bytes)
-
+      # Skew mitigation only for inner joins — replicating data for left/right/outer
+      # joins would produce duplicate rows in the final result.
       {left_partitions, right_partitions, n_buckets} =
-        mitigate_skew(left_partitions, right_partitions, n_buckets, skew_min)
+        if how == :inner do
+          skew_min = Keyword.get(opts, :skew_min_bytes, @default_skew_min_bytes)
+          mitigate_skew(left_partitions, right_partitions, n_buckets, skew_min)
+        else
+          {left_partitions, right_partitions, n_buckets}
+        end
 
       # Phase 2: Shuffle exchange — send each bucket to the assigned worker
       # Assign buckets to workers round-robin
@@ -257,7 +261,10 @@ defmodule Dux.Remote.Shuffle do
     end)
   end
 
-  # Split a bucket's data across sub-buckets (round-robin by worker contribution)
+  # Split a bucket's data across sub-buckets (round-robin by worker contribution).
+  # Note: this redistributes whole worker chunks, not individual rows. If one
+  # worker produced most of the heavy bucket's data, that sub-bucket still gets
+  # all of it. Effective when many workers contribute; less so for single-source skew.
   defp split_bucket(partitions, heavy_id, sub_ids) do
     n_subs = length(sub_ids)
 
@@ -291,7 +298,7 @@ defmodule Dux.Remote.Shuffle do
 
       ipc ->
         base = Map.delete(buckets, heavy_id)
-        new_buckets = Map.new(sub_ids, &{&1, ipc}) |> Map.merge(base)
+        new_buckets = Map.merge(base, Map.new(sub_ids, &{&1, ipc}))
         {worker, new_buckets}
     end
   end
@@ -306,18 +313,27 @@ defmodule Dux.Remote.Shuffle do
   end
 
   defp find_heavy_buckets(sizes, _n_buckets, threshold_factor \\ 5) do
-    values = Map.values(sizes)
-    mean = if values == [], do: 0, else: div(Enum.sum(values), length(values))
+    values = Map.values(sizes) |> Enum.sort()
 
-    if mean == 0,
+    # Use median instead of mean — the mean is distorted by the heavy
+    # bucket itself, making it impossible to detect extreme skew.
+    median =
+      case values do
+        [] -> 0
+        _ -> Enum.at(values, div(length(values), 2))
+      end
+
+    if median == 0,
       do: [],
-      else: for({id, size} <- sizes, size > threshold_factor * mean, do: id)
+      else: for({id, size} <- sizes, size > threshold_factor * median, do: id)
   end
 
   defp assign_buckets(n_buckets, workers) do
+    workers_tuple = List.to_tuple(workers)
+    n_workers = tuple_size(workers_tuple)
+
     for bucket_id <- 0..(n_buckets - 1), into: %{} do
-      worker_idx = rem(bucket_id, length(workers))
-      {bucket_id, Enum.at(workers, worker_idx)}
+      {bucket_id, elem(workers_tuple, rem(bucket_id, n_workers))}
     end
   end
 

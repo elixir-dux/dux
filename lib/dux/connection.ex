@@ -159,8 +159,9 @@ defmodule Dux.Connection do
     # or accept in-memory-only operation.
     temp_dir = Keyword.get(opts, :temp_directory, Path.join(System.tmp_dir!(), "dux_spill"))
 
-    if String.contains?(temp_dir, "'") do
-      raise ArgumentError, "temp_directory must not contain single quotes: #{inspect(temp_dir)}"
+    if String.contains?(temp_dir, ["'", ";", "\\"]) do
+      raise ArgumentError,
+            "temp_directory must not contain single quotes, semicolons, or backslashes: #{inspect(temp_dir)}"
     end
 
     File.mkdir_p(temp_dir)
