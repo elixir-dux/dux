@@ -1875,69 +1875,82 @@ defmodule Dux do
 
   # Derive the output schema from the source schema and ops, without running DESCRIBE.
   # Returns {names, dtypes} if derivable, nil otherwise.
+  # Tracks group state for summarise derivation.
   defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops})
        when names != [] and dtypes != %{} do
-    Enum.reduce_while(ops, {names, dtypes}, fn op, {names, dtypes} ->
-      case derive_op_schema(op, names, dtypes) do
-        {new_names, new_dtypes} -> {:cont, {new_names, new_dtypes}}
-        nil -> {:halt, nil}
-      end
-    end)
+    case Enum.reduce_while(ops, {names, dtypes, []}, fn op, {names, dtypes, groups} ->
+           case derive_op_schema(op, names, dtypes, groups) do
+             {new_names, new_dtypes, new_groups} ->
+               {:cont, {new_names, new_dtypes, new_groups}}
+
+             nil ->
+               {:halt, nil}
+           end
+         end) do
+      {names, dtypes, _groups} -> {names, dtypes}
+      nil -> nil
+    end
   end
 
   defp derive_schema(_), do: nil
 
   # Schema-preserving ops
-  defp derive_op_schema({:filter, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:head, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:slice, _, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:sort_by, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:distinct, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:drop_nil, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:group_by, _}, names, dtypes), do: {names, dtypes}
-  defp derive_op_schema({:ungroup}, names, dtypes), do: {names, dtypes}
+  defp derive_op_schema({:filter, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:head, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:slice, _, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:sort_by, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:distinct, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:drop_nil, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:ungroup}, n, d, _g), do: {n, d, []}
 
-  # Mutate: SELECT *, (expr) AS col — adds columns (DuckDB replaces if name exists)
-  defp derive_op_schema({:mutate, assignments}, names, dtypes) do
+  # Group-by: sets group state for subsequent summarise
+  defp derive_op_schema({:group_by, cols}, n, d, _g) do
+    {n, d, Enum.map(cols, &to_string/1)}
+  end
+
+  # Mutate: SELECT *, (expr) AS col — adds columns
+  defp derive_op_schema({:mutate, assignments}, names, dtypes, groups) do
     new_names =
       Enum.reduce(assignments, names, fn {col_name, _expr}, acc ->
         if col_name in acc, do: acc, else: acc ++ [col_name]
       end)
 
-    {new_names, dtypes}
+    {new_names, dtypes, groups}
   end
 
   # Select: picks specific columns
-  defp derive_op_schema({:select, cols}, _names, dtypes) do
+  defp derive_op_schema({:select, cols}, _names, dtypes, groups) do
     col_strings = Enum.map(cols, &to_string/1)
-    new_dtypes = Map.take(dtypes, col_strings)
-    {col_strings, new_dtypes}
+    {col_strings, Map.take(dtypes, col_strings), groups}
   end
 
   # Discard: removes columns
-  defp derive_op_schema({:discard, cols}, names, dtypes) do
-    col_strings = MapSet.new(Enum.map(cols, &to_string/1))
-    new_names = Enum.reject(names, &MapSet.member?(col_strings, &1))
-    new_dtypes = Map.drop(dtypes, MapSet.to_list(col_strings))
-    {new_names, new_dtypes}
+  defp derive_op_schema({:discard, cols}, names, dtypes, groups) do
+    col_set = MapSet.new(Enum.map(cols, &to_string/1))
+    new_names = Enum.reject(names, &MapSet.member?(col_set, &1))
+    {new_names, Map.drop(dtypes, MapSet.to_list(col_set)), groups}
   end
 
   # Rename: changes column names
-  defp derive_op_schema({:rename, pairs}, names, dtypes) do
-    rename_map = Map.new(pairs, fn {old, new} -> {to_string(old), to_string(new)} end)
+  defp derive_op_schema({:rename, pairs}, names, dtypes, groups) do
+    rmap = Map.new(pairs, fn {old, new} -> {to_string(old), to_string(new)} end)
+    new_names = Enum.map(names, fn n -> Map.get(rmap, n, n) end)
+    new_dtypes = Map.new(dtypes, fn {k, v} -> {Map.get(rmap, k, k), v} end)
+    new_groups = Enum.map(groups, fn g -> Map.get(rmap, g, g) end)
+    {new_names, new_dtypes, new_groups}
+  end
 
-    new_names = Enum.map(names, fn n -> Map.get(rename_map, n, n) end)
-
-    new_dtypes =
-      Map.new(dtypes, fn {k, v} ->
-        {Map.get(rename_map, k, k), v}
-      end)
-
-    {new_names, new_dtypes}
+  # Summarise: output is group columns + aggregate columns
+  defp derive_op_schema({:summarise, aggs}, _names, dtypes, groups) do
+    agg_names = Enum.map(aggs, fn {name, _expr} -> name end)
+    new_names = groups ++ agg_names
+    # Keep dtypes for group columns, aggregates have unknown types
+    new_dtypes = Map.take(dtypes, groups)
+    {new_names, new_dtypes, []}
   end
 
   # Everything else: can't derive
-  defp derive_op_schema(_, _names, _dtypes), do: nil
+  defp derive_op_schema(_, _n, _d, _g), do: nil
 
   # Views can be used when:
   # 1. Source is an already-materialized table (not list/parquet/csv/etc.)
