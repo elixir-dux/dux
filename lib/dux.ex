@@ -1450,15 +1450,17 @@ defmodule Dux do
         Dux.Backend.execute(conn, setup_sql)
       end)
 
-      table_ref = Dux.Backend.query(conn, sql)
-      names = Dux.Backend.table_names(conn, table_ref)
-      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      {table_ref, n_rows} = Dux.Backend.query_with_count(conn, sql)
+      {names, dtypes} = Dux.Backend.table_schema(conn, table_ref)
       result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
 
       Process.delete(:dux_compute_ref)
       Dux.QueryBuilder.clear_ipc_refs()
-      {:table, table_ref} = result.source
-      {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
+
+      final_meta =
+        if n_rows, do: Map.put(meta, :n_rows, n_rows), else: meta
+
+      {result, final_meta}
     end)
   end
 

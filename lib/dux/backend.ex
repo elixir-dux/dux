@@ -61,6 +61,32 @@ defmodule Dux.Backend do
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
+  @doc false
+  def query_with_count(conn, sql) do
+    # Like query/2 but also returns the row count from the CTAS result,
+    # avoiding a separate COUNT(*) query for telemetry.
+    # DuckDB returns a "Count" column with the number of rows inserted.
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
+
+    n_rows =
+      case Adbc.Connection.query(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS (#{sql})") do
+        {:ok, result} ->
+          case Adbc.Result.to_map(result) do
+            %{"Count" => [n]} when is_integer(n) -> n
+            _ -> nil
+          end
+
+        {:error, %Adbc.Error{} = err} ->
+          raise ArgumentError, "DuckDB query failed: #{err.message}"
+
+        {:error, err} ->
+          raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
+      end
+
+    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    {%TableRef{name: name, gc_ref: gc_ref, node: node()}, n_rows}
+  end
+
   # ---------------------------------------------------------------------------
   # Metadata
   # ---------------------------------------------------------------------------
@@ -79,6 +105,20 @@ defmodule Dux.Backend do
     |> Enum.map(fn {col_name, duckdb_type} ->
       {col_name, duckdb_type_string_to_dtype(duckdb_type)}
     end)
+  end
+
+  @doc false
+  def table_schema(conn, %TableRef{name: name}) do
+    # Single DESCRIBE call that returns both names and dtypes.
+    # Avoids the double DESCRIBE that table_names + table_dtypes does.
+    {names, types} = describe_table(conn, name)
+
+    dtypes =
+      Map.new(Enum.zip(names, types), fn {col_name, duckdb_type} ->
+        {col_name, duckdb_type_string_to_dtype(duckdb_type)}
+      end)
+
+    {names, dtypes}
   end
 
   @doc false
