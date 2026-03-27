@@ -41,9 +41,8 @@ defmodule Dux.Backend do
   @doc false
   def query(conn, sql) do
     # Data stays in DuckDB — no Elixir materialization.
-    # GC ref via Adbc.Nif.adbc_delete_on_gc_new/2 auto-drops the table
-    # when the TableRef is garbage collected (same mechanism ADBC uses
-    # internally for Adbc.Connection.ingest!/2 results).
+    # GC ref via adbc_execute_on_gc_new auto-drops the table
+    # when the TableRef is garbage collected.
     name = "__dux_#{:erlang.unique_integer([:positive])}"
 
     case Adbc.Connection.query(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS (#{sql})") do
@@ -57,7 +56,7 @@ defmodule Dux.Backend do
         raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
     end
 
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
@@ -65,13 +64,12 @@ defmodule Dux.Backend do
   def query_view(conn, sql, deps \\ []) do
     # Like query/2 but creates a temp VIEW instead of a temp TABLE.
     # Near-instant since no data is materialized.
-    # Views use __dux_v_ prefix so the ADBC GC handler knows to DROP VIEW.
     # Uses execute (command dispatch) instead of query (stream dispatch)
     # since CREATE VIEW returns no data — saves stream setup/teardown.
     name = "__dux_v_#{:erlang.unique_integer([:positive])}"
 
     case Adbc.Connection.execute(conn, "CREATE TEMPORARY VIEW #{qi(name)} AS (#{sql})") do
-      :ok ->
+      {:ok, _} ->
         :ok
 
       {:error, %Adbc.Error{} = err} ->
@@ -81,7 +79,7 @@ defmodule Dux.Backend do
         raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
     end
 
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP VIEW IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node(), deps: deps}
   end
 
@@ -107,7 +105,7 @@ defmodule Dux.Backend do
           raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
       end
 
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     {%TableRef{name: name, gc_ref: gc_ref, node: node()}, n_rows}
   end
 
@@ -274,7 +272,7 @@ defmodule Dux.Backend do
       # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
       build_empty_table_ipc(conn, ref.name)
     else
-      Adbc.Result.to_ipc_stream(materialized)
+      query_to_ipc_stream(conn, "SELECT * FROM #{qi(ref.name)}")
     end
   end
 
@@ -290,12 +288,19 @@ defmodule Dux.Backend do
         Enum.zip(names, types)
         |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
 
-      dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
-      dummy_mat = Adbc.Result.materialize(dummy)
-      ipc = Adbc.Result.to_ipc_stream(dummy_mat)
+      ipc = query_to_ipc_stream(conn, "SELECT #{col_defs}")
       # Prefix with magic byte to signal "empty — strip the dummy row"
       <<"DUX_EMPTY"::binary, ipc::binary>>
     end
+  end
+
+  defp query_to_ipc_stream(conn, sql) do
+    {:ok, ipc} =
+      Adbc.Connection.query_pointer(conn, sql, fn stream_result ->
+        Adbc.StreamResult.to_ipc_stream(stream_result)
+      end)
+
+    ipc
   end
 
   @doc false
@@ -303,7 +308,7 @@ defmodule Dux.Backend do
     # Empty sentinel — no columns
     name = "__dux_#{:erlang.unique_integer([:positive])}"
     Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
@@ -348,7 +353,7 @@ defmodule Dux.Backend do
           "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false"
         )
 
-        gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+        gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
         %TableRef{name: name, gc_ref: gc_ref, node: node()}
       else
         ingest_result = ingest_safe(conn, columns)

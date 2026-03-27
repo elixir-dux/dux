@@ -38,7 +38,7 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:adbc, github: "hugobarauna/adbc", branch: "dux-perf", override: true},
+      {:adbc, github: "livebook-dev/adbc", override: true},
       {:telemetry, "~> 1.0"},
       {:flame, "~> 0.5", optional: true},
       {:nx, "~> 0.9", optional: true},
