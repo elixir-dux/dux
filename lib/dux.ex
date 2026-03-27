@@ -822,6 +822,138 @@ defmodule Dux do
     :ok
   end
 
+  # ---------------------------------------------------------------------------
+  # SQL Macros
+  # ---------------------------------------------------------------------------
+
+  @doc group: :macros
+  @doc """
+  Define a reusable SQL macro (scalar function).
+
+  Creates a DuckDB macro on the connection. The macro is fully lazy —
+  it compiles into the CTE chain like any built-in function.
+  Zero overhead compared to writing the SQL inline.
+
+  Macro definitions are stored in a registry and replayed on distributed
+  workers before fan-out, so macros work transparently with `distribute/2`.
+
+  ## Examples
+
+      iex> Dux.define(:double, [:x], "x * 2")
+      :ok
+      iex> Dux.from_query("SELECT double(21) AS result") |> Dux.to_rows()
+      [%{"result" => 42}]
+
+      Dux.define(:risk_bucket, [:score], \"""
+        CASE
+          WHEN score > 0.8 THEN 'high'
+          WHEN score > 0.5 THEN 'medium'
+          ELSE 'low'
+        END
+      \""")
+
+      df |> Dux.mutate(risk: risk_bucket(score)) |> Dux.compute()
+  """
+  def define(name, params, sql_body)
+      when is_atom(name) and is_list(params) and is_binary(sql_body) do
+    param_list = Enum.map_join(params, ", ", &to_string/1)
+    macro_name = to_string(name)
+
+    create_sql =
+      "CREATE OR REPLACE MACRO #{qi(macro_name)}(#{param_list}) AS (#{sql_body})"
+
+    conn = Dux.Connection.get_conn()
+    Adbc.Connection.query!(conn, create_sql)
+
+    macros = :persistent_term.get(:dux_macros, %{})
+    :persistent_term.put(:dux_macros, Map.put(macros, name, create_sql))
+
+    :ok
+  end
+
+  @doc group: :macros
+  @doc """
+  Define a reusable SQL table macro (returns rows, not a scalar).
+
+  Table macros can be used with `from_query/1`.
+
+  ## Examples
+
+      Dux.define_table(:date_spine, [:start_date, :end_date], \"""
+        SELECT * FROM generate_series(
+          start_date::DATE, end_date::DATE, INTERVAL 1 DAY
+        ) t(date)
+      \""")
+
+      Dux.from_query("SELECT * FROM date_spine('2026-01-01', '2026-03-01')")
+      |> Dux.to_rows()
+  """
+  def define_table(name, params, sql_body)
+      when is_atom(name) and is_list(params) and is_binary(sql_body) do
+    param_list = Enum.map_join(params, ", ", &to_string/1)
+    macro_name = to_string(name)
+
+    create_sql =
+      "CREATE OR REPLACE MACRO #{qi(macro_name)}(#{param_list}) AS TABLE (#{sql_body})"
+
+    conn = Dux.Connection.get_conn()
+    Adbc.Connection.query!(conn, create_sql)
+
+    macros = :persistent_term.get(:dux_macros, %{})
+    :persistent_term.put(:dux_macros, Map.put(macros, name, create_sql))
+
+    :ok
+  end
+
+  @doc group: :macros
+  @doc """
+  Remove a previously defined SQL macro.
+
+  ## Examples
+
+      Dux.define(:double, [:x], "x * 2")
+      Dux.undefine(:double)
+  """
+  def undefine(name) when is_atom(name) do
+    macro_name = to_string(name)
+    conn = Dux.Connection.get_conn()
+
+    # Try both — DuckDB distinguishes scalar vs table macros in DROP
+    try do
+      Adbc.Connection.query!(conn, "DROP MACRO IF EXISTS #{qi(macro_name)}")
+    rescue
+      _ -> Adbc.Connection.query!(conn, "DROP MACRO TABLE IF EXISTS #{qi(macro_name)}")
+    end
+
+    macros = :persistent_term.get(:dux_macros, %{})
+    :persistent_term.put(:dux_macros, Map.delete(macros, name))
+
+    :ok
+  end
+
+  @doc group: :macros
+  @doc """
+  List all registered SQL macros.
+
+  Returns a list of `{name, sql}` tuples.
+
+  ## Examples
+
+      Dux.define(:double, [:x], "x * 2")
+      Dux.list_macros()
+      #=> [double: "CREATE OR REPLACE MACRO ..."]
+  """
+  def list_macros do
+    :persistent_term.get(:dux_macros, %{})
+    |> Enum.to_list()
+  end
+
+  @doc false
+  def macro_setup_sqls do
+    :persistent_term.get(:dux_macros, %{})
+    |> Map.values()
+  end
+
   defp secret_param(:key_id, v), do: "KEY_ID '#{escape(v)}'"
   defp secret_param(:secret, v), do: "SECRET '#{escape(v)}'"
   defp secret_param(:region, v), do: "REGION '#{escape(v)}'"

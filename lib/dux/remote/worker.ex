@@ -190,6 +190,8 @@ defmodule Dux.Remote.Worker do
   def handle_call({:execute, %Dux{} = pipeline}, _from, %{conn: conn} = state) do
     result =
       try do
+        replay_macros(conn, state)
+
         # Keep source refs alive to prevent GC of temp tables during query
         source_ref = extract_source_ref(pipeline)
         {sql, source_setup} = Dux.QueryBuilder.build(pipeline, conn)
@@ -417,4 +419,12 @@ defmodule Dux.Remote.Worker do
 
   defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
   defp extract_source_ref(_), do: nil
+
+  # Replay SQL macros (CREATE OR REPLACE — idempotent) on the worker connection.
+  # Called before each execute so macros defined on the coordinator are available.
+  defp replay_macros(conn, _state) do
+    Enum.each(Dux.macro_setup_sqls(), fn sql ->
+      Dux.Backend.execute(conn, sql)
+    end)
+  end
 end
