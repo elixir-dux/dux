@@ -69,10 +69,14 @@ if Code.ensure_loaded?(FLAME) do
     ## Options
 
       * `:pool` — FLAME pool name (default: `Dux.FlamePool`)
+      * `:setup` — callback function to run on each worker after startup
+      * `:memory_limit` — DuckDB memory limit per worker (e.g. `"2GB"`)
+      * `:temp_directory` — spill-to-disk directory (default: system temp)
     """
     def spin_up(n, opts \\ []) when is_integer(n) and n > 0 do
       pool = Keyword.get(opts, :pool, @default_pool)
       setup = Keyword.get(opts, :setup)
+      worker_opts = Keyword.take(opts, [:memory_limit, :temp_directory, :path])
 
       # Place workers sequentially. With max_concurrency: 1, each placed
       # child holds its concurrency slot permanently, so the next
@@ -80,7 +84,7 @@ if Code.ensure_loaded?(FLAME) do
       # GenServer timeouts that occur with concurrent placement.
       workers =
         for _ <- 1..n do
-          {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, []})
+          {:ok, pid} = FLAME.place_child(pool, {Dux.Remote.Worker, worker_opts})
           pid
         end
 

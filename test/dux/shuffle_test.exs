@@ -209,6 +209,149 @@ defmodule Dux.ShuffleTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Worker resource configuration
+  # ---------------------------------------------------------------------------
+
+  describe "worker memory configuration" do
+    test "worker accepts memory_limit option" do
+      {:ok, w} = Worker.start_link(memory_limit: "256MB")
+
+      on_exit(fn -> stop_worker(w) end)
+
+      {:ok, ipc} =
+        Worker.execute(
+          w,
+          Dux.from_query("SELECT current_setting('memory_limit') AS ml")
+        )
+
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      [row] = Dux.Backend.table_to_rows(conn, ref)
+      assert row["ml"] =~ "MiB"
+    end
+
+    test "worker accepts temp_directory option" do
+      tmp =
+        Path.join(
+          System.tmp_dir!(),
+          "dux_test_worker_spill_#{System.unique_integer([:positive])}"
+        )
+
+      {:ok, w} = Worker.start_link(temp_directory: tmp)
+
+      on_exit(fn ->
+        stop_worker(w)
+        File.rm_rf!(tmp)
+      end)
+
+      {:ok, ipc} =
+        Worker.execute(
+          w,
+          Dux.from_query("SELECT current_setting('temp_directory') AS td")
+        )
+
+      conn = Dux.Connection.get_conn()
+      ref = Dux.Backend.table_from_ipc(conn, ipc)
+      [row] = Dux.Backend.table_to_rows(conn, ref)
+      assert row["td"] == tmp
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Scale / wicked
+  # ---------------------------------------------------------------------------
+
+  describe "scale" do
+    test "shuffle with 1000+ rows produces correct count" do
+      workers = start_workers(2)
+
+      left = Dux.from_query("SELECT x AS key, x * 10 AS val FROM range(2000) t(x)")
+      right = Dux.from_query("SELECT x AS key, x * 0.5 AS score FROM range(2000) t(x)")
+
+      result = Shuffle.execute(left, right, on: :key, workers: workers)
+      assert Dux.n_rows(result) == 2000
+    end
+
+    test "shuffle with 4 workers" do
+      workers = start_workers(4)
+
+      left = Dux.from_query("SELECT x AS id, x * 2 AS val FROM range(500) t(x)")
+      right = Dux.from_query("SELECT x AS id, CONCAT('row_', x) AS label FROM range(500) t(x)")
+
+      result = Shuffle.execute(left, right, on: :id, workers: workers)
+      assert Dux.n_rows(result) == 500
+    end
+
+    test "shuffle result feeds into downstream pipeline" do
+      workers = start_workers(2)
+
+      left = Dux.from_query("SELECT x AS key, x AS amount FROM range(100) t(x)")
+
+      right =
+        Dux.from_query(
+          "SELECT x AS key, CASE WHEN x % 2 = 0 THEN 'even' ELSE 'odd' END AS grp FROM range(100) t(x)"
+        )
+
+      rows =
+        Shuffle.execute(left, right, on: :key, workers: workers)
+        |> Dux.group_by("grp")
+        |> Dux.summarise_with(total: "SUM(amount)", n: "COUNT(*)")
+        |> Dux.sort_by("grp")
+        |> Dux.to_rows()
+
+      assert length(rows) == 2
+      total = rows |> Enum.map(& &1["total"]) |> Enum.sum()
+      # Sum of 0..99 = 4950
+      assert total == 4950
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Adversarial: skewed data
+  # ---------------------------------------------------------------------------
+
+  describe "skewed data" do
+    test "highly skewed join keys still produce correct results" do
+      workers = start_workers(2)
+
+      # 90% of left rows have key=1, 10% have key=2
+      left =
+        Dux.from_query("""
+          SELECT 1 AS key, x AS val FROM range(90) t(x)
+          UNION ALL
+          SELECT 2 AS key, x AS val FROM range(10) t(x)
+        """)
+
+      right =
+        Dux.from_list([
+          %{key: 1, label: "majority"},
+          %{key: 2, label: "minority"}
+        ])
+
+      result =
+        Shuffle.execute(left, right, on: :key, workers: workers)
+        |> Dux.sort_by(:key)
+        |> Dux.to_rows()
+
+      key_1_count = Enum.count(result, &(&1["key"] == 1))
+      key_2_count = Enum.count(result, &(&1["key"] == 2))
+
+      assert key_1_count == 90
+      assert key_2_count == 10
+    end
+
+    test "single-key join (all rows same key) works" do
+      workers = start_workers(2)
+
+      left = Dux.from_query("SELECT 1 AS key, x AS val FROM range(50) t(x)")
+      right = Dux.from_list([%{key: 1, label: "only"}])
+
+      result = Shuffle.execute(left, right, on: :key, workers: workers)
+      assert Dux.n_rows(result) == 50
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # Correctness: shuffle == local join
   # ---------------------------------------------------------------------------
 

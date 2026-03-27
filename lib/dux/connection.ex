@@ -83,13 +83,7 @@ defmodule Dux.Connection do
     conns =
       for _ <- 1..pool_size do
         {:ok, conn} = Adbc.Connection.start_link(database: db)
-
-        # Disable insertion order preservation for temp table materialization.
-        # This lets DuckDB parallelize CREATE TABLE AS across threads without
-        # coordinating row order — ~5x faster for large result sets.
-        # Users who need ordered output use Dux.sort_by/2 explicitly.
-        Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
-
+        configure_duckdb(conn, opts)
         conn
       end
 
@@ -136,5 +130,30 @@ defmodule Dux.Connection do
   @impl true
   def handle_call(:get_db, _from, %{conns: [conn | _]} = state) do
     {:reply, conn, state}
+  end
+
+  # Apply DuckDB configuration settings to a connection.
+  # Shared by Connection (local) and Worker (distributed).
+  @doc false
+  def configure_duckdb(conn, opts \\ []) do
+    # Disable insertion order preservation — allows DuckDB to parallelize
+    # CREATE TABLE AS across threads. ~5x faster for large result sets.
+    Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+
+    # Memory limit — caps DuckDB's memory usage. Important when multiple
+    # workers share a machine. Default: DuckDB's 80%-of-RAM.
+    if memory_limit = Keyword.get(opts, :memory_limit) do
+      Adbc.Connection.query!(conn, "SET memory_limit = '#{memory_limit}'")
+    end
+
+    # Temp directory for spill-to-disk. DuckDB defaults to '.tmp' (CWD-relative),
+    # which often doesn't exist. We default to System.tmp_dir!/0 for reliability.
+    # On read-only filesystems, users should either configure a writable mount
+    # or accept in-memory-only operation.
+    temp_dir = Keyword.get(opts, :temp_directory, Path.join(System.tmp_dir!(), "dux_spill"))
+    File.mkdir_p(temp_dir)
+    Adbc.Connection.query!(conn, "SET temp_directory = '#{temp_dir}'")
+
+    :ok
   end
 end

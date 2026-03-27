@@ -165,6 +165,7 @@ defmodule Dux.Remote.Worker do
 
     {:ok, db} = Adbc.Database.start_link(driver: :duckdb, process_options: driver_opts)
     {:ok, conn} = Adbc.Connection.start_link(database: db)
+    Dux.Connection.configure_duckdb(conn, opts)
 
     :pg.join(@pg_group, self())
 

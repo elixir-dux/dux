@@ -80,8 +80,9 @@ defmodule Dux.Remote.Shuffle do
       left_partitions = hash_partition_all(left_sliced, left_cols, n_buckets, timeout)
       right_partitions = hash_partition_all(right_sliced, right_cols, n_buckets, timeout)
 
-      # Skew detection: flag heavy buckets
-      detect_skew(left_partitions, right_partitions, n_buckets)
+      # Skew detection + mitigation: split heavy buckets to avoid hot workers
+      {left_partitions, right_partitions, n_buckets} =
+        mitigate_skew(left_partitions, right_partitions, n_buckets)
 
       # Phase 2: Shuffle exchange — send each bucket to the assigned worker
       # Assign buckets to workers round-robin
@@ -201,28 +202,97 @@ defmodule Dux.Remote.Shuffle do
   # Phase 2: Shuffle exchange
   # ---------------------------------------------------------------------------
 
-  # Detect skewed buckets and emit telemetry.
-  # A bucket is "heavy" if it exceeds 5x the mean bucket size.
-  defp detect_skew(left_partitions, right_partitions, n_buckets) do
+  # Detect and mitigate skewed buckets.
+  # Heavy buckets (>5x mean AND >10MB) are split: data replicated from
+  # the other side to spread the load. Returns adjusted partitions and
+  # a potentially larger n_buckets.
+  @skew_min_bytes 10 * 1024 * 1024
+
+  defp mitigate_skew(left_partitions, right_partitions, n_buckets) do
     left_sizes = bucket_sizes(left_partitions)
     right_sizes = bucket_sizes(right_partitions)
 
     left_heavy = find_heavy_buckets(left_sizes, n_buckets)
     right_heavy = find_heavy_buckets(right_sizes, n_buckets)
 
-    if left_heavy != [] or right_heavy != [] do
-      :telemetry.execute(
-        [:dux, :distributed, :shuffle, :skew_detected],
-        %{
-          left_heavy_count: length(left_heavy),
-          right_heavy_count: length(right_heavy)
-        },
-        %{
-          left_heavy_buckets: left_heavy,
-          right_heavy_buckets: right_heavy,
-          n_buckets: n_buckets
-        }
-      )
+    # Only mitigate buckets above the absolute size threshold
+    left_heavy = Enum.filter(left_heavy, &(Map.get(left_sizes, &1, 0) > @skew_min_bytes))
+    right_heavy = Enum.filter(right_heavy, &(Map.get(right_sizes, &1, 0) > @skew_min_bytes))
+
+    if left_heavy == [] and right_heavy == [] do
+      {left_partitions, right_partitions, n_buckets}
+    else
+      if left_heavy != [] or right_heavy != [] do
+        :telemetry.execute(
+          [:dux, :distributed, :shuffle, :skew_detected],
+          %{left_heavy_count: length(left_heavy), right_heavy_count: length(right_heavy)},
+          %{
+            left_heavy_buckets: left_heavy,
+            right_heavy_buckets: right_heavy,
+            n_buckets: n_buckets
+          }
+        )
+      end
+
+      # For heavy LEFT buckets: the left data stays in one bucket (it's
+      # already distributed), but we replicate the RIGHT side's matching
+      # bucket to spread the join work. We split the heavy bucket into
+      # sub-buckets and assign each to a different worker.
+      #
+      # Strategy: rename heavy bucket N to sub-buckets N_0, N_1, N_2...
+      # and replicate the other side's bucket N data to all sub-buckets.
+      all_heavy = Enum.uniq(left_heavy ++ right_heavy)
+      apply_splits(left_partitions, right_partitions, all_heavy, n_buckets)
+    end
+  end
+
+  @skew_splits 3
+
+  defp apply_splits(left, right, heavy_ids, n_buckets) do
+    Enum.reduce(heavy_ids, {left, right, n_buckets}, fn heavy_id, {lp, rp, nb} ->
+      sub_ids = for i <- 0..(@skew_splits - 1), do: nb + i
+      lp = split_bucket(lp, heavy_id, sub_ids)
+      rp = replicate_bucket(rp, heavy_id, sub_ids)
+      {lp, rp, nb + @skew_splits}
+    end)
+  end
+
+  # Split a bucket's data across sub-buckets (round-robin by worker contribution)
+  defp split_bucket(partitions, heavy_id, sub_ids) do
+    n_subs = length(sub_ids)
+
+    partitions
+    |> Enum.with_index()
+    |> Enum.map(fn {{worker, buckets}, worker_idx} ->
+      case Map.get(buckets, heavy_id) do
+        nil ->
+          {worker, buckets}
+
+        ipc ->
+          # Assign this worker's chunk to a sub-bucket based on worker index
+          target_sub = Enum.at(sub_ids, rem(worker_idx, n_subs))
+          buckets = buckets |> Map.delete(heavy_id) |> Map.put(target_sub, ipc)
+          {worker, buckets}
+      end
+    end)
+  end
+
+  # Replicate a bucket's data to all sub-bucket IDs
+  defp replicate_bucket(partitions, heavy_id, sub_ids) do
+    Enum.map(partitions, fn {worker, buckets} ->
+      replicate_in_buckets(worker, buckets, heavy_id, sub_ids)
+    end)
+  end
+
+  defp replicate_in_buckets(worker, buckets, heavy_id, sub_ids) do
+    case Map.get(buckets, heavy_id) do
+      nil ->
+        {worker, buckets}
+
+      ipc ->
+        base = Map.delete(buckets, heavy_id)
+        new_buckets = Map.new(sub_ids, &{&1, ipc}) |> Map.merge(base)
+        {worker, new_buckets}
     end
   end
 
@@ -251,22 +321,33 @@ defmodule Dux.Remote.Shuffle do
     end
   end
 
-  defp exchange_partitions(worker_partitions, bucket_to_worker, _workers, table_prefix, _timeout) do
-    # For each source worker's partitions, send each non-empty bucket
-    # to its assigned target worker
-    tasks =
+  defp exchange_partitions(worker_partitions, bucket_to_worker, _workers, table_prefix, timeout) do
+    # Group all chunks by target worker, then send sequentially within each
+    # target (one Task per target). This reduces concurrent tasks from
+    # O(workers × buckets) to O(workers), and GenServer.call per chunk
+    # provides implicit backpressure.
+    chunks_by_target =
       for {_source_worker, buckets} <- worker_partitions,
           {bucket_id, ipc} <- buckets,
-          ipc != nil do
-        target_worker = Map.fetch!(bucket_to_worker, bucket_id)
-        table_name = "#{table_prefix}_b#{bucket_id}"
-
-        Task.async(fn ->
-          Worker.append_chunk(target_worker, table_name, ipc)
-        end)
+          ipc != nil,
+          reduce: %{} do
+        acc ->
+          target = Map.fetch!(bucket_to_worker, bucket_id)
+          table_name = "#{table_prefix}_b#{bucket_id}"
+          Map.update(acc, target, [{table_name, ipc}], &[{table_name, ipc} | &1])
       end
 
-    Task.await_many(tasks, 60_000)
+    chunks_by_target
+    |> Enum.map(fn {target, chunks} ->
+      Task.async(fn -> send_chunks_to_worker(target, chunks) end)
+    end)
+    |> Task.await_many(timeout)
+  end
+
+  defp send_chunks_to_worker(target, chunks) do
+    Enum.each(chunks, fn {table_name, ipc} ->
+      Worker.append_chunk(target, table_name, ipc)
+    end)
   end
 
   # ---------------------------------------------------------------------------
