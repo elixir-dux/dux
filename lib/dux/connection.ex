@@ -134,6 +134,8 @@ defmodule Dux.Connection do
 
   # Apply DuckDB configuration settings to a connection.
   # Shared by Connection (local) and Worker (distributed).
+  @memory_limit_pattern ~r/^\d+(\.\d+)?\s*(B|KB|KiB|MB|MiB|GB|GiB|TB|TiB)$/i
+
   @doc false
   def configure_duckdb(conn, opts \\ []) do
     # Disable insertion order preservation — allows DuckDB to parallelize
@@ -143,6 +145,11 @@ defmodule Dux.Connection do
     # Memory limit — caps DuckDB's memory usage. Important when multiple
     # workers share a machine. Default: DuckDB's 80%-of-RAM.
     if memory_limit = Keyword.get(opts, :memory_limit) do
+      unless memory_limit =~ @memory_limit_pattern do
+        raise ArgumentError,
+              "invalid memory_limit: #{inspect(memory_limit)}, expected format like \"2GB\" or \"512MB\""
+      end
+
       Adbc.Connection.query!(conn, "SET memory_limit = '#{memory_limit}'")
     end
 
@@ -151,6 +158,11 @@ defmodule Dux.Connection do
     # On read-only filesystems, users should either configure a writable mount
     # or accept in-memory-only operation.
     temp_dir = Keyword.get(opts, :temp_directory, Path.join(System.tmp_dir!(), "dux_spill"))
+
+    if String.contains?(temp_dir, "'") do
+      raise ArgumentError, "temp_directory must not contain single quotes: #{inspect(temp_dir)}"
+    end
+
     File.mkdir_p(temp_dir)
     Adbc.Connection.query!(conn, "SET temp_directory = '#{temp_dir}'")
 

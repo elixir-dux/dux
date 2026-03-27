@@ -23,6 +23,8 @@ defmodule Dux.Remote.Shuffle do
 
   @over_partition_factor 4
   @max_retries 3
+  @default_skew_min_bytes 10 * 1024 * 1024
+  @skew_splits 3
 
   @doc """
   Execute a shuffle join between two large datasets.
@@ -81,8 +83,10 @@ defmodule Dux.Remote.Shuffle do
       right_partitions = hash_partition_all(right_sliced, right_cols, n_buckets, timeout)
 
       # Skew detection + mitigation: split heavy buckets to avoid hot workers
+      skew_min = Keyword.get(opts, :skew_min_bytes, @default_skew_min_bytes)
+
       {left_partitions, right_partitions, n_buckets} =
-        mitigate_skew(left_partitions, right_partitions, n_buckets)
+        mitigate_skew(left_partitions, right_partitions, n_buckets, skew_min)
 
       # Phase 2: Shuffle exchange — send each bucket to the assigned worker
       # Assign buckets to workers round-robin
@@ -206,9 +210,7 @@ defmodule Dux.Remote.Shuffle do
   # Heavy buckets (>5x mean AND >10MB) are split: data replicated from
   # the other side to spread the load. Returns adjusted partitions and
   # a potentially larger n_buckets.
-  @skew_min_bytes 10 * 1024 * 1024
-
-  defp mitigate_skew(left_partitions, right_partitions, n_buckets) do
+  defp mitigate_skew(left_partitions, right_partitions, n_buckets, skew_min_bytes) do
     left_sizes = bucket_sizes(left_partitions)
     right_sizes = bucket_sizes(right_partitions)
 
@@ -216,37 +218,35 @@ defmodule Dux.Remote.Shuffle do
     right_heavy = find_heavy_buckets(right_sizes, n_buckets)
 
     # Only mitigate buckets above the absolute size threshold
-    left_heavy = Enum.filter(left_heavy, &(Map.get(left_sizes, &1, 0) > @skew_min_bytes))
-    right_heavy = Enum.filter(right_heavy, &(Map.get(right_sizes, &1, 0) > @skew_min_bytes))
+    left_heavy = Enum.filter(left_heavy, &(Map.get(left_sizes, &1, 0) > skew_min_bytes))
+    right_heavy = Enum.filter(right_heavy, &(Map.get(right_sizes, &1, 0) > skew_min_bytes))
 
     if left_heavy == [] and right_heavy == [] do
       {left_partitions, right_partitions, n_buckets}
     else
-      if left_heavy != [] or right_heavy != [] do
-        :telemetry.execute(
-          [:dux, :distributed, :shuffle, :skew_detected],
-          %{left_heavy_count: length(left_heavy), right_heavy_count: length(right_heavy)},
-          %{
-            left_heavy_buckets: left_heavy,
-            right_heavy_buckets: right_heavy,
-            n_buckets: n_buckets
-          }
-        )
-      end
+      :telemetry.execute(
+        [:dux, :distributed, :shuffle, :skew_detected],
+        %{left_heavy_count: length(left_heavy), right_heavy_count: length(right_heavy)},
+        %{
+          left_heavy_buckets: left_heavy,
+          right_heavy_buckets: right_heavy,
+          n_buckets: n_buckets
+        }
+      )
 
-      # For heavy LEFT buckets: the left data stays in one bucket (it's
-      # already distributed), but we replicate the RIGHT side's matching
-      # bucket to spread the join work. We split the heavy bucket into
-      # sub-buckets and assign each to a different worker.
+      # Split heavy buckets into sub-buckets to spread load.
+      # For each heavy bucket: left side is split (chunks distributed
+      # round-robin across sub-buckets), right side is replicated
+      # (copied to all sub-buckets so each has full join data).
       #
-      # Strategy: rename heavy bucket N to sub-buckets N_0, N_1, N_2...
-      # and replicate the other side's bucket N data to all sub-buckets.
+      # This is applied symmetrically regardless of which side is heavy.
+      # When the right side has the heavy bucket, its data gets split
+      # and the (smaller) left side gets replicated — slightly wasteful
+      # but correct, and simpler than tracking directionality per bucket.
       all_heavy = Enum.uniq(left_heavy ++ right_heavy)
       apply_splits(left_partitions, right_partitions, all_heavy, n_buckets)
     end
   end
-
-  @skew_splits 3
 
   defp apply_splits(left, right, heavy_ids, n_buckets) do
     Enum.reduce(heavy_ids, {left, right, n_buckets}, fn heavy_id, {lp, rp, nb} ->

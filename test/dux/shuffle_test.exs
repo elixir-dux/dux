@@ -349,6 +349,104 @@ defmodule Dux.ShuffleTest do
       result = Shuffle.execute(left, right, on: :key, workers: workers)
       assert Dux.n_rows(result) == 50
     end
+
+    test "skew mitigation splits heavy buckets and produces correct results" do
+      workers = start_workers(2)
+
+      # 90% key=1, 10% key=2. With skew_min_bytes: 0, the heavy bucket triggers splitting.
+      left =
+        Dux.from_query("""
+          SELECT 1 AS key, x AS val FROM range(90) t(x)
+          UNION ALL
+          SELECT 2 AS key, x AS val FROM range(10) t(x)
+        """)
+
+      right =
+        Dux.from_list([
+          %{key: 1, label: "majority"},
+          %{key: 2, label: "minority"}
+        ])
+
+      # Force skew mitigation by setting threshold to 0 bytes
+      result =
+        Shuffle.execute(left, right,
+          on: :key,
+          workers: workers,
+          skew_min_bytes: 0
+        )
+
+      rows = result |> Dux.sort_by(:key) |> Dux.to_rows()
+      key_1 = Enum.count(rows, &(&1["key"] == 1))
+      key_2 = Enum.count(rows, &(&1["key"] == 2))
+
+      assert key_1 == 90
+      assert key_2 == 10
+      assert length(rows) == 100
+    end
+
+    test "skew-mitigated result matches local join" do
+      workers = start_workers(2)
+
+      left =
+        Dux.from_query("""
+          SELECT CASE WHEN x < 80 THEN 1 ELSE x END AS key, x AS val
+          FROM range(100) t(x)
+        """)
+
+      right =
+        Dux.from_query("SELECT x AS key, CONCAT('r_', x) AS label FROM range(100) t(x)")
+
+      local_rows =
+        left
+        |> Dux.join(right, on: :key)
+        |> Dux.sort_by(:val)
+        |> Dux.to_rows()
+
+      shuffle_rows =
+        Shuffle.execute(left, right,
+          on: :key,
+          workers: workers,
+          skew_min_bytes: 0
+        )
+        |> Dux.sort_by(:val)
+        |> Dux.to_rows()
+
+      assert length(shuffle_rows) == length(local_rows)
+
+      local_keys = Enum.map(local_rows, & &1["key"]) |> Enum.sort()
+      shuffle_keys = Enum.map(shuffle_rows, & &1["key"]) |> Enum.sort()
+      assert shuffle_keys == local_keys
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Input validation
+  # ---------------------------------------------------------------------------
+
+  describe "configure_duckdb validation" do
+    test "rejects invalid memory_limit format" do
+      {_db, conn} = Dux.Backend.open()
+
+      assert_raise ArgumentError, ~r/invalid memory_limit/, fn ->
+        Dux.Connection.configure_duckdb(conn, memory_limit: "lots")
+      end
+    end
+
+    test "rejects temp_directory with single quotes" do
+      {_db, conn} = Dux.Backend.open()
+
+      assert_raise ArgumentError, ~r/single quotes/, fn ->
+        Dux.Connection.configure_duckdb(conn, temp_directory: "/tmp/it's bad")
+      end
+    end
+
+    test "accepts valid memory_limit formats" do
+      {_db, conn} = Dux.Backend.open()
+
+      for fmt <- ["256MB", "2GB", "1.5GiB", "512MiB", "100KB"] do
+        assert :ok = Dux.Connection.configure_duckdb(conn, memory_limit: fmt)
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
