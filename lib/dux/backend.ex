@@ -175,7 +175,7 @@ defmodule Dux.Backend do
       names = table_names(conn, ref)
       Map.new(names, fn name -> {name, []} end)
     else
-      Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+      Map.new(map, fn {k, vs} -> {k, maybe_normalize_column(vs)} end)
     end
   end
 
@@ -221,13 +221,28 @@ defmodule Dux.Backend do
 
     columns =
       Enum.map(col_names, fn col ->
-        Enum.map(Map.fetch!(map, col), &normalize_value/1)
+        maybe_normalize_column(Map.fetch!(map, col))
       end)
 
     Enum.zip_with(columns, fn values ->
       Enum.zip(col_names, values) |> Map.new()
     end)
   end
+
+  # Batch normalize: only run normalize_value when the column contains Decimals.
+  # For integer/float/string/date columns (the common case), skip entirely.
+  # Check the first non-nil value since PIVOT columns can start with nils.
+  defp maybe_normalize_column(values) do
+    if column_has_decimals?(values) do
+      Enum.map(values, &normalize_value/1)
+    else
+      values
+    end
+  end
+
+  defp column_has_decimals?([%Decimal{} | _]), do: true
+  defp column_has_decimals?([nil | rest]), do: column_has_decimals?(rest)
+  defp column_has_decimals?(_), do: false
 
   # ---------------------------------------------------------------------------
   # Arrow IPC serialization (for distribution)
