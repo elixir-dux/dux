@@ -216,33 +216,33 @@ defmodule Dux.Backend do
         # Fast path: single batch — build rows directly
         build_rows_from_batch(single_batch)
 
-      batches ->
+      [first_batch | _] = batches ->
         # Multi-batch: process each batch independently to avoid
         # building huge intermediate column lists (400k+ elements).
         # Each batch is small (~2048 rows), so per-batch transposition is fast.
-        Enum.flat_map(batches, &build_rows_from_batch/1)
+        # Pre-compute column names once (same for all batches).
+        col_names = Enum.map(first_batch, fn col -> col.field.name end)
+        Enum.flat_map(batches, &build_rows_from_batch(&1, col_names))
     end
   end
 
+  defp build_rows_from_batch([], _col_names), do: []
+
+  defp build_rows_from_batch(batch, col_names) do
+    col_values =
+      Enum.map(batch, fn col ->
+        col |> Adbc.Column.materialize() |> Adbc.Column.to_list() |> maybe_normalize_column()
+      end)
+
+    Enum.zip_with(col_values, fn values ->
+      :maps.from_list(:lists.zip(col_names, values))
+    end)
+  end
+
+  # Single-batch variant (extracts col_names itself)
   defp build_rows_from_batch(batch) do
-    case batch do
-      [] ->
-        []
-
-      columns ->
-        col_data =
-          Enum.map(columns, fn col ->
-            materialized = Adbc.Column.materialize(col)
-            {col.field.name, maybe_normalize_column(Adbc.Column.to_list(materialized))}
-          end)
-
-        col_names = Enum.map(col_data, &elem(&1, 0))
-        col_values = Enum.map(col_data, &elem(&1, 1))
-
-        Enum.zip_with(col_values, fn values ->
-          Enum.zip(col_names, values) |> Map.new()
-        end)
-    end
+    col_names = Enum.map(batch, fn col -> col.field.name end)
+    build_rows_from_batch(batch, col_names)
   end
 
   # Batch normalize: only run normalize_value when the column contains Decimals.
