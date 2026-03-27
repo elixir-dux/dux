@@ -143,7 +143,9 @@ defmodule Dux.Connection do
     Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
 
     # Memory limit — caps DuckDB's memory usage. Important when multiple
-    # workers share a machine. Default: DuckDB's 80%-of-RAM.
+    # workers share a machine. Only set when explicitly configured.
+    # Security: regex validation is the boundary — DuckDB SET doesn't
+    # support parameterized values, so interpolation is unavoidable.
     if memory_limit = Keyword.get(opts, :memory_limit) do
       unless memory_limit =~ @memory_limit_pattern do
         raise ArgumentError,
@@ -153,19 +155,19 @@ defmodule Dux.Connection do
       Adbc.Connection.query!(conn, "SET memory_limit = '#{memory_limit}'")
     end
 
-    # Temp directory for spill-to-disk. DuckDB defaults to '.tmp' (CWD-relative),
-    # which often doesn't exist. We default to System.tmp_dir!/0 for reliability.
-    # On read-only filesystems, users should either configure a writable mount
-    # or accept in-memory-only operation.
-    temp_dir = Keyword.get(opts, :temp_directory, Path.join(System.tmp_dir!(), "dux_spill"))
+    # Temp directory for spill-to-disk. Only set when explicitly configured —
+    # otherwise DuckDB uses its own default. This avoids creating directories
+    # as a side effect and works on read-only filesystems.
+    if temp_dir = Keyword.get(opts, :temp_directory) do
+      # Allowlist: only permit path-safe characters (alphanumeric, /, -, _, ., ~, space)
+      unless temp_dir =~ ~r{^[a-zA-Z0-9/_\-. ~]+$} do
+        raise ArgumentError,
+              "temp_directory contains invalid characters: #{inspect(temp_dir)}"
+      end
 
-    if String.contains?(temp_dir, ["'", ";", "\\"]) do
-      raise ArgumentError,
-            "temp_directory must not contain single quotes, semicolons, or backslashes: #{inspect(temp_dir)}"
+      File.mkdir_p(temp_dir)
+      Adbc.Connection.query!(conn, "SET temp_directory = '#{temp_dir}'")
     end
-
-    File.mkdir_p(temp_dir)
-    Adbc.Connection.query!(conn, "SET temp_directory = '#{temp_dir}'")
 
     :ok
   end

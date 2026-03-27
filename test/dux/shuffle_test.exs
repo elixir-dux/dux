@@ -472,14 +472,43 @@ defmodule Dux.ShuffleTest do
       end
     end
 
-    test "rejects temp_directory with dangerous characters" do
+    test "rejects temp_directory with non-path characters" do
       {_db, conn} = Dux.Backend.open()
 
-      for bad_path <- ["/tmp/it's bad", "/tmp/foo;bar", "/tmp/back\\slash"] do
-        assert_raise ArgumentError, ~r/must not contain/, fn ->
+      for bad_path <- ["/tmp/it's bad", "/tmp/foo;bar", "/tmp/back\\slash", "/tmp/$var"] do
+        assert_raise ArgumentError, ~r/invalid characters/, fn ->
           Dux.Connection.configure_duckdb(conn, temp_directory: bad_path)
         end
       end
+    end
+
+    test "left join shuffle skips skew mitigation and produces correct results" do
+      workers = start_workers(2)
+
+      left =
+        Dux.from_query("""
+          SELECT 1 AS key, x AS val FROM range(90) t(x)
+          UNION ALL
+          SELECT 2 AS key, x AS val FROM range(10) t(x)
+        """)
+
+      right = Dux.from_list([%{key: 1, label: "matched"}])
+
+      # Left join — all left rows preserved, unmatched get NULL on right
+      result =
+        Shuffle.execute(left, right,
+          on: :key,
+          how: :left,
+          workers: workers,
+          skew_min_bytes: 0
+        )
+        |> Dux.to_rows()
+
+      assert length(result) == 100
+      matched = Enum.count(result, &(&1["label"] == "matched"))
+      unmatched = Enum.count(result, &is_nil(&1["label"]))
+      assert matched == 90
+      assert unmatched == 10
     end
 
     test "accepts valid memory_limit formats" do

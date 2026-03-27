@@ -243,10 +243,15 @@ defmodule Dux.Remote.Shuffle do
       # round-robin across sub-buckets), right side is replicated
       # (copied to all sub-buckets so each has full join data).
       #
-      # This is applied symmetrically regardless of which side is heavy.
-      # When the right side has the heavy bucket, its data gets split
-      # and the (smaller) left side gets replicated — slightly wasteful
+      # Limitation: always splits left / replicates right regardless of
+      # which side is heavy. For right-heavy buckets this means the large
+      # side gets replicated N times — correct but wastes memory.
+      # TODO: detect which side is heavier per bucket and swap roles.
       # but correct, and simpler than tracking directionality per bucket.
+      #
+      # When a bucket is heavy on both sides, it appears once in all_heavy
+      # (deduped). It gets split on the left and replicated on the right —
+      # both sides end up spread across sub-buckets, which is correct.
       all_heavy = Enum.uniq(left_heavy ++ right_heavy)
       apply_splits(left_partitions, right_partitions, all_heavy, n_buckets)
     end
@@ -315,17 +320,19 @@ defmodule Dux.Remote.Shuffle do
   defp find_heavy_buckets(sizes, _n_buckets, threshold_factor \\ 5) do
     values = Map.values(sizes) |> Enum.sort()
 
-    # Use median instead of mean — the mean is distorted by the heavy
-    # bucket itself, making it impossible to detect extreme skew.
-    median =
+    # Use approximate median (upper-middle element) instead of mean —
+    # the mean is distorted by the heavy bucket itself, making it
+    # impossible to detect extreme skew. Exact median not needed
+    # for a threshold heuristic.
+    mid_value =
       case values do
         [] -> 0
         _ -> Enum.at(values, div(length(values), 2))
       end
 
-    if median == 0,
+    if mid_value == 0,
       do: [],
-      else: for({id, size} <- sizes, size > threshold_factor * median, do: id)
+      else: for({id, size} <- sizes, size > threshold_factor * mid_value, do: id)
   end
 
   defp assign_buckets(n_buckets, workers) do
