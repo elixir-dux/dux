@@ -66,10 +66,12 @@ defmodule Dux.Backend do
     # Like query/2 but creates a temp VIEW instead of a temp TABLE.
     # Near-instant since no data is materialized.
     # Views use __dux_v_ prefix so the ADBC GC handler knows to DROP VIEW.
+    # Uses execute (command dispatch) instead of query (stream dispatch)
+    # since CREATE VIEW returns no data — saves stream setup/teardown.
     name = "__dux_v_#{:erlang.unique_integer([:positive])}"
 
-    case Adbc.Connection.query(conn, "CREATE TEMPORARY VIEW #{qi(name)} AS (#{sql})") do
-      {:ok, _} ->
+    case Adbc.Connection.execute(conn, "CREATE TEMPORARY VIEW #{qi(name)} AS (#{sql})") do
+      :ok ->
         :ok
 
       {:error, %Adbc.Error{} = err} ->
