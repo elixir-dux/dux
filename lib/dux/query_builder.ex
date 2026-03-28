@@ -547,34 +547,8 @@ defmodule Dux.QueryBuilder do
 
     Enum.map(col_pairs, fn {col_name, map_key} ->
       values = Enum.map(rows, fn row -> Map.fetch!(row, map_key) end)
-      typed_column(values, col_name, Map.fetch!(first_row, map_key))
+      Adbc.Column.new(values, name: col_name)
     end)
-  end
-
-  # Use typed Column constructors when possible to skip type inference.
-  # Falls back to Column.new for unknown/mixed types.
-  defp typed_column(values, name, sample) when is_integer(sample) do
-    Adbc.Column.s64(values, name: name)
-  end
-
-  defp typed_column(values, name, sample) when is_float(sample) do
-    Adbc.Column.f64(values, name: name)
-  end
-
-  defp typed_column(values, name, sample) when is_binary(sample) do
-    Adbc.Column.string(values, name: name)
-  end
-
-  defp typed_column(values, name, %Date{}) do
-    Adbc.Column.date32(values, name: name)
-  end
-
-  defp typed_column(values, name, sample) when is_boolean(sample) do
-    Adbc.Column.boolean(values, name: name)
-  end
-
-  defp typed_column(values, name, _sample) do
-    Adbc.Column.new(values, name: name)
   end
 
   defp ingest_columns(conn, columns) do
