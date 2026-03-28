@@ -19,8 +19,21 @@ defmodule Dux.QueryBuilder do
       [] ->
         {"SELECT * FROM (#{source_sql}) __src", setup}
 
+      [single_op] ->
+        # Single op: emit flat SQL without CTE wrapping
+        initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
+        {sql, _groups} = op_to_sql(single_op, initial_prev, [])
+        {sql, setup}
+
+      [{:group_by, cols}, {:summarise, aggs}] ->
+        # Common pattern: group_by + summarise. Emit flat SQL without CTE.
+        initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
+        {sql, _groups} = op_to_sql({:summarise, aggs}, initial_prev, cols)
+        {sql, setup}
+
       ops ->
-        {ctes, _counter, _groups} = build_ctes(ops, source_sql, 0, [])
+        initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
+        {ctes, _counter, _groups} = build_ctes(ops, initial_prev, 0, [])
         last_cte = "__s#{length(ctes) - 1}"
 
         cte_clauses =
@@ -32,6 +45,14 @@ defmodule Dux.QueryBuilder do
         {final, setup}
     end
   end
+
+  # For table sources, return the quoted table name directly.
+  # This avoids the redundant (SELECT * FROM "table") __src subquery.
+  defp direct_source_ref({:table, %Dux.TableRef{name: name}}) do
+    quote_ident(name)
+  end
+
+  defp direct_source_ref(_), do: nil
 
   @doc """
   Clear any IPC table refs stored in the process dictionary.
@@ -178,16 +199,10 @@ defmodule Dux.QueryBuilder do
   # CTE building — each op becomes a CTE
   # ---------------------------------------------------------------------------
 
-  defp build_ctes([], source_sql, counter, _groups) do
-    {["SELECT * FROM (#{source_sql}) __src"], counter + 1, []}
-  end
-
-  defp build_ctes(ops, source_sql, counter, groups) do
-    prev = "(#{source_sql}) __src"
-
+  defp build_ctes(ops, initial_prev, counter, groups) do
     {ctes, counter, groups} =
       Enum.reduce(ops, {[], counter, groups}, fn op, {ctes, n, groups} ->
-        prev_ref = if ctes == [], do: prev, else: "__s#{n - 1}"
+        prev_ref = if ctes == [], do: initial_prev, else: "__s#{n - 1}"
         {cte_sql, new_groups} = op_to_sql(op, prev_ref, groups)
         {ctes ++ [cte_sql], n + 1, new_groups}
       end)

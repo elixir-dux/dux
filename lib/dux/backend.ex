@@ -41,9 +41,8 @@ defmodule Dux.Backend do
   @doc false
   def query(conn, sql) do
     # Data stays in DuckDB — no Elixir materialization.
-    # GC ref via Adbc.Nif.adbc_delete_on_gc_new/2 auto-drops the table
-    # when the TableRef is garbage collected (same mechanism ADBC uses
-    # internally for Adbc.Connection.ingest!/2 results).
+    # GC ref via adbc_execute_on_gc_new auto-drops the table
+    # when the TableRef is garbage collected.
     name = "__dux_#{:erlang.unique_integer([:positive])}"
 
     case Adbc.Connection.query(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS (#{sql})") do
@@ -57,8 +56,57 @@ defmodule Dux.Backend do
         raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
     end
 
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
+  end
+
+  @doc false
+  def query_view(conn, sql, deps \\ []) do
+    # Like query/2 but creates a temp VIEW instead of a temp TABLE.
+    # Near-instant since no data is materialized.
+    # Uses execute (command dispatch) instead of query (stream dispatch)
+    # since CREATE VIEW returns no data — saves stream setup/teardown.
+    name = "__dux_v_#{:erlang.unique_integer([:positive])}"
+
+    case Adbc.Connection.execute(conn, "CREATE TEMPORARY VIEW #{qi(name)} AS (#{sql})") do
+      {:ok, _} ->
+        :ok
+
+      {:error, %Adbc.Error{} = err} ->
+        raise ArgumentError, "DuckDB query failed: #{err.message}"
+
+      {:error, err} ->
+        raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
+    end
+
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP VIEW IF EXISTS #{qi(name)}")
+    %TableRef{name: name, gc_ref: gc_ref, node: node(), deps: deps}
+  end
+
+  @doc false
+  def query_with_count(conn, sql) do
+    # Like query/2 but also returns the row count from the CTAS result,
+    # avoiding a separate COUNT(*) query for telemetry.
+    # DuckDB returns a "Count" column with the number of rows inserted.
+    name = "__dux_#{:erlang.unique_integer([:positive])}"
+
+    n_rows =
+      case Adbc.Connection.query(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS (#{sql})") do
+        {:ok, result} ->
+          case Adbc.Result.to_map(result) do
+            %{"Count" => [n]} when is_integer(n) -> n
+            _ -> nil
+          end
+
+        {:error, %Adbc.Error{} = err} ->
+          raise ArgumentError, "DuckDB query failed: #{err.message}"
+
+        {:error, err} ->
+          raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
+      end
+
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
+    {%TableRef{name: name, gc_ref: gc_ref, node: node()}, n_rows}
   end
 
   # ---------------------------------------------------------------------------
@@ -79,6 +127,20 @@ defmodule Dux.Backend do
     |> Enum.map(fn {col_name, duckdb_type} ->
       {col_name, duckdb_type_string_to_dtype(duckdb_type)}
     end)
+  end
+
+  @doc false
+  def table_schema(conn, %TableRef{name: name}) do
+    # Single DESCRIBE call that returns both names and dtypes.
+    # Avoids the double DESCRIBE that table_names + table_dtypes does.
+    {names, types} = describe_table(conn, name)
+
+    dtypes =
+      Map.new(Enum.zip(names, types), fn {col_name, duckdb_type} ->
+        {col_name, duckdb_type_string_to_dtype(duckdb_type)}
+      end)
+
+    {names, dtypes}
   end
 
   @doc false
@@ -111,7 +173,7 @@ defmodule Dux.Backend do
       names = table_names(conn, ref)
       Map.new(names, fn name -> {name, []} end)
     else
-      Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+      Map.new(map, fn {k, vs} -> {k, maybe_normalize_column(vs)} end)
     end
   end
 
@@ -143,27 +205,58 @@ defmodule Dux.Backend do
   @doc false
   def table_to_rows(conn, %TableRef{} = ref) do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
-    map = Adbc.Result.to_map(result)
 
-    if map == %{} do
-      []
-    else
-      build_rows_from_map(map)
+    case result.data do
+      [] ->
+        []
+
+      [single_batch] ->
+        # Fast path: single batch — build rows directly
+        build_rows_from_batch(single_batch)
+
+      [first_batch | _] = batches ->
+        # Multi-batch: process each batch independently to avoid
+        # building huge intermediate column lists (400k+ elements).
+        # Each batch is small (~2048 rows), so per-batch transposition is fast.
+        # Pre-compute column names once (same for all batches).
+        col_names = Enum.map(first_batch, fn col -> col.field.name end)
+        Enum.flat_map(batches, &build_rows_from_batch(&1, col_names))
     end
   end
 
-  defp build_rows_from_map(map) do
-    col_names = Map.keys(map)
+  defp build_rows_from_batch([], _col_names), do: []
 
-    columns =
-      Enum.map(col_names, fn col ->
-        Enum.map(Map.fetch!(map, col), &normalize_value/1)
+  defp build_rows_from_batch(batch, col_names) do
+    col_values =
+      Enum.map(batch, fn col ->
+        col |> Adbc.Column.materialize() |> Adbc.Column.to_list() |> maybe_normalize_column()
       end)
 
-    Enum.zip_with(columns, fn values ->
-      Enum.zip(col_names, values) |> Map.new()
+    Enum.zip_with(col_values, fn values ->
+      :maps.from_list(:lists.zip(col_names, values))
     end)
   end
+
+  # Single-batch variant (extracts col_names itself)
+  defp build_rows_from_batch(batch) do
+    col_names = Enum.map(batch, fn col -> col.field.name end)
+    build_rows_from_batch(batch, col_names)
+  end
+
+  # Batch normalize: only run normalize_value when the column contains Decimals.
+  # For integer/float/string/date columns (the common case), skip entirely.
+  # Check the first non-nil value since PIVOT columns can start with nils.
+  defp maybe_normalize_column(values) do
+    if column_has_decimals?(values) do
+      Enum.map(values, &normalize_value/1)
+    else
+      values
+    end
+  end
+
+  defp column_has_decimals?([%Decimal{} | _]), do: true
+  defp column_has_decimals?([nil | rest]), do: column_has_decimals?(rest)
+  defp column_has_decimals?(_), do: false
 
   # ---------------------------------------------------------------------------
   # Arrow IPC serialization (for distribution)
@@ -179,7 +272,7 @@ defmodule Dux.Backend do
       # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
       build_empty_table_ipc(conn, ref.name)
     else
-      Adbc.Result.to_ipc_stream(materialized)
+      query_to_ipc_stream(conn, "SELECT * FROM #{qi(ref.name)}")
     end
   end
 
@@ -195,12 +288,19 @@ defmodule Dux.Backend do
         Enum.zip(names, types)
         |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
 
-      dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
-      dummy_mat = Adbc.Result.materialize(dummy)
-      ipc = Adbc.Result.to_ipc_stream(dummy_mat)
+      ipc = query_to_ipc_stream(conn, "SELECT #{col_defs}")
       # Prefix with magic byte to signal "empty — strip the dummy row"
       <<"DUX_EMPTY"::binary, ipc::binary>>
     end
+  end
+
+  defp query_to_ipc_stream(conn, sql) do
+    {:ok, ipc} =
+      Adbc.Connection.query_pointer(conn, sql, fn stream_result ->
+        Adbc.StreamResult.to_ipc_stream(stream_result)
+      end)
+
+    ipc
   end
 
   @doc false
@@ -208,7 +308,7 @@ defmodule Dux.Backend do
     # Empty sentinel — no columns
     name = "__dux_#{:erlang.unique_integer([:positive])}"
     Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
@@ -253,7 +353,7 @@ defmodule Dux.Backend do
           "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false"
         )
 
-        gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+        gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
         %TableRef{name: name, gc_ref: gc_ref, node: node()}
       else
         ingest_result = ingest_safe(conn, columns)

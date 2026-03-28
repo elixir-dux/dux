@@ -38,10 +38,11 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:adbc, "~> 0.10.0"},
+      {:adbc, github: "livebook-dev/adbc", override: true},
       {:telemetry, "~> 1.0"},
       {:flame, "~> 0.5", optional: true},
       {:nx, "~> 0.9", optional: true},
+      {:explorer, "~> 0.10", only: [:dev, :test]},
       {:benchee, "~> 1.3", only: [:dev, :test]},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.36", only: :dev, runtime: false},

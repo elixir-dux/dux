@@ -158,8 +158,7 @@ defmodule Dux do
         node: node()
       }
 
-      names = Dux.Backend.table_names(conn, table_ref)
-      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      {names, dtypes} = Dux.Backend.table_schema(conn, table_ref)
       %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
     else
       %Dux{source: {:list, rows}}
@@ -1550,6 +1549,10 @@ defmodule Dux do
     dux
   end
 
+  # Local no-ops: table is already materialized, skip redundant CTAS/view.
+  def compute(%Dux{source: {:table, _}, ops: [], workers: nil} = dux, _opts), do: dux
+  def compute(%Dux{source: {:table, _}, ops: [], workers: []} = dux, _opts), do: dux
+
   def compute(%Dux{workers: workers} = dux, opts) when is_list(workers) and workers != [] do
     meta = %{n_ops: length(dux.ops), distributed: true}
 
@@ -1582,15 +1585,33 @@ defmodule Dux do
         Dux.Backend.execute(conn, setup_sql)
       end)
 
-      table_ref = Dux.Backend.query(conn, sql)
-      names = Dux.Backend.table_names(conn, table_ref)
-      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      use_view = can_use_view?(dux)
+
+      {table_ref, n_rows} =
+        if use_view do
+          # Views are near-instant (no data materialization).
+          # deps keeps source tables alive so the view can reference them.
+          deps = collect_source_deps(dux)
+          {Dux.Backend.query_view(conn, sql, deps), nil}
+        else
+          Dux.Backend.query_with_count(conn, sql)
+        end
+
+      {names, dtypes} =
+        case derive_schema(dux) do
+          {names, dtypes} -> {names, dtypes}
+          nil -> Dux.Backend.table_schema(conn, table_ref)
+        end
+
       result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
 
       Process.delete(:dux_compute_ref)
       Dux.QueryBuilder.clear_ipc_refs()
-      {:table, table_ref} = result.source
-      {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
+
+      final_meta =
+        if n_rows, do: Map.put(meta, :n_rows, n_rows), else: meta
+
+      {result, final_meta}
     end)
   end
 
@@ -1983,8 +2004,116 @@ defmodule Dux do
   # Internal helpers
   # ---------------------------------------------------------------------------
 
-  # Extract any NIF resource refs from the source to keep them alive
-  # across function calls that reference temp tables by name.
+  # Derive the output schema from the source schema and ops, without running DESCRIBE.
+  # Returns {names, dtypes} if derivable, nil otherwise.
+  # Tracks group state for summarise derivation.
+  defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops})
+       when names != [] and dtypes != %{} do
+    case Enum.reduce_while(ops, {names, dtypes, []}, &derive_op_step/2) do
+      {names, dtypes, _groups} -> {names, dtypes}
+      nil -> nil
+    end
+  end
+
+  defp derive_schema(_), do: nil
+
+  defp derive_op_step(op, {names, dtypes, groups}) do
+    case derive_op_schema(op, names, dtypes, groups) do
+      {_, _, _} = result -> {:cont, result}
+      nil -> {:halt, nil}
+    end
+  end
+
+  # Schema-preserving ops
+  defp derive_op_schema({:filter, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:head, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:slice, _, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:sort_by, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:distinct, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:drop_nil, _}, n, d, g), do: {n, d, g}
+  defp derive_op_schema({:ungroup}, n, d, _g), do: {n, d, []}
+
+  # Group-by: sets group state for subsequent summarise
+  defp derive_op_schema({:group_by, cols}, n, d, _g) do
+    {n, d, Enum.map(cols, &to_string/1)}
+  end
+
+  # Mutate: SELECT *, (expr) AS col — adds columns
+  defp derive_op_schema({:mutate, assignments}, names, dtypes, groups) do
+    new_names =
+      Enum.reduce(assignments, names, fn {col_name, _expr}, acc ->
+        if col_name in acc, do: acc, else: acc ++ [col_name]
+      end)
+
+    {new_names, dtypes, groups}
+  end
+
+  # Select: picks specific columns
+  defp derive_op_schema({:select, cols}, _names, dtypes, groups) do
+    col_strings = Enum.map(cols, &to_string/1)
+    {col_strings, Map.take(dtypes, col_strings), groups}
+  end
+
+  # Discard: removes columns
+  defp derive_op_schema({:discard, cols}, names, dtypes, groups) do
+    col_set = MapSet.new(Enum.map(cols, &to_string/1))
+    new_names = Enum.reject(names, &MapSet.member?(col_set, &1))
+    {new_names, Map.drop(dtypes, MapSet.to_list(col_set)), groups}
+  end
+
+  # Rename: changes column names
+  defp derive_op_schema({:rename, pairs}, names, dtypes, groups) do
+    rmap = Map.new(pairs, fn {old, new} -> {to_string(old), to_string(new)} end)
+    new_names = Enum.map(names, fn n -> Map.get(rmap, n, n) end)
+    new_dtypes = Map.new(dtypes, fn {k, v} -> {Map.get(rmap, k, k), v} end)
+    new_groups = Enum.map(groups, fn g -> Map.get(rmap, g, g) end)
+    {new_names, new_dtypes, new_groups}
+  end
+
+  # Summarise: output is group columns + aggregate columns
+  defp derive_op_schema({:summarise, aggs}, _names, dtypes, groups) do
+    agg_names = Enum.map(aggs, fn {name, _expr} -> name end)
+    new_names = groups ++ agg_names
+    # Keep dtypes for group columns, aggregates have unknown types
+    new_dtypes = Map.take(dtypes, groups)
+    {new_names, new_dtypes, []}
+  end
+
+  # Everything else: can't derive
+  defp derive_op_schema(_, _n, _d, _g), do: nil
+
+  # Views can be used when:
+  # 1. Source is an already-materialized table/view (not list/parquet/csv/etc.)
+  # 2. Dependency depth is within limit (prevents unbounded memory in iterative algorithms)
+  # 3. No PIVOT ops (DuckDB doesn't support data-driven PIVOT in views)
+  @max_view_depth 3
+  defp can_use_view?(%Dux{ops: ops, source: {:table, %Dux.TableRef{deps: deps}}}) do
+    view_depth(deps, 0) < @max_view_depth and
+      not Enum.any?(ops, fn
+        {:pivot_wider, _, _, _} -> true
+        {:pivot_longer, _, _, _} -> true
+        _ -> false
+      end)
+  end
+
+  defp can_use_view?(_), do: false
+
+  defp view_depth([], depth), do: depth
+
+  defp view_depth([%Dux.TableRef{deps: inner_deps} | rest], depth) do
+    max(view_depth(inner_deps, depth + 1), view_depth(rest, depth))
+  end
+
+  defp view_depth([_ | rest], depth), do: view_depth(rest, depth)
+
+  # Collect all TableRef dependencies that a view needs to keep alive.
+  # Without this, the GC could drop source tables that the view references.
+  defp collect_source_deps(%Dux{source: {:table, %Dux.TableRef{} = ref}}) do
+    [ref | ref.deps]
+  end
+
+  defp collect_source_deps(_), do: []
+
   defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
 
   defp extract_source_ref(%Dux{ops: ops} = dux) do
