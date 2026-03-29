@@ -57,7 +57,7 @@ defmodule Dux.Backend do
         raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
     end
 
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
@@ -171,36 +171,15 @@ defmodule Dux.Backend do
 
   @doc false
   def table_to_ipc(conn, %TableRef{} = ref) do
-    result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
-    materialized = Adbc.Result.materialize(result)
+    # Use query_pointer to serialize directly to IPC without materializing
+    # into Elixir memory. Data goes DuckDB → IPC binary, zero Elixir heap.
+    # ADBC 0.11+ handles empty results correctly (preserves schema in IPC).
+    {:ok, ipc} =
+      Adbc.Connection.query_pointer(conn, "SELECT * FROM #{qi(ref.name)}", fn stream ->
+        Adbc.StreamResult.to_ipc_stream(stream)
+      end)
 
-    if flatten_batches(materialized.data) == [] do
-      # ADBC can't serialize zero-row results to IPC.
-      # Add a dummy row, serialize, and mark with a header so table_from_ipc can strip it.
-      build_empty_table_ipc(conn, ref.name)
-    else
-      Adbc.Result.to_ipc_stream(materialized)
-    end
-  end
-
-  defp build_empty_table_ipc(conn, table_name) do
-    {names, types} = describe_table(conn, table_name)
-
-    if names == [] do
-      # No columns at all — return empty sentinel
-      <<0::32>>
-    else
-      # Create a single-row dummy, serialize, then the receiver knows to filter
-      col_defs =
-        Enum.zip(names, types)
-        |> Enum.map_join(", ", fn {n, t} -> "NULL::#{t} AS #{qi(n)}" end)
-
-      dummy = Adbc.Connection.query!(conn, "SELECT #{col_defs}")
-      dummy_mat = Adbc.Result.materialize(dummy)
-      ipc = Adbc.Result.to_ipc_stream(dummy_mat)
-      # Prefix with magic byte to signal "empty — strip the dummy row"
-      <<"DUX_EMPTY"::binary, ipc::binary>>
-    end
+    ipc
   end
 
   @doc false
@@ -208,7 +187,7 @@ defmodule Dux.Backend do
     # Empty sentinel — no columns
     name = "__dux_#{:erlang.unique_integer([:positive])}"
     Adbc.Connection.query!(conn, "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false")
-    gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
@@ -253,7 +232,7 @@ defmodule Dux.Backend do
           "CREATE TEMPORARY TABLE #{qi(name)} AS SELECT 1 WHERE false"
         )
 
-        gc_ref = Adbc.Nif.adbc_delete_on_gc_new(conn, name)
+        gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP TABLE IF EXISTS #{qi(name)}")
         %TableRef{name: name, gc_ref: gc_ref, node: node()}
       else
         ingest_result = ingest_safe(conn, columns)

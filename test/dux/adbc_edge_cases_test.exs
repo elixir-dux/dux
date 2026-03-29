@@ -164,12 +164,14 @@ defmodule Dux.AdbcEdgeCasesTest do
       assert cols["y"] == [nil]
     end
 
-    test "DUX_EMPTY sentinel round-trip preserves schema" do
+    test "empty table IPC round-trip preserves schema" do
       conn = Dux.Connection.get_conn()
       ref = Dux.Backend.query(conn, "SELECT 1 AS x, 'a' AS y WHERE false")
       ipc = Dux.Backend.table_to_ipc(conn, ref)
 
-      assert String.starts_with?(ipc, "DUX_EMPTY")
+      # ADBC 0.11+ serializes empty tables correctly as standard IPC
+      assert is_binary(ipc)
+      assert byte_size(ipc) > 0
 
       restored = Dux.Backend.table_from_ipc(conn, ipc)
       names = Dux.Backend.table_names(conn, restored)

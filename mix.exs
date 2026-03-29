@@ -38,7 +38,7 @@ defmodule Dux.MixProject do
 
   defp deps do
     [
-      {:adbc, "~> 0.10.0"},
+      {:adbc, "~> 0.11.0"},
       {:telemetry, "~> 1.0"},
       {:flame, "~> 0.5", optional: true},
       {:nx, "~> 0.9", optional: true},
