@@ -61,6 +61,28 @@ defmodule Dux.Backend do
     %TableRef{name: name, gc_ref: gc_ref, node: node()}
   end
 
+  @doc false
+  def query_view(conn, sql, deps \\ []) do
+    # Like query/2 but creates a VIEW — near-instant since no data is copied.
+    # The deps list keeps source TableRefs alive so GC doesn't drop tables
+    # that the view references.
+    name = "__dux_v_#{:erlang.unique_integer([:positive])}"
+
+    case Adbc.Connection.query(conn, "CREATE TEMPORARY VIEW #{qi(name)} AS (#{sql})") do
+      {:ok, _} ->
+        :ok
+
+      {:error, %Adbc.Error{} = err} ->
+        raise ArgumentError, "DuckDB query failed: #{err.message}"
+
+      {:error, err} ->
+        raise ArgumentError, "DuckDB query failed: #{Exception.message(err)}"
+    end
+
+    gc_ref = Adbc.Nif.adbc_execute_on_gc_new(conn, "DROP VIEW IF EXISTS #{qi(name)}")
+    %TableRef{name: name, gc_ref: gc_ref, node: node(), deps: deps}
+  end
+
   # ---------------------------------------------------------------------------
   # Metadata
   # ---------------------------------------------------------------------------

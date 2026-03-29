@@ -1564,13 +1564,13 @@ defmodule Dux do
     end)
   end
 
+  # No-op: already materialized with no pending ops — return as-is.
+  def compute(%Dux{source: {:table, _}, ops: []} = dux, _opts), do: dux
+
   def compute(%Dux{} = dux, _opts) do
     meta = %{n_ops: length(dux.ops), distributed: false}
 
     :telemetry.span([:dux, :query], meta, fn ->
-      # Use pinned connection if available (from a prior compute on this pipeline),
-      # otherwise get a connection from the pool. This ensures temp tables created
-      # by compute are visible to downstream operations on the same %Dux{}.
       conn = dux.conn || Dux.Connection.get_conn()
 
       source_ref = extract_source_ref(dux)
@@ -1582,15 +1582,36 @@ defmodule Dux do
         Dux.Backend.execute(conn, setup_sql)
       end)
 
-      table_ref = Dux.Backend.query(conn, sql)
-      names = Dux.Backend.table_names(conn, table_ref)
-      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      # Use a VIEW when safe — near-instant since no data is copied.
+      # Falls back to CREATE TABLE AS for pivot ops (DuckDB limitation)
+      # and when the view chain exceeds depth 3 (prevents unbounded memory).
+      table_ref =
+        if can_use_view?(dux) do
+          deps = collect_source_deps(dux)
+          Dux.Backend.query_view(conn, sql, deps)
+        else
+          Dux.Backend.query(conn, sql)
+        end
+
+      # Derive schema from ops when possible, fall back to DESCRIBE.
+      {names, dtypes} =
+        case derive_schema(dux) do
+          {n, d} ->
+            {n, d}
+
+          nil ->
+            {Dux.Backend.table_names(conn, table_ref),
+             Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()}
+        end
+
       result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
 
       Process.delete(:dux_compute_ref)
       Dux.QueryBuilder.clear_ipc_refs()
+
       {:table, table_ref} = result.source
-      {result, Map.put(meta, :n_rows, Dux.Backend.table_n_rows(conn, table_ref))}
+      n_rows = Dux.Backend.table_n_rows(conn, table_ref)
+      {result, Map.put(meta, :n_rows, n_rows)}
     end)
   end
 
@@ -1985,6 +2006,84 @@ defmodule Dux do
 
   # Extract any NIF resource refs from the source to keep them alive
   # across function calls that reference temp tables by name.
+  # View eligibility: use a view when source is a table, depth < 3,
+  # and no PIVOT ops (DuckDB can't do data-driven PIVOT in views).
+  @max_view_depth 3
+
+  defp can_use_view?(%Dux{ops: ops, source: {:table, %Dux.TableRef{deps: deps}}}) do
+    view_depth(deps, 0) < @max_view_depth and
+      not Enum.any?(ops, fn
+        {:pivot_wider, _, _, _} -> true
+        {:pivot_longer, _, _, _} -> true
+        _ -> false
+      end)
+  end
+
+  defp can_use_view?(_), do: false
+
+  defp view_depth([], depth), do: depth
+
+  defp view_depth([%Dux.TableRef{deps: inner_deps} | rest], depth) do
+    max(view_depth(inner_deps, depth + 1), view_depth(rest, depth))
+  end
+
+  defp view_depth([_ | rest], depth), do: view_depth(rest, depth)
+
+  defp collect_source_deps(%Dux{source: {:table, %Dux.TableRef{} = ref}}) do
+    [ref | ref.deps]
+  end
+
+  defp collect_source_deps(_), do: []
+
+  # Derive output schema from source schema + ops. Returns {names, dtypes}
+  # or nil if derivation isn't possible (requires DESCRIBE fallback).
+  defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops})
+       when names != [] and dtypes != %{} do
+    Enum.reduce_while(ops, {names, dtypes}, fn op, {n, d} ->
+      case derive_op(op, n, d) do
+        {new_n, new_d} -> {:cont, {new_n, new_d}}
+        nil -> {:halt, nil}
+      end
+    end)
+  end
+
+  defp derive_schema(_), do: nil
+
+  # Schema-preserving ops — names and dtypes unchanged
+  defp derive_op({:filter, _}, n, d), do: {n, d}
+  defp derive_op({:filter_with, _}, n, d), do: {n, d}
+  defp derive_op({:sort_by, _}, n, d), do: {n, d}
+  defp derive_op({:head, _}, n, d), do: {n, d}
+  defp derive_op({:slice, _, _}, n, d), do: {n, d}
+  defp derive_op({:distinct, _}, n, d), do: {n, d}
+  defp derive_op({:drop_nil, _}, n, d), do: {n, d}
+  defp derive_op({:group_by, _}, n, d), do: {n, d}
+  defp derive_op(:ungroup, n, d), do: {n, d}
+
+  # Select — subset of columns
+  defp derive_op({:select, cols}, _n, d) do
+    selected = Enum.map(cols, &to_string/1)
+    {selected, Map.take(d, selected)}
+  end
+
+  # Discard — remove columns
+  defp derive_op({:discard, cols}, n, d) do
+    removed = MapSet.new(Enum.map(cols, &to_string/1))
+    new_n = Enum.reject(n, &MapSet.member?(removed, &1))
+    {new_n, Map.drop(d, MapSet.to_list(removed))}
+  end
+
+  # Rename — remap column names
+  defp derive_op({:rename, mapping}, n, d) do
+    str_map = Map.new(mapping, fn {k, v} -> {to_string(k), to_string(v)} end)
+    new_n = Enum.map(n, fn col -> Map.get(str_map, col, col) end)
+    new_d = Map.new(d, fn {k, v} -> {Map.get(str_map, k, k), v} end)
+    {new_n, new_d}
+  end
+
+  # Everything else — can't derive, fall back to DESCRIBE
+  defp derive_op(_, _, _), do: nil
+
   defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
 
   defp extract_source_ref(%Dux{ops: ops} = dux) do
