@@ -133,7 +133,7 @@ defmodule Dux.Backend do
       names = table_names(conn, ref)
       Map.new(names, fn name -> {name, []} end)
     else
-      Map.new(map, fn {k, vs} -> {k, Enum.map(vs, &normalize_value/1)} end)
+      Map.new(map, fn {k, vs} -> {k, maybe_normalize(vs)} end)
     end
   end
 
@@ -179,13 +179,32 @@ defmodule Dux.Backend do
 
     columns =
       Enum.map(col_names, fn col ->
-        Enum.map(Map.fetch!(map, col), &normalize_value/1)
+        maybe_normalize(Map.fetch!(map, col))
       end)
 
     Enum.zip_with(columns, fn values ->
       Enum.zip(col_names, values) |> Map.new()
     end)
   end
+
+  # Skip normalize_value for columns that don't contain Decimals.
+  # ADBC returns Decimal structs for DuckDB aggregation results (SUM, COUNT)
+  # and DECIMAL types, but most columns (integers, floats, strings) don't
+  # need normalization. Checking the first non-nil value avoids iterating
+  # 100K+ values through normalize_value/1 when it's a no-op.
+  defp maybe_normalize([]), do: []
+
+  defp maybe_normalize(values) do
+    if needs_normalize?(values) do
+      Enum.map(values, &normalize_value/1)
+    else
+      values
+    end
+  end
+
+  defp needs_normalize?([%Decimal{} | _]), do: true
+  defp needs_normalize?([nil | rest]), do: needs_normalize?(rest)
+  defp needs_normalize?(_), do: false
 
   # ---------------------------------------------------------------------------
   # Arrow IPC serialization (for distribution)
