@@ -2037,52 +2037,76 @@ defmodule Dux do
 
   # Derive output schema from source schema + ops. Returns {names, dtypes}
   # or nil if derivation isn't possible (requires DESCRIBE fallback).
-  defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops})
-       when names != [] and dtypes != %{} do
-    Enum.reduce_while(ops, {names, dtypes}, fn op, {n, d} ->
-      case derive_op(op, n, d) do
-        {new_n, new_d} -> {:cont, {new_n, new_d}}
-        nil -> {:halt, nil}
-      end
-    end)
+  # Threads group state so summarise can derive output columns.
+  defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops, groups: groups})
+       when names != [] do
+    initial = {names, dtypes, groups}
+
+    case Enum.reduce_while(ops, initial, fn op, {n, d, g} ->
+           case derive_op(op, n, d, g) do
+             {new_n, new_d, new_g} -> {:cont, {new_n, new_d, new_g}}
+             nil -> {:halt, nil}
+           end
+         end) do
+      {n, d, _g} -> {n, d}
+      nil -> nil
+    end
   end
 
   defp derive_schema(_), do: nil
 
   # Schema-preserving ops — names and dtypes unchanged
-  defp derive_op({:filter, _}, n, d), do: {n, d}
-  defp derive_op({:filter_with, _}, n, d), do: {n, d}
-  defp derive_op({:sort_by, _}, n, d), do: {n, d}
-  defp derive_op({:head, _}, n, d), do: {n, d}
-  defp derive_op({:slice, _, _}, n, d), do: {n, d}
-  defp derive_op({:distinct, _}, n, d), do: {n, d}
-  defp derive_op({:drop_nil, _}, n, d), do: {n, d}
-  defp derive_op({:group_by, _}, n, d), do: {n, d}
-  defp derive_op(:ungroup, n, d), do: {n, d}
+  defp derive_op({:filter, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:filter_with, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:sort_by, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:head, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:slice, _, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:distinct, _}, n, d, g), do: {n, d, g}
+  defp derive_op({:drop_nil, _}, n, d, g), do: {n, d, g}
+  defp derive_op(:ungroup, n, d, _g), do: {n, d, []}
+
+  # Group by — track group columns for summarise derivation
+  defp derive_op({:group_by, cols}, n, d, _g) do
+    {n, d, Enum.map(cols, &to_string/1)}
+  end
 
   # Select — subset of columns
-  defp derive_op({:select, cols}, _n, d) do
+  defp derive_op({:select, cols}, _n, d, g) do
     selected = Enum.map(cols, &to_string/1)
-    {selected, Map.take(d, selected)}
+    {selected, Map.take(d, selected), g}
   end
 
   # Discard — remove columns
-  defp derive_op({:discard, cols}, n, d) do
+  defp derive_op({:discard, cols}, n, d, g) do
     removed = MapSet.new(Enum.map(cols, &to_string/1))
     new_n = Enum.reject(n, &MapSet.member?(removed, &1))
-    {new_n, Map.drop(d, MapSet.to_list(removed))}
+    {new_n, Map.drop(d, MapSet.to_list(removed)), g}
   end
 
   # Rename — remap column names
-  defp derive_op({:rename, mapping}, n, d) do
+  defp derive_op({:rename, mapping}, n, d, g) do
     str_map = Map.new(mapping, fn {k, v} -> {to_string(k), to_string(v)} end)
     new_n = Enum.map(n, fn col -> Map.get(str_map, col, col) end)
     new_d = Map.new(d, fn {k, v} -> {Map.get(str_map, k, k), v} end)
-    {new_n, new_d}
+    new_g = Enum.map(g, fn col -> Map.get(str_map, col, col) end)
+    {new_n, new_d, new_g}
+  end
+
+  # Summarise — output is group columns + aggregation names.
+  # Dtypes unknown (aggregation result types depend on the data), so we
+  # return empty dtypes and let downstream queries handle it.
+  defp derive_op({:summarise, aggs}, _n, _d, g) do
+    agg_names = Enum.map(aggs, fn {name, _expr} -> to_string(name) end)
+    {g ++ agg_names, %{}, []}
+  end
+
+  defp derive_op({:summarise_with, aggs}, _n, _d, g) do
+    agg_names = Enum.map(aggs, fn {name, _expr} -> to_string(name) end)
+    {g ++ agg_names, %{}, []}
   end
 
   # Everything else — can't derive, fall back to DESCRIBE
-  defp derive_op(_, _, _), do: nil
+  defp derive_op(_, _, _, _), do: nil
 
   defp extract_source_ref(%Dux{source: {:table, ref}}), do: ref
 
