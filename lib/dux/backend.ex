@@ -104,6 +104,20 @@ defmodule Dux.Backend do
   end
 
   @doc false
+  def table_schema(conn, %TableRef{name: name}) do
+    {names, types} = describe_table(conn, name)
+
+    dtypes =
+      Enum.zip(names, types)
+      |> Enum.map(fn {col_name, duckdb_type} ->
+        {col_name, duckdb_type_string_to_dtype(duckdb_type)}
+      end)
+      |> Map.new()
+
+    {names, dtypes}
+  end
+
+  @doc false
   def table_n_rows(conn, %TableRef{name: name}) do
     result = Adbc.Connection.query!(conn, "SELECT count(*) AS n FROM #{qi(name)}")
     %{"n" => [n]} = Adbc.Result.to_map(result)

@@ -1600,8 +1600,7 @@ defmodule Dux do
             {n, d}
 
           nil ->
-            {Dux.Backend.table_names(conn, table_ref),
-             Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()}
+            Dux.Backend.table_schema(conn, table_ref)
         end
 
       result = %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
@@ -2040,20 +2039,22 @@ defmodule Dux do
   # Threads group state so summarise can derive output columns.
   defp derive_schema(%Dux{names: names, dtypes: dtypes, ops: ops, groups: groups})
        when names != [] do
-    initial = {names, dtypes, groups}
-
-    case Enum.reduce_while(ops, initial, fn op, {n, d, g} ->
-           case derive_op(op, n, d, g) do
-             {new_n, new_d, new_g} -> {:cont, {new_n, new_d, new_g}}
-             nil -> {:halt, nil}
-           end
-         end) do
+    case derive_ops(ops, {names, dtypes, groups}) do
       {n, d, _g} -> {n, d}
       nil -> nil
     end
   end
 
   defp derive_schema(_), do: nil
+
+  defp derive_ops(ops, initial) do
+    Enum.reduce_while(ops, initial, fn op, {n, d, g} ->
+      case derive_op(op, n, d, g) do
+        {_, _, _} = result -> {:cont, result}
+        nil -> {:halt, nil}
+      end
+    end)
+  end
 
   # Schema-preserving ops — names and dtypes unchanged
   defp derive_op({:filter, _}, n, d, g), do: {n, d, g}

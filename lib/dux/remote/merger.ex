@@ -68,8 +68,7 @@ defmodule Dux.Remote.Merger do
       final_sql = apply_merge_ops(union_sql, pipeline.ops)
 
       table_ref = Dux.Backend.query(conn, final_sql)
-      names = Dux.Backend.table_names(conn, table_ref)
-      dtypes = Dux.Backend.table_dtypes(conn, table_ref) |> Map.new()
+      {names, dtypes} = Dux.Backend.table_schema(conn, table_ref)
       %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes}
     end)
   end

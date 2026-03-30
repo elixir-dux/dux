@@ -599,8 +599,7 @@ defmodule Dux.Graph do
 
     {:ok, result_ipc} = Worker.execute(worker, Dux.from_query(sql))
     result = Dux.Backend.table_from_ipc(conn, result_ipc)
-    names = Dux.Backend.table_names(conn, result)
-    dtypes = Dux.Backend.table_dtypes(conn, result) |> Map.new()
+    {names, dtypes} = Dux.Backend.table_schema(conn, result)
 
     try do
       Worker.drop_table(worker, "__bfs_edges")
@@ -804,8 +803,7 @@ defmodule Dux.Graph do
         """
 
         merge_ref = Dux.Backend.query(conn, merge_sql)
-        merge_names = Dux.Backend.table_names(conn, merge_ref)
-        merge_dtypes = Dux.Backend.table_dtypes(conn, merge_ref) |> Map.new()
+        {merge_names, merge_dtypes} = Dux.Backend.table_schema(conn, merge_ref)
         new_labels = %Dux{source: {:table, merge_ref}, names: merge_names, dtypes: merge_dtypes}
 
         Process.delete(:dux_cc_refs)
