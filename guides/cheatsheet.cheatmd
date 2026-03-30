@@ -35,6 +35,7 @@ Dux.drop_secret(:s3)
 ### From SQL
 ```elixir
 Dux.from_query("SELECT * FROM range(100) t(x)")
+Dux.exec("SET threads = 8")               # raw DDL/DML
 ```
 
 ## Filtering
@@ -99,6 +100,13 @@ Dux.head(df)                                     # first 10 rows (default)
 Dux.head(df, 5)                                  # first 5 rows
 Dux.slice(df, 5, 10)                             # offset 5, take 10
 Dux.distinct(df)                                 # deduplicate all columns
+```
+
+### Grouping
+```elixir
+Dux.group_by(df, :region)                 # set groups
+Dux.group_by(df, [:region, :year])        # multi-column
+Dux.ungroup(df)                           # clear groups
 ```
 
 ## Aggregation
@@ -223,6 +231,17 @@ Dux.sql_preview(df)                # → SQL string
 Dux.sql_preview(df, pretty: true)  # → formatted SQL
 ```
 
+## SQL Macros
+
+```elixir
+# Reusable SQL functions — fully lazy, zero overhead
+Dux.define(:double, [:x], "x * 2")
+Dux.define(:risk, [:score], "CASE WHEN score > 0.8 THEN 'high' ELSE 'low' END")
+Dux.define_table(:date_spine, [:s, :e], "SELECT * FROM generate_series(s::DATE, e::DATE, INTERVAL 1 DAY) t(d)")
+Dux.undefine(:double)
+Dux.list_macros()
+```
+
 ## Distributed
 
 ### Reads
@@ -260,8 +279,13 @@ df |> Dux.distribute(workers) |> Dux.collect()
 
 ### FLAME: elastic cloud compute
 ```elixir
-Dux.Flame.start_pool(backend: {FLAME.FlyBackend, ...}, max: 10)
-workers = Dux.Flame.spin_up(5)
+workers = Dux.Flame.spin_up(5,
+  pool: :dux_pool,
+  memory_limit: "4GB",
+  temp_directory: "/tmp/dux_spill"
+)
+Dux.distribute(df, workers) |> Dux.compute()
+Dux.local(df)                              # back to single-node
 ```
 
 ## Graph Analytics

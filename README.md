@@ -22,6 +22,19 @@ Dux.from_parquet("s3://data/sales/**/*.parquet")
 |> Dux.to_rows()
 ```
 
+## Performance
+
+Dux pipelines compile to SQL and execute inside DuckDB — no data crosses into Elixir until you materialise. On a 10M-row dataset (Apple M3 Max, 36GB):
+
+| Operation | Dux | Explorer (Polars) | Ratio |
+|-----------|-----|-------------------|-------|
+| Filter (10M rows) | 41ms | 13ms | 3.1x |
+| Mutate (10M rows) | ~40ms | ~14ms | ~3x |
+| Group + Summarise | ~12ms | ~21ms | **0.6x** |
+| Memory per compute | 5-10 KB | 5-10 KB | ~same |
+
+Dux is within 3x of Polars for single-node operations and **faster for aggregations** (DuckDB's columnar engine). The gap narrows further at scale — Dux can distribute across machines while Polars is single-node.
+
 ## Design
 
 Dux is the successor to [Explorer](https://github.com/elixir-explorer/explorer). That means it borrows its verb design from dplyr and the tidyverse — constrained, composable operations that each do one thing well. If you've used `dplyr::filter()`, `mutate()`, `group_by() |> summarise()`, the Dux API will feel familiar.
@@ -180,6 +193,7 @@ Lazy pipelines render with source provenance, operations, and generated SQL. Com
 - [Transformations](https://hexdocs.pm/dux/transformations.html) — filter, mutate, window functions
 - [Joins & Reshape](https://hexdocs.pm/dux/joins-and-reshape.html) — join types, ASOF joins, pivots
 - [Distributed Execution](https://hexdocs.pm/dux/distributed.html) — architecture, partitioning, distributed IO
+- [FLAME Clusters](https://hexdocs.pm/dux/flame-clusters.html) — ad-hoc Spark-like clusters with Fly.io
 - [Graph Analytics](https://hexdocs.pm/dux/graph-analytics.html) — PageRank, shortest paths, components
 - [Cheatsheet](https://hexdocs.pm/dux/cheatsheet.html) — quick reference for all verbs
 

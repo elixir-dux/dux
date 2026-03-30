@@ -81,6 +81,7 @@ defmodule Dux.MixProject do
         "guides/transformations.livemd",
         "guides/joins-and-reshape.livemd",
         "guides/distributed.md",
+        "guides/flame-clusters.livemd",
         "guides/graph-analytics.livemd",
         "guides/cheatsheet.cheatmd",
         "CHANGELOG.md"
