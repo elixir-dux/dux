@@ -45,22 +45,18 @@ speeds, latency, test counts, and geographic quadkeys.
 
 The data is **public — no S3 credentials needed**.
 
-## 1. Configure Anonymous S3 Access
-
-DuckDB reads S3 via the `httpfs` extension. For public buckets, we
-use the credential chain provider which falls back to unsigned requests.
-
 ```elixir
 require Dux
-Dux.exec("INSTALL httpfs; LOAD httpfs")
-  Dux.exec("SET s3_region = 'us-west-2'")
-  Dux.exec("SET s3_access_key_id = ''")
-  Dux.exec("SET s3_secret_access_key = ''")
-
 ```
 
+## 1. Configure Anonymous S3 Access
+
+DuckDB reads S3 via the `httpfs` extension. For public buckets,
+we create a secret with empty credentials — DuckDB makes unsigned requests.
+
 ```elixir
-require Dux
+Dux.exec("INSTALL httpfs; LOAD httpfs")
+Dux.create_secret(:ookla, type: :s3, provider: :config, key_id: "", secret: "", region: "us-west-2")
 ```
 
 ## 2. Explore Locally First
@@ -138,9 +134,9 @@ workers = Dux.Flame.spin_up(5,
   pool: :dux_pool,
   memory_limit: "4GB",
   setup: fn ->
-    # Each worker needs httpfs + S3 access configured
+    # Each worker needs httpfs + anonymous S3 access
     Dux.exec("INSTALL httpfs; LOAD httpfs")
-    Dux.create_secret(:ookla, type: :s3, provider: :credential_chain, region: "us-west-2")
+    Dux.create_secret(:ookla, type: :s3, provider: :config, key_id: "", secret: "", region: "us-west-2")
   end
 )
 
