@@ -24,16 +24,18 @@ Dux.from_parquet("s3://data/sales/**/*.parquet")
 
 ## Performance
 
-Dux pipelines compile to SQL and execute inside DuckDB — no data crosses into Elixir until you materialise. On a 10M-row dataset (Apple M3 Max, 36GB):
+Dux pipelines compile to SQL and execute inside DuckDB — no data crosses into Elixir until you materialise. On a 10M-row dataset (Apple M4 Max, 128GB):
 
-| Operation | Dux | Explorer (Polars) | Ratio |
-|-----------|-----|-------------------|-------|
-| Filter (10M rows) | 41ms | 13ms | 3.1x |
-| Mutate (10M rows) | ~40ms | ~14ms | ~3x |
-| Group + Summarise | ~12ms | ~21ms | **0.6x** |
-| Memory per compute | 5-10 KB | 5-10 KB | ~same |
+| Operation | Dux | Explorer (Polars) | Winner |
+|-----------|-----|-------------------|--------|
+| Filter (lazy) | 24ms | 59ms | **Dux 2.5x faster** |
+| Filter (eager) | 45ms | 53ms | **Dux 1.2x faster** |
+| Mutate (eager) | 17ms | 28ms | **Dux 1.6x faster** |
+| Group + Summarise (lazy) | 40ms | 63ms | **Dux 1.6x faster** |
+| Group + Summarise (eager) | 81ms | 88ms | **Dux 1.1x faster** |
+| Memory per compute | 11-15 KB | 8-9 KB | Explorer ~1.5x less |
 
-Dux is within 3x of Polars for single-node operations and **faster for aggregations** (DuckDB's columnar engine). The gap narrows further at scale — Dux can distribute across machines while Polars is single-node.
+Dux is **faster than Explorer/Polars** on every operation at 10M rows. The lazy path (view-based `compute/1`) is particularly fast since no data is copied — DuckDB executes the full pipeline when results are read. And Dux can distribute across machines while Polars is single-node.
 
 ## Design
 
