@@ -130,7 +130,9 @@ Key settings:
 ## 4. Spin Up Workers
 
 ```elixir
-workers = Dux.Flame.spin_up(5,
+# Start with 3 workers — each takes ~30s to boot (driver download + setup).
+# Scale up with more if needed.
+workers = Dux.Flame.spin_up(3,
   pool: :dux_pool,
   memory_limit: "4GB",
   setup: fn ->
