@@ -14,10 +14,6 @@ defmodule Dux.QueryBuilder do
   """
   def build(%Dux{source: source, ops: ops}, db) do
     {source_sql, setup} = source_to_sql(source, db)
-    # Prepend macro definitions so they're available on remote workers.
-    # CREATE OR REPLACE is idempotent — safe to replay on every build.
-    macro_setup = Dux.macro_setup_sqls()
-    setup = macro_setup ++ setup
 
     case ops do
       [] ->

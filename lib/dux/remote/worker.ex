@@ -72,6 +72,11 @@ defmodule Dux.Remote.Worker do
     GenServer.call(worker, {:setup, fun}, timeout)
   end
 
+  @doc false
+  def execute_sqls(worker, sqls, timeout \\ 30_000) when is_list(sqls) do
+    GenServer.call(worker, {:execute_sqls, sqls}, timeout)
+  end
+
   @doc """
   Execute a `%Dux{}` pipeline on a worker. Returns `{:ok, ipc_binary}` or `{:error, reason}`.
 
@@ -170,6 +175,19 @@ defmodule Dux.Remote.Worker do
     :pg.join(@pg_group, self())
 
     {:ok, %{db: db, conn: conn, tables: %{}}}
+  end
+
+  @impl true
+  def handle_call({:execute_sqls, sqls}, _from, %{conn: conn} = state) do
+    result =
+      try do
+        Enum.each(sqls, &Dux.Backend.execute(conn, &1))
+        :ok
+      rescue
+        e -> {:error, Exception.message(e)}
+      end
+
+    {:reply, result, state}
   end
 
   @impl true

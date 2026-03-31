@@ -57,6 +57,11 @@ defmodule Dux.Remote.Coordinator do
     # DuckLake attached sources → file manifest for direct parquet reads.
     pipeline = resolve_ducklake_source(pipeline)
 
+    # Replay SQL macros on all workers. Macros are stored in
+    # :persistent_term on the coordinator node — remote workers
+    # can't read them. Send the CREATE MACRO SQLs explicitly.
+    replay_macros_on_workers(workers, timeout)
+
     # Split pipeline: worker ops push down, coordinator ops apply post-merge
     %{
       worker_ops: worker_ops,
@@ -825,5 +830,19 @@ defmodule Dux.Remote.Coordinator do
   defp apply_single_op(dux, op) do
     # Unknown op — append directly
     %{dux | ops: dux.ops ++ [op]}
+  end
+
+  # Replay SQL macros on workers before query execution.
+  # Macros live in :persistent_term on the coordinator node —
+  # remote workers need explicit CREATE MACRO calls on their
+  # private DuckDB connections.
+  defp replay_macros_on_workers(workers, _timeout) do
+    macro_sqls = Dux.macro_setup_sqls()
+
+    if macro_sqls != [] do
+      Enum.each(workers, fn worker ->
+        Worker.execute_sqls(worker, macro_sqls)
+      end)
+    end
   end
 end
