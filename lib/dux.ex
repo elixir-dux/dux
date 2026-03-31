@@ -1740,11 +1740,26 @@ defmodule Dux do
       ...> |> Dux.n_rows()
       42
   """
-  def n_rows(%Dux{} = dux) do
-    computed = compute(dux)
-    {:table, ref} = computed.source
-    conn = computed.conn || Dux.Connection.get_conn()
+  def n_rows(%Dux{source: {:table, ref}, ops: []} = dux) do
+    # Already materialized with no ops — just count directly
+    conn = dux.conn || Dux.Connection.get_conn()
     Dux.Backend.table_n_rows(conn, ref)
+  end
+
+  def n_rows(%Dux{} = dux) do
+    # Compile the pipeline to SQL and wrap in COUNT(*) —
+    # DuckDB can push down the count without materializing all rows.
+    # For Parquet sources, this uses file metadata instead of scanning.
+    conn = dux.conn || Dux.Connection.get_conn()
+    {sql, source_setup} = Dux.QueryBuilder.build(dux, conn)
+
+    Enum.each(source_setup, fn setup_sql ->
+      Dux.Backend.execute(conn, setup_sql)
+    end)
+
+    result = Adbc.Connection.query!(conn, "SELECT count(*) AS n FROM (#{sql}) __cnt")
+    %{"n" => [n]} = Adbc.Result.to_map(result)
+    Dux.Backend.normalize_count(n)
   end
 
   # ---------------------------------------------------------------------------

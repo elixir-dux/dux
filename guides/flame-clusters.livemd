@@ -47,14 +47,20 @@ The data is **public — no S3 credentials needed**.
 
 ## 1. Configure Anonymous S3 Access
 
-DuckDB reads S3 via the `httpfs` extension. For public buckets,
-we set empty credentials so DuckDB makes unsigned requests.
+DuckDB reads S3 via the `httpfs` extension. For public buckets, we
+use the credential chain provider which falls back to unsigned requests.
 
 ```elixir
+require Dux
 Dux.exec("INSTALL httpfs; LOAD httpfs")
-Dux.exec("SET s3_region = 'us-west-2'")
-Dux.exec("SET s3_access_key_id = ''")
-Dux.exec("SET s3_secret_access_key = ''")
+  Dux.exec("SET s3_region = 'us-west-2'")
+  Dux.exec("SET s3_access_key_id = ''")
+  Dux.exec("SET s3_secret_access_key = ''")
+
+```
+
+```elixir
+require Dux
 ```
 
 ## 2. Explore Locally First
@@ -132,11 +138,9 @@ workers = Dux.Flame.spin_up(5,
   pool: :dux_pool,
   memory_limit: "4GB",
   setup: fn ->
-    # Each worker needs httpfs + anonymous S3 access
+    # Each worker needs httpfs + S3 access configured
     Dux.exec("INSTALL httpfs; LOAD httpfs")
-    Dux.exec("SET s3_region = 'us-west-2'")
-    Dux.exec("SET s3_access_key_id = ''")
-    Dux.exec("SET s3_secret_access_key = ''")
+    Dux.create_secret(:ookla, type: :s3, provider: :credential_chain, region: "us-west-2")
   end
 )
 
@@ -269,4 +273,4 @@ Each machine:
 
 No infrastructure to manage. No cluster to maintain. Just notebooks and queries.
 
-<!-- livebook:{"offset":6907,"stamp":{"token":"XCP.YV9WIgnEDVXWJgeu_tDpiYb2eip1zZuhFC03RGlOo0tW850vmDpKb6VyH2OQSHlwcRY2n6c7Yw_CUt2TZIaO8HgBnLdWmJndHKxnMu_SHTuhnMGCWCiGyg","version":2}} -->
+<!-- livebook:{"offset":6959,"stamp":{"token":"XCP.Uz31GTEAN-Og6OWyZqbNDzOco2d6b3K3smtXWMi7TopC0MxvQA86bzNOtO8vjMrptaqNrS2uYKAK2hXYJzauuL8pPGN-nEf1NI4MDsYPrtztudvXfHvmnQ","version":2}} -->

@@ -88,6 +88,9 @@ defmodule Dux.Backend do
   # ---------------------------------------------------------------------------
 
   @doc false
+  def normalize_count(n), do: normalize_value(n)
+
+  @doc false
   def table_names(conn, %TableRef{name: name}) do
     {names, _types} = describe_table(conn, name)
     names
