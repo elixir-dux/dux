@@ -2,7 +2,7 @@
 
 ```elixir
 Mix.install([
-  {:dux, github: "elixir-dux/dux", override: true},
+  {:dux, github: "elixir-dux/dux", branch: "docs/guides-and-flame-cluster", override: true},
   {:kino_dux, "~> 0.1"},
   {:flame, "~> 0.5"}
 ])
@@ -202,8 +202,8 @@ speed_distribution =
     tiles: count(tier),
     total_tests: sum(tests)
   )
-  |> Dux.sort_by([:type, :tiles])
   |> Dux.collect()
+  |> Dux.sort_by([:type, desc: :tiles])
   |> Dux.to_rows()
 ```
 
@@ -268,5 +268,3 @@ Each machine:
 7. Auto-terminated after 5 minutes idle
 
 No infrastructure to manage. No cluster to maintain. Just notebooks and queries.
-
-<!-- livebook:{"offset":6959,"stamp":{"token":"XCP.Uz31GTEAN-Og6OWyZqbNDzOco2d6b3K3smtXWMi7TopC0MxvQA86bzNOtO8vjMrptaqNrS2uYKAK2hXYJzauuL8pPGN-nEf1NI4MDsYPrtztudvXfHvmnQ","version":2}} -->
