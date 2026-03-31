@@ -2,6 +2,43 @@
 
 All notable changes to Dux are documented here.
 
+## [0.3.0] - 2026-03-31
+
+### Bug Fixes
+
+- Mermaid rendering in ex_doc (exdoc:loaded + mermaid v11)
+- Asof_join doc group :join → :joins (#31)
+
+### Documentation
+
+- Add pre-production callout to README (#28)
+- FLAME cluster guide + fixes for distributed AVG rewrite, macro replay, n_rows (#47)
+
+### Features
+
+- Add Dux.exec/1 for raw DDL execution (#29)
+- Add cond/if/in to Query macro, document function pass-through (#32)
+- Per-worker stats in meta, remove pool-name status overload (#38)
+- Connection pool with persistent_term dispatch (#41)
+- SQL macros — Dux.define, define_table, undefine, list_macros (#42)
+- Shuffle hardening — memory limits, spill-to-disk, exchange serialization, skew mitigation (#43)
+
+### Miscellaneous
+
+- Post release (#26)
+- Upgrade ADBC 0.10 → 0.11 (#45)
+
+### Performance
+
+- Streaming merger delegates to DuckDB instead of Elixir-side folding (#34)
+- Use IPC instead of Elixir rows for table replication to workers (#35)
+- Eliminate data round-trip in Backend.query/2 (#40)
+- View-based compute with schema derivation (#46)
+
+### Refactoring
+
+- Build graph adjacency in DuckDB instead of Elixir MapSets (#36)
+
 ## [0.2.0] - 2026-03-24
 
 ### Bug Fixes

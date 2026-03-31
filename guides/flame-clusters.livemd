@@ -2,7 +2,7 @@
 
 ```elixir
 Mix.install([
-  {:dux, github: "elixir-dux/dux", branch: "docs/guides-and-flame-cluster", override: true},
+  {:dux, "~> 0.3.0"},
   {:kino_dux, "~> 0.1"},
   {:flame, "~> 0.5"}
 ])

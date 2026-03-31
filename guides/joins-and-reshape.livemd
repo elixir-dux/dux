@@ -1,7 +1,7 @@
 # Joins & Reshape
 
 ```elixir
-Mix.install([{:dux, "~> 0.2.0"}])
+Mix.install([{:dux, "~> 0.3.0"}])
 ```
 
 ## NYC Flights: A Star Schema

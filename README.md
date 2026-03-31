@@ -50,7 +50,7 @@ Where Dux diverges from Explorer:
 
 ```elixir
 def deps do
-  [{:dux, "~> 0.2.0"}]
+  [{:dux, "~> 0.3.0"}]
 end
 ```
 
@@ -179,7 +179,7 @@ Add [`kino_dux`](https://github.com/elixir-dux/kino_dux) for rich rendering and 
 
 ```elixir
 Mix.install([
-  {:dux, "~> 0.2.0"},
+  {:dux, "~> 0.3.0"},
   {:kino_dux, "~> 0.1"}
 ])
 ```
