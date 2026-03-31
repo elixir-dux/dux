@@ -809,20 +809,8 @@ defmodule Dux.Remote.Coordinator do
     if pipeline.ops == [] do
       pipeline
     else
-      # Materialize with CTAS (not views) for coordinator post-merge.
-      # The merged result may have internal columns (__avg_sum_*, etc.)
-      # that views can't always resolve due to GC timing of the
-      # intermediate merged table. CTAS is safe and the data is small
-      # (aggregation results).
       local = %{pipeline | workers: nil}
-      conn = local.conn || Dux.Connection.get_conn()
-      {sql, source_setup} = Dux.QueryBuilder.build(local, conn)
-
-      Enum.each(source_setup, fn s -> Dux.Backend.execute(conn, s) end)
-
-      table_ref = Dux.Backend.query(conn, sql)
-      {names, dtypes} = Dux.Backend.table_schema(conn, table_ref)
-      %Dux{source: {:table, table_ref}, names: names, dtypes: dtypes, conn: conn}
+      Dux.compute(local)
     end
   end
 

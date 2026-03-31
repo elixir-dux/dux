@@ -80,7 +80,18 @@ defmodule Dux.Remote.PipelineSplitter do
   # Summarise — push to workers, but rewrite AVG and track for re-aggregation
   defp do_split([{:summarise, aggs} | rest], worker, coord, rewrites) do
     {worker_aggs, new_rewrites} = rewrite_aggregates(aggs)
-    do_split(rest, [{:summarise, worker_aggs} | worker], coord, Map.merge(rewrites, new_rewrites))
+    all_rewrites = Map.merge(rewrites, new_rewrites)
+
+    if map_size(new_rewrites) > 0 do
+      # When we have AVG/STDDEV rewrites, ops after summarise may reference
+      # the original column names (e.g. sort_by(:avg_col)) which don't exist
+      # on workers (rewritten to __avg_sum_*, __avg_count_*). Push remaining
+      # ops to coordinator only.
+      remaining_coord = Enum.reverse(rest)
+      {[{:summarise, worker_aggs} | worker], remaining_coord ++ coord, all_rewrites}
+    else
+      do_split(rest, [{:summarise, worker_aggs} | worker], coord, all_rewrites)
+    end
   end
 
   # Sort, head, distinct — push to workers AND add to coordinator for re-merge
