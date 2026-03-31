@@ -202,8 +202,8 @@ speed_distribution =
     tiles: count(tier),
     total_tests: sum(tests)
   )
-  |> Dux.collect()
   |> Dux.sort_by([:type, desc: :tiles])
+  |> Dux.collect()
   |> Dux.to_rows()
 ```
 
