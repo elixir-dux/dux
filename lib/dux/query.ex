@@ -101,7 +101,83 @@ defmodule Dux.Query do
   For the full list, see the
   [DuckDB Functions reference](https://duckdb.org/docs/sql/functions/overview).
 
-  For anything the macro doesn't support (window functions, subqueries),
+  ## Window functions
+
+  Use `over/2` inside `mutate` to apply window functions. Each column can
+  have its own window specification:
+
+      # Ranking within groups
+      Dux.mutate(df,
+        rank: over(row_number(), partition_by: :dept, order_by: [desc: :salary])
+      )
+
+      # Running totals
+      Dux.mutate(df, running: over(sum(amount), order_by: :date))
+
+      # Percentage of group
+      Dux.mutate(df, pct: salary * 100.0 / over(sum(salary), partition_by: :dept))
+
+      # Lag / lead
+      Dux.mutate(df,
+        prev: over(lag(amount, 1), order_by: :date),
+        next: over(lead(amount, 1), order_by: :date)
+      )
+
+  ### `over/2` options
+
+    * `:partition_by` — column or list of columns to partition by
+    * `:order_by` — column, or keyword list with `:asc`/`:desc` directions
+    * `:frame` — frame specification (see below)
+
+  ### Frame specifications
+
+  Frames control which rows are included in the window. Pass a tuple of
+  `{type, start, end}` where:
+
+    * **type** — `:rows`, `:range`, or `:groups`
+    * **start** — negative integer (N PRECEDING), `:unbounded` (UNBOUNDED PRECEDING),
+      `:current` or `0` (CURRENT ROW)
+    * **end** — positive integer (N FOLLOWING), `:unbounded` (UNBOUNDED FOLLOWING),
+      `:current` or `0` (CURRENT ROW)
+
+  Common patterns:
+
+      # 3-row moving average (2 preceding + current)
+      over(avg(x), order_by: :date, frame: {:rows, -2, :current})
+
+      # Cumulative sum (all preceding rows)
+      over(sum(x), order_by: :date, frame: {:rows, :unbounded, :current})
+
+      # Centered 5-row window (2 preceding + current + 2 following)
+      over(avg(x), order_by: :date, frame: {:rows, -2, 2})
+
+      # All rows in the partition
+      over(sum(x), frame: {:rows, :unbounded, :unbounded})
+
+      # Range-based window (value range, not row count)
+      over(sum(x), order_by: :date, frame: {:range, :unbounded, :current})
+
+  Add an `exclude:` option for EXCLUDE clauses:
+
+      # Exclude current row from the window
+      over(avg(x), order_by: :val, frame: {:rows, -2, 2, exclude: :current})
+
+      # Exclude tied rows
+      over(avg(x), order_by: :val, frame: {:rows, :unbounded, :unbounded, exclude: :ties})
+
+  Exclude options: `:current`, `:group`, `:ties`, `:no_others`.
+
+  Raw SQL strings still work as a fallback for complex frames:
+
+      over(sum(x), frame: "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING")
+
+  ### Bare window
+
+  `over/1` with no options applies the function over the entire result set:
+
+      Dux.mutate(df, total: over(sum(amount)))
+
+  For anything the macro doesn't support (subqueries, etc.),
   use the `_with` variants (`mutate_with/2`, `filter_with/2`) which accept
   raw DuckDB SQL strings.
 
@@ -267,6 +343,23 @@ defmodule Dux.Query do
     {{:concat, l_ast, r_ast}, pins}
   end
 
+  # over(expr, opts) — window function: expr OVER (PARTITION BY ... ORDER BY ...)
+  defp traverse({:over, _meta, [expr, opts]}, pins) when is_list(opts) do
+    {expr_ast, pins} = traverse(expr, pins)
+    {partition_asts, pins} = traverse_partition_by(Keyword.get(opts, :partition_by), pins)
+    {order_asts, pins} = traverse_order_by(Keyword.get(opts, :order_by), pins)
+    # Resolve frame at macro expansion time — it's always a literal (tuple, string, or nil).
+    # Elixir AST represents 3+ element tuples as {:{}, meta, elements}, so we unwrap.
+    frame = opts |> Keyword.get(:frame) |> resolve_frame_ast()
+    {{:over, expr_ast, partition_asts, order_asts, frame}, pins}
+  end
+
+  # over(expr) — bare window (OVER ())
+  defp traverse({:over, _meta, [expr]}, pins) do
+    {expr_ast, pins} = traverse(expr, pins)
+    {{:over, expr_ast, [], [], nil}, pins}
+  end
+
   # Function calls — aggregations and other functions
   defp traverse({func, _meta, args}, pins) when is_atom(func) and is_list(args) do
     {arg_asts, pins} =
@@ -323,4 +416,60 @@ defmodule Dux.Query do
   defp translate_op(:/), do: :div
   defp translate_op(:and), do: :and
   defp translate_op(:or), do: :or
+
+  # --- Window frame AST resolution ---
+  # At macro expansion time, tuples with 3+ elements are represented as
+  # {:{}, meta, elements} in the AST. We unwrap them to plain tuples
+  # so the compiler receives runtime-like values.
+
+  defp resolve_frame_ast(nil), do: nil
+  defp resolve_frame_ast(s) when is_binary(s), do: s
+  defp resolve_frame_ast({a, b}), do: {a, b}
+
+  defp resolve_frame_ast({:{}, _meta, elements}) do
+    elements |> Enum.map(&resolve_frame_element/1) |> List.to_tuple()
+  end
+
+  defp resolve_frame_ast(other), do: other
+
+  # Negative literals are {:-, meta, [n]} in the AST
+  defp resolve_frame_element({:-, _meta, [n]}) when is_integer(n), do: -n
+  defp resolve_frame_element(other), do: other
+
+  # --- Window function helpers ---
+
+  defp traverse_partition_by(nil, pins), do: {[], pins}
+
+  defp traverse_partition_by(cols, pins) when is_list(cols),
+    do: Enum.map_reduce(cols, pins, &traverse/2)
+
+  defp traverse_partition_by(col, pins) do
+    {ast, pins} = traverse(col, pins)
+    {[ast], pins}
+  end
+
+  defp traverse_order_by(nil, pins), do: {[], pins}
+
+  defp traverse_order_by(specs, pins) when is_list(specs),
+    do: Enum.map_reduce(specs, pins, &traverse_order_spec/2)
+
+  defp traverse_order_by(col, pins) do
+    {ast, pins} = traverse(col, pins)
+    {[{:asc, ast}], pins}
+  end
+
+  defp traverse_order_spec({:asc, col}, pins) do
+    {ast, pins} = traverse(col, pins)
+    {{:asc, ast}, pins}
+  end
+
+  defp traverse_order_spec({:desc, col}, pins) do
+    {ast, pins} = traverse(col, pins)
+    {{:desc, ast}, pins}
+  end
+
+  defp traverse_order_spec(col, pins) do
+    {ast, pins} = traverse(col, pins)
+    {{:asc, ast}, pins}
+  end
 end
