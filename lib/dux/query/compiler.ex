@@ -139,6 +139,22 @@ defmodule Dux.Query.Compiler do
     {"#{sql_name}(#{Enum.join(arg_sqls, ", ")})", all_params, idx}
   end
 
+  # --- Window functions: OVER (PARTITION BY ... ORDER BY ...) ---
+
+  defp compile({:over, expr, partition_by, order_by, frame}, pins, idx) do
+    {expr_sql, expr_params, idx} = compile(expr, pins, idx)
+    {partition_clause, partition_params, idx} = compile_partition_by(partition_by, pins, idx)
+    {order_clause, order_params, idx} = compile_order_by(order_by, pins, idx)
+    frame_clause = compile_frame(frame)
+
+    window_parts =
+      [partition_clause, order_clause, frame_clause]
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.join(" ")
+
+    {"#{expr_sql} OVER (#{window_parts})", expr_params ++ partition_params ++ order_params, idx}
+  end
+
   # --- CASE WHEN ---
 
   defp compile({:case_when, pairs, else_expr}, pins, idx) do
@@ -200,6 +216,69 @@ defmodule Dux.Query.Compiler do
   defp compile({:desc, expr}, pins, idx) do
     {sql, params, idx} = compile(expr, pins, idx)
     {"#{sql} DESC", params, idx}
+  end
+
+  # --- Frame clause compilation ---
+
+  defp compile_frame(nil), do: ""
+  defp compile_frame(s) when is_binary(s), do: s
+
+  defp compile_frame({type, start_bound, end_bound}) when type in [:rows, :range, :groups] do
+    type_str = type |> to_string() |> String.upcase()
+    "#{type_str} BETWEEN #{frame_bound(start_bound, :start)} AND #{frame_bound(end_bound, :end)}"
+  end
+
+  defp compile_frame({type, start_bound, end_bound, opts})
+       when type in [:rows, :range, :groups] and is_list(opts) do
+    base = compile_frame({type, start_bound, end_bound})
+
+    case Keyword.get(opts, :exclude) do
+      nil -> base
+      :current -> "#{base} EXCLUDE CURRENT ROW"
+      :group -> "#{base} EXCLUDE GROUP"
+      :ties -> "#{base} EXCLUDE TIES"
+      :no_others -> "#{base} EXCLUDE NO OTHERS"
+    end
+  end
+
+  # Frame bounds: negative = PRECEDING, positive = FOLLOWING, 0 = CURRENT ROW.
+  # :unbounded in start position = UNBOUNDED PRECEDING
+  # :unbounded in end position = UNBOUNDED FOLLOWING
+  # We compile start and end separately to handle :unbounded direction.
+  defp frame_bound(n, _position) when is_integer(n) and n < 0, do: "#{abs(n)} PRECEDING"
+  defp frame_bound(n, _position) when is_integer(n) and n > 0, do: "#{n} FOLLOWING"
+  defp frame_bound(0, _position), do: "CURRENT ROW"
+  defp frame_bound(:current, _position), do: "CURRENT ROW"
+  defp frame_bound(:unbounded, :start), do: "UNBOUNDED PRECEDING"
+  defp frame_bound(:unbounded, :end), do: "UNBOUNDED FOLLOWING"
+
+  # --- Window function helpers ---
+
+  defp compile_partition_by([], _pins, idx), do: {"", [], idx}
+
+  defp compile_partition_by(cols, pins, idx) do
+    {col_sqls, all_params, idx} = compile_list(cols, pins, idx)
+    {"PARTITION BY #{Enum.join(col_sqls, ", ")}", all_params, idx}
+  end
+
+  defp compile_order_by([], _pins, idx), do: {"", [], idx}
+
+  defp compile_order_by(specs, pins, idx) do
+    {spec_sqls, all_params, idx} =
+      Enum.reduce(specs, {[], [], idx}, fn {dir, col_ast}, {sqls, params, idx} ->
+        {sql, new_params, idx} = compile(col_ast, pins, idx)
+        dir_str = if dir == :desc, do: "DESC", else: "ASC"
+        {sqls ++ ["#{sql} #{dir_str}"], params ++ new_params, idx}
+      end)
+
+    {"ORDER BY #{Enum.join(spec_sqls, ", ")}", all_params, idx}
+  end
+
+  defp compile_list(items, pins, idx) do
+    Enum.reduce(items, {[], [], idx}, fn item, {sqls, params, idx} ->
+      {sql, new_params, idx} = compile(item, pins, idx)
+      {sqls ++ [sql], params ++ new_params, idx}
+    end)
   end
 
   # --- Helpers ---
