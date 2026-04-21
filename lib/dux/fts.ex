@@ -65,6 +65,16 @@ defmodule Dux.FTS do
       ~s(CREATE TEMP TABLE "#{fts_table}" AS SELECT * FROM "#{ref.name}")
     )
 
+    # DuckDB defaults to the HTTP extension repository. In locked-down
+    # environments HTTPS is often the only allowed transport, so pin the
+    # core extension repository explicitly before installing FTS.
+    Adbc.Connection.query!(
+      conn,
+      "SET custom_extension_repository = 'https://extensions.duckdb.org'"
+    )
+
+    Adbc.Connection.query!(conn, "INSTALL fts FROM 'https://extensions.duckdb.org'; LOAD fts;")
+
     col_args = Enum.map_join(text_columns, ", ", &"'#{to_string(&1)}'")
 
     Adbc.Connection.query!(conn, """

@@ -275,9 +275,15 @@ defmodule Dux do
   Each line in the file must be a valid JSON object. This is a common format
   for log files, streaming exports, and data interchange.
 
+  Plain `.json` files also work because DuckDB auto-detects JSON layouts.
+  If `path` ends with `.zip`, Dux installs and loads DuckDB's `zipfs`
+  community extension, then reads any `.json`, `.ndjson`, or `.jsonl` files
+  found inside the archive.
+
   ## Examples
 
       df = Dux.from_ndjson("events.ndjson")
+      df = Dux.from_ndjson("/tmp/ytj_all_companies.zip")
 
   NDJSON files look like this (one JSON object per line):
 

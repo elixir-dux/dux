@@ -71,6 +71,12 @@ File.write!(ndjson_path, """
 Dux.from_ndjson(ndjson_path) |> Dux.compute()
 ```
 
+Zip archives also work through DuckDB `zipfs`:
+
+```elixir
+Dux.from_ndjson("/tmp/ytj_all_companies.zip") |> Dux.compute()
+```
+
 ## Writing Files
 
 ### CSV

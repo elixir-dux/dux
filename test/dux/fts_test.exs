@@ -1,5 +1,6 @@
 defmodule Dux.FTSTest do
   use ExUnit.Case, async: false
+  @moduletag :fts
   @moduletag timeout: 120_000
 
   # DuckDB's FTS extension can crash when multiple FTS indexes exist on

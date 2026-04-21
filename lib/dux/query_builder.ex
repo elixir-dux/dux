@@ -191,8 +191,63 @@ defmodule Dux.QueryBuilder do
     {"SELECT * FROM read_csv('#{escaped}'#{options})", []}
   end
 
-  defp source_to_sql({:ndjson, path, _opts}, _db) do
-    {"SELECT * FROM read_json_auto('#{escape_sql_string(path)}')", []}
+  defp source_to_sql({:ndjson, path, _opts}, db) do
+    if zip_archive?(path) do
+      setup = ["INSTALL zipfs FROM community; LOAD zipfs;"]
+      Enum.each(setup, &Dux.Backend.execute(db, &1))
+
+      members = zipfs_json_members!(db, path)
+      {"SELECT * FROM read_json_auto(#{sql_string_list(members)})", setup}
+    else
+      {"SELECT * FROM read_json_auto('#{escape_sql_string(path)}')", []}
+    end
+  end
+
+  defp zip_archive?(path) do
+    String.downcase(Path.extname(path)) == ".zip"
+  end
+
+  defp zipfs_json_members!(db, path) do
+    path
+    |> zipfs_member_patterns()
+    |> Enum.flat_map(&zipfs_glob(db, &1))
+    |> Enum.filter(&zipfs_json_member?/1)
+    |> Enum.uniq()
+    |> case do
+      [] ->
+        raise ArgumentError,
+              "zip archive #{inspect(path)} does not contain any .json, .ndjson, or .jsonl files"
+
+      members ->
+        members
+    end
+  end
+
+  defp zipfs_member_patterns(path) do
+    [
+      zipfs_uri(path, "*"),
+      zipfs_uri(path, "**")
+    ]
+  end
+
+  defp zipfs_json_member?(path) do
+    downcased = String.downcase(path)
+    String.ends_with?(downcased, [".json", ".ndjson", ".jsonl"])
+  end
+
+  defp zipfs_glob(db, pattern) do
+    escaped = escape_sql_string(pattern)
+    result = Adbc.Connection.query!(db, "SELECT file FROM glob('#{escaped}')")
+    map = Adbc.Result.to_map(result)
+    map["file"] || []
+  end
+
+  defp zipfs_uri(path, inner_pattern) do
+    "zip://#{path}/#{inner_pattern}"
+  end
+
+  defp sql_string_list(paths) do
+    "[" <> Enum.map_join(paths, ", ", &"'#{escape_sql_string(&1)}'") <> "]"
   end
 
   # ---------------------------------------------------------------------------

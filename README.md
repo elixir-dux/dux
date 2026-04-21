@@ -199,13 +199,13 @@ Lazy pipelines render with source provenance, operations, and generated SQL. Com
 - [Graph Analytics](https://hexdocs.pm/dux/graph-analytics.html) — PageRank, shortest paths, components
 - [Cheatsheet](https://hexdocs.pm/dux/cheatsheet.html) — quick reference for all verbs
 
-## License
-
-Dual-licensed under Apache 2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
-
 ## Links
 
 - [HexDocs](https://hexdocs.pm/dux)
 - [Hex.pm](https://hex.pm/packages/dux)
 - [GitHub](https://github.com/elixir-dux/dux)
 - [Changelog](CHANGELOG.md)
+
+## License
+
+Dual-licensed under Apache 2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).

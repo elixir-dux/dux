@@ -1,3 +1,23 @@
+system_cacerts_path =
+  [
+    System.get_env("ADBC_CACERTS_PATH"),
+    System.get_env("HEX_CACERTS_PATH"),
+    System.get_env("SSL_CERT_FILE"),
+    System.get_env("NIX_SSL_CERT_FILE"),
+    Path.expand("deps/certifi/priv/cacerts.pem", __DIR__)
+  ]
+  |> Enum.find(&(is_binary(&1) and File.exists?(&1)))
+
+if system_cacerts_path do
+  unless System.get_env("ADBC_CACERTS_PATH") do
+    System.put_env("ADBC_CACERTS_PATH", system_cacerts_path)
+  end
+
+  unless System.get_env("HEX_CACERTS_PATH") do
+    System.put_env("HEX_CACERTS_PATH", system_cacerts_path)
+  end
+end
+
 defmodule Dux.MixProject do
   use Mix.Project
 
@@ -13,6 +33,7 @@ defmodule Dux.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+      test_coverage: test_coverage(),
       deps: deps(),
       aliases: aliases(),
       package: package(),
@@ -35,6 +56,20 @@ defmodule Dux.MixProject do
 
   defp elixirc_paths(:test), do: ~w(lib test/support)
   defp elixirc_paths(_), do: ~w(lib)
+
+  defp test_coverage do
+    [
+      summary: [threshold: 75],
+      ignore_modules: [
+        FLAME.Trackable.Dux,
+        Inspect.Dux,
+        Inspect.Dux.Graph,
+        Mix.Tasks.Ecto.Migrate,
+        Mix.Tasks.Ecto.Migrations,
+        Table.Reader.Dux
+      ]
+    ]
+  end
 
   defp deps do
     [

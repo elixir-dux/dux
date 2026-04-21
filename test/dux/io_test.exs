@@ -216,6 +216,56 @@ defmodule Dux.IOTest do
         File.rm(path)
       end
     end
+
+    test "reads JSON from zip archives through zipfs" do
+      dir = tmp_path("zip_json_dir")
+      archive = tmp_path("basic_json.zip")
+
+      try do
+        File.mkdir_p!(dir)
+        File.write!(Path.join(dir, "companies.json"), ~s([{"x":1,"y":"a"},{"x":2,"y":"b"}]))
+        create_zip!(archive, dir, ["companies.json"])
+
+        result =
+          Dux.from_ndjson(archive)
+          |> Dux.sort_by(:x)
+          |> Dux.to_columns()
+
+        assert result["x"] == [1, 2]
+        assert result["y"] == ["a", "b"]
+      after
+        File.rm_rf!(dir)
+        File.rm(archive)
+      end
+    end
+
+    test "reads nested ndjson files from zip archives through zipfs" do
+      dir = tmp_path("zip_ndjson_dir")
+      archive = tmp_path("nested_ndjson.zip")
+
+      try do
+        nested_dir = Path.join(dir, "nested")
+        File.mkdir_p!(nested_dir)
+
+        File.write!(Path.join(nested_dir, "events.ndjson"), """
+        {"x":2,"y":"b"}
+        {"x":1,"y":"a"}
+        """)
+
+        create_zip!(archive, dir, ["nested/events.ndjson"])
+
+        result =
+          Dux.from_ndjson(archive)
+          |> Dux.sort_by(:x)
+          |> Dux.to_columns()
+
+        assert result["x"] == [1, 2]
+        assert result["y"] == ["a", "b"]
+      after
+        File.rm_rf!(dir)
+        File.rm(archive)
+      end
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -733,6 +783,15 @@ defmodule Dux.IOTest do
           File.rm_rf!(dir)
         end
       end
+    end
+  end
+
+  defp create_zip!(archive, cwd, files) do
+    char_files = Enum.map(files, &String.to_charlist/1)
+
+    case :zip.create(String.to_charlist(archive), char_files, cwd: String.to_charlist(cwd)) do
+      {:ok, _} -> :ok
+      {:error, reason} -> flunk("zip fixture creation failed: #{inspect(reason)}")
     end
   end
 end

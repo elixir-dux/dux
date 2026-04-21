@@ -230,7 +230,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
       end
     end
 
-    test "pivot_longer works distributed" do
+    test "pivot_longer applies on coordinator, not workers" do
       {peer1, node1} = start_peer(:unpivot1)
       {peer2, node2} = start_peer(:unpivot2)
 
@@ -248,8 +248,9 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           |> Dux.distribute([w1, w2])
           |> Dux.n_rows()
 
-        # 2 rows × 2 quarters × 2 workers (replicated) = 8
-        assert result == 8
+        # pivot_longer stays on the coordinator after merge, so the
+        # replicated source is normalized once.
+        assert result == 4
       after
         :peer.stop(peer1)
         :peer.stop(peer2)
