@@ -1,25 +1,44 @@
 # Start distribution for :peer-based distributed tests.
 # :peer needs the parent node to be alive for dist-connected peers.
-unless Node.alive?() do
-  sname = :"dux_test_#{:erlang.unique_integer([:positive])}"
+distributed_exclusion =
+  if Node.alive?() do
+    []
+  else
+    sname = :"dux_test_#{:erlang.unique_integer([:positive])}"
 
-  case Node.start(sname, :shortnames) do
-    {:ok, _} ->
-      :ok
+    case Node.start(sname, :shortnames) do
+      {:ok, _} ->
+        []
 
-    {:error, reason} ->
-      IO.puts("⚠ Distribution not available (#{inspect(reason)}) — excluding :distributed tests")
+      {:error, reason} ->
+        IO.puts(
+          "⚠ Distribution not available (#{inspect(reason)}) — excluding :distributed tests"
+        )
+
+        :distributed
+    end
   end
-end
 
 # Start testcontainers for integration tests (requires Docker)
-case Testcontainers.start_link() do
-  {:ok, _} -> :ok
-  {:error, _} -> IO.puts("⚠ Docker not available — excluding :container tests")
-end
+old = Process.flag(:trap_exit, true)
 
-if Node.alive?() do
-  ExUnit.start()
-else
-  ExUnit.start(exclude: [:distributed])
-end
+container_exclusion =
+  case Testcontainers.start_link() do
+    {:ok, _} ->
+      []
+
+    {:error, reason} ->
+      IO.puts("⚠ Test container not available (#{inspect(reason)}) — excluding :container tests")
+      :container
+  end
+
+Process.flag(:trap_exit, old)
+
+
+  case List.flatten([distributed_exclusion, container_exclusion]) do
+    [] ->
+      ExUnit.start()
+
+    exclusions ->
+      ExUnit.start(exclude: exclusions)
+  end
