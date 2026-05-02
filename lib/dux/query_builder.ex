@@ -459,6 +459,10 @@ defmodule Dux.QueryBuilder do
   defp encode_value(v) when is_float(v), do: Float.to_string(v)
   defp encode_value(true), do: "true"
   defp encode_value(false), do: "false"
+  defp encode_value(%Date{} = v), do: "DATE '#{Date.to_iso8601(v)}'"
+  defp encode_value(%Time{} = v), do: "TIME '#{Time.to_iso8601(v)}'"
+  defp encode_value(%NaiveDateTime{} = v), do: "TIMESTAMP '#{NaiveDateTime.to_iso8601(v)}'"
+  defp encode_value(%DateTime{} = v), do: "TIMESTAMPTZ '#{DateTime.to_iso8601(v)}'"
 
   defp encode_value(v) when is_binary(v) do
     "'#{escape_sql_string(v)}'"
