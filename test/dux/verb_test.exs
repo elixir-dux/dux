@@ -422,6 +422,23 @@ defmodule Dux.VerbTest do
 
       assert result == 10
     end
+
+    test "handles temporal values in small lists" do
+      result =
+        Dux.from_list([
+          %{
+            "date" => ~D[2001-01-01],
+            "time" => ~T[12:34:56],
+            "datetime" => ~N[2001-01-01 00:00:00]
+          }
+        ])
+        |> Dux.to_rows()
+
+      assert [row] = result
+      assert row["date"] == ~D[2001-01-01]
+      assert Time.compare(row["time"], ~T[12:34:56]) == :eq
+      assert NaiveDateTime.compare(row["datetime"], ~N[2001-01-01 00:00:00]) == :eq
+    end
   end
 
   describe "compute/1" do
