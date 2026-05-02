@@ -226,6 +226,7 @@ defmodule Dux do
 
     * `:delimiter` - field delimiter (default: `","`)
     * `:header` - whether the file has a header row (default: `true`)
+    * `:nullstr` — string to treat as NULL (e.g., `"NA"`)
     * `:null_padding` - pad missing columns with NULL (default: `false`)
     * `:skip` - number of rows to skip at the start
     * `:columns` - list of column names or indices to read
