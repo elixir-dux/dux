@@ -2200,6 +2200,10 @@ defmodule Dux do
 
   defp encode_param(v) when is_integer(v), do: Integer.to_string(v)
   defp encode_param(v) when is_float(v), do: Float.to_string(v)
+  defp encode_param(%Date{} = v), do: "'#{Date.to_iso8601(v)}'"
+  defp encode_param(%Time{} = v), do: "'#{Time.to_iso8601(v)}'"
+  defp encode_param(%NaiveDateTime{} = v), do: "'#{NaiveDateTime.to_iso8601(v)}'"
+  defp encode_param(%DateTime{} = v), do: "'#{DateTime.to_iso8601(v)}'"
   defp encode_param(v) when is_binary(v), do: "'#{String.replace(v, "'", "''")}'"
   defp encode_param(true), do: "true"
   defp encode_param(false), do: "false"
