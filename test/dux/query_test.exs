@@ -98,6 +98,17 @@ defmodule Dux.QueryTest do
       assert result["name"] == ["Alice"]
     end
 
+    test "date pin" do
+      cutoff = ~D[2024-01-01]
+
+      result =
+        Dux.from_query("SELECT DATE '2023-12-30' AS d UNION ALL SELECT DATE '2024-01-02' AS d")
+        |> Dux.filter(d > ^cutoff)
+        |> Dux.to_columns()
+
+      assert result["d"] == [~D[2024-01-02]]
+    end
+
     test "multiple pins" do
       lo = 5
       hi = 15
