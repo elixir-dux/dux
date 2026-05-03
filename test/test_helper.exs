@@ -34,11 +34,12 @@ container_exclusion =
 
 Process.flag(:trap_exit, old)
 
+Dux.exec("SET memory_limit = '8GB';")
 
-  case List.flatten([distributed_exclusion, container_exclusion]) do
-    [] ->
-      ExUnit.start()
+case List.flatten([distributed_exclusion, container_exclusion]) do
+  [] ->
+    ExUnit.start()
 
-    exclusions ->
-      ExUnit.start(exclude: exclusions)
-  end
+  exclusions ->
+    ExUnit.start(exclude: exclusions)
+end
