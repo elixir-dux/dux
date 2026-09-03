@@ -199,6 +199,25 @@ Lazy pipelines render with source provenance, operations, and generated SQL. Com
 - [Graph Analytics](https://hexdocs.pm/dux/graph-analytics.html) — PageRank, shortest paths, components
 - [Cheatsheet](https://hexdocs.pm/dux/cheatsheet.html) — quick reference for all verbs
 
+## AI Agents
+
+Dux ships a [`usage-rules.md`](usage-rules.md) — a condensed set of rules for coding
+agents covering the lazy pipeline model, `^` interpolation, aggregation, and the
+gotchas that trip agents up. With
+[`usage_rules`](https://hex.pm/packages/usage_rules) installed, pull it into your
+project's `AGENTS.md`:
+
+```elixir
+# mix.exs
+def project do
+  [usage_rules: [file: "AGENTS.md", usage_rules: [:dux]]]
+end
+```
+
+```console
+$ mix usage_rules.sync
+```
+
 ## License
 
 Dual-licensed under Apache 2.0 and MIT. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
