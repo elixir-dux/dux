@@ -58,6 +58,7 @@ defmodule Dux.MixProject do
         "mix.exs",
         "README.md",
         "CHANGELOG.md",
+        "usage-rules.md",
         "LICENSE-APACHE",
         "LICENSE-MIT"
       ],
@@ -84,6 +85,7 @@ defmodule Dux.MixProject do
         "guides/flame-clusters.livemd",
         "guides/graph-analytics.livemd",
         "guides/cheatsheet.cheatmd",
+        "usage-rules.md",
         "CHANGELOG.md"
       ],
       groups_for_modules: [
