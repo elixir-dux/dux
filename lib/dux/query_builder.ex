@@ -22,8 +22,8 @@ defmodule Dux.QueryBuilder do
       [single_op] ->
         # Single op: emit flat SQL without CTE wrapping
         initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
-        {sql, _groups} = op_to_sql(single_op, initial_prev, [])
-        {sql, setup}
+        {sql, _groups, op_setup} = op_to_sql_with_setup(single_op, initial_prev, [], db)
+        {sql, setup ++ op_setup}
 
       [{:group_by, cols}, {:summarise, aggs}] ->
         # Common pattern: group_by + summarise. Emit flat SQL without CTE.
@@ -33,7 +33,7 @@ defmodule Dux.QueryBuilder do
 
       ops ->
         initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
-        {ctes, _counter, _groups} = build_ctes(ops, initial_prev, 0, [])
+        {ctes, _counter, _groups, op_setup} = build_ctes(ops, initial_prev, 0, [], db)
         last_cte = "__s#{length(ctes) - 1}"
 
         cte_clauses =
@@ -42,7 +42,7 @@ defmodule Dux.QueryBuilder do
           |> Enum.map_join(",\n  ", fn {sql, i} -> "__s#{i} AS (#{sql})" end)
 
         final = "WITH\n  #{cte_clauses}\nSELECT * FROM #{last_cte}"
-        {final, setup}
+        {final, setup ++ op_setup}
     end
   end
 
@@ -199,15 +199,50 @@ defmodule Dux.QueryBuilder do
   # CTE building — each op becomes a CTE
   # ---------------------------------------------------------------------------
 
-  defp build_ctes(ops, initial_prev, counter, groups) do
-    {ctes, counter, groups} =
-      Enum.reduce(ops, {[], counter, groups}, fn op, {ctes, n, groups} ->
+  defp build_ctes(ops, initial_prev, counter, groups, db) do
+    {ctes, counter, groups, setup} =
+      Enum.reduce(ops, {[], counter, groups, []}, fn op, {ctes, n, groups, setup} ->
         prev_ref = if ctes == [], do: initial_prev, else: "__s#{n - 1}"
-        {cte_sql, new_groups} = op_to_sql(op, prev_ref, groups)
-        {ctes ++ [cte_sql], n + 1, new_groups}
+        {cte_sql, new_groups, op_setup} = op_to_sql_with_setup(op, prev_ref, groups, db)
+        {ctes ++ [cte_sql], n + 1, new_groups, setup ++ op_setup}
       end)
 
-    {ctes, counter, groups}
+    {ctes, counter, groups, setup}
+  end
+
+  defp op_to_sql_with_setup({:join, right, how, on_cols, _suffix}, prev, groups, db) do
+    {right_sql, setup} = build(right, db)
+    right_ref = "(#{right_sql}) __right"
+    left_ref = "(SELECT * FROM #{prev}) __left"
+    join_clause = build_join_clause(join_type_sql(how), right_ref, on_cols, "__left")
+    {"SELECT * FROM #{left_ref} #{join_clause}", groups, setup}
+  end
+
+  defp op_to_sql_with_setup(
+         {:asof_join, right, how, on_cols, {by_col, by_op}, _suffix},
+         prev,
+         groups,
+         db
+       ) do
+    {right_sql, setup} = build(right, db)
+    right_ref = "(#{right_sql}) __right"
+    left_ref = "(SELECT * FROM #{prev}) __left"
+    op_str = asof_op_to_sql(by_op)
+
+    conditions =
+      Enum.map(on_cols, fn {l, r} ->
+        "__left.#{quote_ident(l)} = __right.#{quote_ident(r)}"
+      end) ++ ["__left.#{quote_ident(by_col)} #{op_str} __right.#{quote_ident(by_col)}"]
+
+    sql =
+      "SELECT * FROM #{left_ref} #{asof_join_type_sql(how)} #{right_ref} ON #{Enum.join(conditions, " AND ")}"
+
+    {sql, groups, setup}
+  end
+
+  defp op_to_sql_with_setup(op, prev, groups, _db) do
+    {sql, new_groups} = op_to_sql(op, prev, groups)
+    {sql, new_groups, []}
   end
 
   # ---------------------------------------------------------------------------
@@ -327,21 +362,6 @@ defmodule Dux.QueryBuilder do
     {sql, groups}
   end
 
-  defp op_to_sql({:join, right, how, on_cols, _suffix}, prev, groups) do
-    # The right side is inlined as a subquery
-    right_db = Dux.Connection.get_conn()
-    {right_sql, _setup} = source_to_sql(right.source, right_db)
-    right_ref = "(#{right_sql}) __right"
-
-    # Wrap prev in a named subquery so ON conditions can reference it
-    left_ref = "(SELECT * FROM #{prev}) __left"
-
-    join_type = join_type_sql(how)
-
-    join_clause = build_join_clause(join_type, right_ref, on_cols, "__left")
-    {"SELECT * FROM #{left_ref} #{join_clause}", groups}
-  end
-
   defp op_to_sql({:json_unnest, column, path, as_col}, prev, groups) do
     json_expr =
       if path do
@@ -354,27 +374,6 @@ defmodule Dux.QueryBuilder do
       "SELECT __src.*, je.value AS #{quote_ident(as_col)} FROM (SELECT * FROM #{prev}) __src, json_each(#{json_expr}) AS je"
 
     {sql, groups}
-  end
-
-  defp op_to_sql({:asof_join, right, how, on_cols, {by_col, by_op}, _suffix}, prev, groups) do
-    right_db = Dux.Connection.get_conn()
-    {right_sql, _setup} = source_to_sql(right.source, right_db)
-    right_ref = "(#{right_sql}) __right"
-    left_ref = "(SELECT * FROM #{prev}) __left"
-
-    asof_type = asof_join_type_sql(how)
-    op_str = asof_op_to_sql(by_op)
-
-    eq_conditions =
-      Enum.map(on_cols, fn {l, r} ->
-        "__left.#{quote_ident(l)} = __right.#{quote_ident(r)}"
-      end)
-
-    inequality = "__left.#{quote_ident(by_col)} #{op_str} __right.#{quote_ident(by_col)}"
-    all_conditions = eq_conditions ++ [inequality]
-    on_clause = Enum.join(all_conditions, " AND ")
-
-    {"SELECT * FROM #{left_ref} #{asof_type} #{right_ref} ON #{on_clause}", groups}
   end
 
   defp op_to_sql({:concat_rows, others}, prev, groups) do

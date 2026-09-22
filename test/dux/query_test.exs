@@ -226,6 +226,74 @@ defmodule Dux.QueryTest do
     end
   end
 
+  describe "right-side join pipelines" do
+    test "join preserves filter, mutate, and summarise ops" do
+      right =
+        Dux.from_list([
+          %{id: 1, amount: 5},
+          %{id: 1, amount: 10},
+          %{id: 2, amount: 20}
+        ])
+        |> Dux.filter(amount >= 10)
+        |> Dux.mutate(doubled: amount * 2)
+        |> Dux.group_by(:id)
+        |> Dux.summarise(total: sum(doubled))
+
+      result =
+        Dux.from_list([%{id: 1}, %{id: 2}])
+        |> Dux.join(right, on: :id)
+        |> Dux.sort_by(:id)
+        |> Dux.to_rows()
+
+      assert result == [%{"id" => 1, "total" => 20}, %{"id" => 2, "total" => 40}]
+    end
+
+    test "join preserves summarise_with ops" do
+      right =
+        Dux.from_list([%{id: 1, amount: 5}, %{id: 1, amount: 10}])
+        |> Dux.group_by(:id)
+        |> Dux.summarise_with(total: "SUM(amount)")
+
+      result =
+        Dux.from_list([%{id: 1}])
+        |> Dux.join(right, on: :id)
+        |> Dux.to_rows()
+
+      assert result == [%{"id" => 1, "total" => 15}]
+    end
+
+    test "asof_join preserves right-side ops" do
+      right =
+        Dux.from_list([%{ts: 5, score: 2}, %{ts: 9, score: 9}])
+        |> Dux.filter_with("score < 5")
+        |> Dux.mutate_with(doubled: "score * 2")
+
+      [result] =
+        Dux.from_list([%{ts: 10}])
+        |> Dux.asof_join(right, by: {:ts, :>=})
+        |> Dux.to_rows()
+
+      assert result["score"] == 2
+      assert result["doubled"] == 4
+    end
+
+    test "join returns setup SQL from the right-side pipeline" do
+      conn = Dux.Connection.get_conn()
+
+      right = %Dux{
+        source:
+          {:distributed_scan, "postgresql://example.invalid/db", :postgres, "events", "id", 0, 2}
+      }
+
+      pipeline = Dux.join(Dux.from_query("SELECT 1 AS id"), right, on: :id)
+      {sql, setup} = Dux.QueryBuilder.build(pipeline, conn)
+
+      assert ["INSTALL postgres; LOAD postgres;", attach_sql] = setup
+      assert [_, alias_name] = Regex.run(~r/ AS (__dscan_\d+) /, attach_sql)
+      assert sql =~ "#{alias_name}.events"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Sad path
   # ---------------------------------------------------------------------------
