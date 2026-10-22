@@ -16,6 +16,34 @@ defmodule Dux.ConnectionTest do
       assert is_pid(conn)
     end
 
+    test "uses the pinned DuckDB release", %{conn: conn} do
+      assert Adbc.Connection.query!(conn, "SELECT version() AS version") |> Adbc.Result.to_map() ==
+               %{"version" => ["v2.0.0"]}
+    end
+
+    test "supports DuckDB 2 lambda syntax through Arrow", %{conn: conn} do
+      result =
+        Adbc.Connection.query!(conn, """
+        SELECT list_transform([1, NULL, 3], lambda x: x * 2) AS values,
+               DATE '2026-10-21' AS day, 'quotes '' and 雪' AS label
+        """)
+        |> Adbc.Result.to_map()
+
+      assert result == %{
+               "values" => [[2, nil, 6]],
+               "day" => [~D[2026-10-21]],
+               "label" => ["quotes ' and 雪"]
+             }
+    end
+
+    test "preserves untyped and nested NULL row counts", %{conn: conn} do
+      assert Adbc.Connection.query!(conn, "SELECT NULL AS value FROM range(3)")
+             |> Adbc.Result.to_map() == %{"value" => [nil, nil, nil]}
+
+      assert Adbc.Connection.query!(conn, "SELECT {'value': NULL} AS item FROM range(3)")
+             |> Adbc.Result.to_map() == %{"item" => List.duplicate(%{"value" => nil}, 3)}
+    end
+
     test "opens a file-backed database" do
       path = Path.join(System.tmp_dir!(), "dux_test_#{System.unique_integer([:positive])}.duckdb")
       name = :"conn_file_#{System.unique_integer([:positive])}"

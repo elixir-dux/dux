@@ -34,15 +34,7 @@ defmodule Dux.QueryBuilder do
       ops ->
         initial_prev = direct_source_ref(source) || "(#{source_sql}) __src"
         {ctes, _counter, _groups} = build_ctes(ops, initial_prev, 0, [])
-        last_cte = "__s#{length(ctes) - 1}"
-
-        cte_clauses =
-          ctes
-          |> Enum.with_index()
-          |> Enum.map_join(",\n  ", fn {sql, i} -> "__s#{i} AS (#{sql})" end)
-
-        final = "WITH\n  #{cte_clauses}\nSELECT * FROM #{last_cte}"
-        {final, setup}
+        {cte_query(ctes), setup}
     end
   end
 
@@ -203,11 +195,30 @@ defmodule Dux.QueryBuilder do
     {ctes, counter, groups} =
       Enum.reduce(ops, {[], counter, groups}, fn op, {ctes, n, groups} ->
         prev_ref = if ctes == [], do: initial_prev, else: "__s#{n - 1}"
-        {cte_sql, new_groups} = op_to_sql(op, prev_ref, groups)
-        {ctes ++ [cte_sql], n + 1, new_groups}
+
+        case op do
+          {:pivot_wider, _, _, _} when ctes != [] ->
+            # Dynamic PIVOT discovers its output columns before binding the
+            # surrounding CTEs. Give it a complete input query in its own scope.
+            {cte_sql, new_groups} = op_to_sql(op, "(#{cte_query(ctes)})", groups)
+            {[cte_sql], 1, new_groups}
+
+          _ ->
+            {cte_sql, new_groups} = op_to_sql(op, prev_ref, groups)
+            {ctes ++ [cte_sql], n + 1, new_groups}
+        end
       end)
 
     {ctes, counter, groups}
+  end
+
+  defp cte_query(ctes) do
+    clauses =
+      ctes
+      |> Enum.with_index()
+      |> Enum.map_join(",\n  ", fn {sql, i} -> "__s#{i} AS (#{sql})" end)
+
+    "WITH\n  #{clauses}\nSELECT * FROM __s#{length(ctes) - 1}"
   end
 
   # ---------------------------------------------------------------------------

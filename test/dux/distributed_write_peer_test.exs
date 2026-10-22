@@ -440,6 +440,8 @@ defmodule Dux.DistributedWritePeerTest do
     test "distributed write to invalid path raises" do
       {peer1, node1} = start_peer(:dw_sad1)
       {peer2, node2} = start_peer(:dw_sad2)
+      blocked_path = Path.join(@tmp_dir, "dux_blocked_#{System.unique_integer([:positive])}")
+      File.write!(blocked_path, "regular file, not an output directory")
 
       try do
         {:ok, w1} = start_worker_on(node1)
@@ -449,11 +451,12 @@ defmodule Dux.DistributedWritePeerTest do
         assert_raise ArgumentError, ~r/all workers failed/, fn ->
           Dux.from_query("SELECT 1 AS x")
           |> Dux.distribute([w1, w2])
-          |> Dux.to_parquet("/nonexistent/path/that/cannot/exist")
+          |> Dux.to_parquet(Path.join(blocked_path, "output"))
         end
       after
         :peer.stop(peer1)
         :peer.stop(peer2)
+        File.rm!(blocked_path)
       end
     end
   end

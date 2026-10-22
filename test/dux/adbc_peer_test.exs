@@ -34,6 +34,90 @@ defmodule Dux.AdbcPeerTest do
   # ---------------------------------------------------------------------------
 
   describe "IPC type fidelity across peer nodes" do
+    test "worker uses the same pinned DuckDB release and lambda syntax as the local connection" do
+      {peer, node} = start_peer(:duckdb_release)
+
+      try do
+        {:ok, worker} = start_worker_on(node)
+
+        pipeline =
+          Dux.from_query("""
+          SELECT version() AS version,
+                 list_transform([1, NULL, 3], lambda x: x * 2) AS values,
+                 NULL AS missing, {'value': NULL} AS item
+          FROM range(3)
+          """)
+
+        assert Dux.to_columns(pipeline) == %{
+                 "version" => List.duplicate("v2.0.0", 3),
+                 "values" => List.duplicate([2, nil, 6], 3),
+                 "missing" => [nil, nil, nil],
+                 "item" => List.duplicate(%{"value" => nil}, 3)
+               }
+
+        assert {:ok, ipc} = Worker.execute(worker, pipeline)
+        conn = Dux.Connection.get_conn()
+        ref = Dux.Backend.table_from_ipc(conn, ipc)
+        assert Dux.Backend.table_to_columns(conn, ref) == Dux.to_columns(pipeline)
+      after
+        :peer.stop(peer)
+      end
+    end
+
+    test "worker opens its configured file-backed database on a peer" do
+      {peer, node} = start_peer(:duckdb_file)
+
+      path =
+        Path.join(System.tmp_dir!(), "dux_worker_#{System.unique_integer([:positive])}.duckdb")
+
+      try do
+        try do
+          {:ok, worker} =
+            :erpc.call(node, DynamicSupervisor, :start_child, [
+              Dux.DynamicSupervisor,
+              %{id: Worker, start: {Worker, :start_link, [[path: path]]}, restart: :temporary}
+            ])
+
+          %{db: db, conn: conn} = :erpc.call(node, :sys, :get_state, [worker])
+
+          try do
+            assert :ok =
+                     Worker.execute_sqls(worker, ["CREATE TABLE persisted AS SELECT 42 AS answer"])
+
+            assert File.exists?(path)
+          after
+            # These database resources belong to this test. Close them explicitly
+            # before reopening the file; peer shutdown alone can race OS cleanup.
+            monitors = for pid <- [conn, db, worker], do: {pid, Process.monitor(pid)}
+
+            for {pid, monitor} <- monitors do
+              :erpc.call(node, GenServer, :stop, [pid])
+              assert_receive {:DOWN, ^monitor, :process, ^pid, :normal}, 1_000
+            end
+          end
+        after
+          :peer.stop(peer)
+        end
+
+        {:ok, local} = Dux.Connection.start_link(name: :duckdb_persisted, path: path)
+        %{db: db, conns: conns} = :sys.get_state(local)
+
+        try do
+          conn = Dux.Connection.get_conn(:duckdb_persisted)
+
+          assert Adbc.Connection.query!(conn, "SELECT answer FROM persisted")
+                 |> Adbc.Result.to_map() == %{"answer" => [42]}
+        after
+          Enum.each(conns, &GenServer.stop/1)
+          GenServer.stop(db)
+          GenServer.stop(local)
+        end
+      after
+        File.rm(path)
+        File.rm(path <> ".wal")
+      end
+    end
+
     test "integer, float, string, boolean survive cross-node IPC" do
       {peer, node} = start_peer(:ipc_types1)
 

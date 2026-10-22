@@ -67,8 +67,7 @@ defmodule Dux.Connection do
 
   @impl true
   def init(opts) do
-    # Ensure DuckDB driver is available
-    Adbc.download_driver!(:duckdb)
+    driver_opts = Dux.DuckDB.database_options()
 
     db_opts =
       case Keyword.get(opts, :path) do
@@ -78,7 +77,7 @@ defmodule Dux.Connection do
 
     pool_size = Keyword.get(opts, :pool_size, 1)
 
-    {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
+    {:ok, db} = Adbc.Database.start_link(driver_opts ++ db_opts)
 
     conns =
       for _ <- 1..pool_size do

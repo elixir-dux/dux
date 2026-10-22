@@ -1,8 +1,30 @@
 # Core Dux benchmarks
 # Run with: mix run bench/core_bench.exs
 # Bounded sorting/materialization run: mix run bench/core_bench.exs --sorting
+# Bounded tensor extraction run: mix run bench/core_bench.exs --tensor
 
 alias Dux.Remote.Worker
+
+if "--tensor" in System.argv() do
+  small = Dux.from_query("SELECT i::DOUBLE AS x FROM range(1000) t(i)") |> Dux.compute()
+  large = Dux.from_query("SELECT i::DOUBLE AS x FROM range(122881) t(i)") |> Dux.compute()
+
+  Benchee.run(
+    %{
+      "to_tensor (1K rows)" => fn -> Dux.to_tensor(small, :x) end,
+      "to_tensor (122881 rows)" => fn -> Dux.to_tensor(large, :x) end,
+      "Nx.LazyContainer (1K rows)" => fn ->
+        Nx.LazyContainer.traverse(small, nil, fn _template, tensor, acc -> {tensor.(), acc} end)
+      end
+    },
+    warmup: 1,
+    time: 3,
+    memory_time: 1,
+    print: [configuration: false]
+  )
+
+  System.halt(0)
+end
 
 if "--sorting" in System.argv() do
   boundary_sql = "SELECT x::DOUBLE / 8 AS a FROM range(122881) t(x)"

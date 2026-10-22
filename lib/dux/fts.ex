@@ -133,8 +133,10 @@ defmodule Dux.FTS do
     limit_clause = if limit, do: " LIMIT #{limit}", else: ""
 
     search_sql = """
-    SELECT *, #{macro_name}(#{qi(id_col)}, '#{escaped_query}'#{extra_params}) AS fts_score
-    FROM #{qi(table_name)}
+    SELECT * FROM (
+      SELECT *, #{macro_name}(#{qi(id_col)}, '#{escaped_query}'#{extra_params}) AS fts_score
+      FROM #{qi(table_name)}
+    ) AS scored
     WHERE fts_score IS NOT NULL
     ORDER BY fts_score#{limit_clause}
     """

@@ -70,6 +70,98 @@ if Code.ensure_loaded?(Nx) do
         tensor = Dux.to_tensor(df, :x)
         assert Nx.type(tensor) == {:s, 32}
       end
+
+      test "derives tensor shape while preserving Arrow numeric buffers" do
+        conn = Dux.Connection.get_conn()
+        df = Dux.from_query("SELECT i::BIGINT AS x FROM range(1000) t(i)") |> Dux.compute()
+        {:table, ref} = df.source
+        %{"x" => column} = Dux.Backend.table_to_raw_columns(conn, ref)
+
+        assert byte_size(Adbc.Column.to_binary(column)) == 8000
+        assert Nx.to_list(Dux.to_tensor(df, :x)) == Enum.to_list(0..999)
+      end
+
+      test "uses the returned batch length for volatile views and lazy templates" do
+        conn = Dux.Connection.get_conn()
+        sequence = "tensor_seq_#{System.unique_integer([:positive])}"
+        Adbc.Connection.query!(conn, "CREATE SEQUENCE #{sequence}")
+
+        try do
+          source = Dux.from_query("SELECT i::BIGINT AS x FROM range(1001) t(i)") |> Dux.compute()
+          filtered = Dux.filter_with(source, "nextval('#{sequence}') % 2 = 0")
+
+          direct = Dux.to_tensor(filtered, :x)
+
+          {lazy, 1} =
+            Nx.LazyContainer.traverse(filtered, 0, fn template, fun, acc ->
+              tensor = fun.()
+              assert Nx.shape(template) == Nx.shape(tensor)
+              {tensor, acc + 1}
+            end)
+
+          for tensor <- [direct, lazy["x"]] do
+            values = Nx.to_list(tensor)
+            assert length(values) in [500, 501]
+            assert values == Enum.take_every(Enum.to_list(hd(values)..1000), 2)
+          end
+        after
+          Adbc.Connection.query!(conn, "DROP SEQUENCE #{sequence}")
+        end
+      end
+
+      test "preserves values and shape across Arrow batches" do
+        tensor =
+          Dux.from_query("SELECT i::BIGINT AS x FROM range(122881) t(i) ORDER BY i")
+          |> Dux.to_tensor(:x)
+
+        assert Nx.shape(tensor) == {122_881}
+        assert Nx.to_list(tensor) == Enum.to_list(0..122_880)
+      end
+
+      test "accepts all-valid bitmaps and rejects nulls across byte boundaries" do
+        df = Dux.from_query("SELECT i::BIGINT AS x FROM range(17) t(i)")
+        assert Nx.to_list(Dux.to_tensor(df, :x)) == Enum.to_list(0..16)
+
+        for null_at <- [0, 7, 8, 16] do
+          nullable =
+            Dux.from_query(
+              "SELECT CASE WHEN i = #{null_at} THEN NULL ELSE i END AS x FROM range(17) t(i)"
+            )
+
+          assert_raise ArgumentError, ~r/contains nulls/, fn ->
+            Dux.to_tensor(nullable, :x)
+          end
+        end
+      end
+
+      test "checks only the active validity bits for sliced Arrow buffers" do
+        for {offset, count, valid, nullable} <- [
+              {1, 3, <<14>>, <<12>>},
+              {7, 3, <<128, 3>>, <<128, 2>>},
+              {8, 3, <<0, 7>>, <<0, 3>>},
+              {1, 19, <<254, 255, 15>>, <<254, 254, 15>>}
+            ] do
+          values = Enum.to_list(1..count)
+          column = Adbc.Column.s64(values, name: "x")
+
+          sliced = %{
+            column
+            | size: nil,
+              data: %{column.data | validity: valid, bit_offset: offset}
+          }
+
+          # Value bytes already describe the slice; the bitmap retains its offset.
+          assert Adbc.Column.to_list(sliced) == values
+          assert Nx.to_list(Dux.column_to_tensor(sliced)) == values
+
+          with_null = %{sliced | data: %{sliced.data | validity: nullable}}
+          assert nil in Adbc.Column.to_list(with_null)
+
+          assert_raise ArgumentError, ~r/contains nulls/, fn ->
+            Dux.column_to_tensor(with_null)
+          end
+        end
+      end
     end
 
     # ---------------------------------------------------------------------------

@@ -246,6 +246,7 @@ defmodule Dux.DistributedCorrectnessPeerTest do
           ])
           |> Dux.pivot_longer([:q1, :q2], names_to: "quarter", values_to: "sales")
           |> Dux.distribute([w1, w2])
+          |> Dux.compute()
           |> Dux.n_rows()
 
         # 2 rows × 2 quarters × 2 workers (replicated) = 8

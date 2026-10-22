@@ -14,13 +14,15 @@ defmodule Dux.Backend do
 
   @doc false
   def open(opts \\ []) do
+    driver_opts = Dux.DuckDB.database_options()
+
     db_opts =
       case Keyword.get(opts, :path) do
         nil -> []
         path -> [path: path]
       end
 
-    {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
+    {:ok, db} = Adbc.Database.start_link(driver_opts ++ db_opts)
     {:ok, conn} = Adbc.Connection.start_link(database: db)
     {db, conn}
   end
@@ -157,12 +159,16 @@ defmodule Dux.Backend do
   @doc false
   def table_to_raw_columns(conn, %TableRef{} = ref) do
     result = Adbc.Connection.query!(conn, "SELECT * FROM #{qi(ref.name)}")
-    materialized = Adbc.Result.materialize(result)
 
-    case flatten_batches(materialized.data) do
-      [] -> %{}
-      :multi_batch -> table_to_raw_columns_multi(materialized.data)
-      columns -> Map.new(columns, fn col -> {col.field.name, col} end)
+    case flatten_batches(result.data) do
+      [] ->
+        %{}
+
+      :multi_batch ->
+        table_to_raw_columns_multi(result.data)
+
+      columns ->
+        Map.new(columns, fn col -> {col.field.name, col} end)
     end
   end
 
@@ -277,10 +283,9 @@ defmodule Dux.Backend do
   rescue
     _ ->
       # ADBC ingest doesn't quote column names in DDL, so special chars fail.
-      # Fall back to materialize + safe-rename ingest.
+      # Fall back to safe-rename ingest.
       result = Adbc.Result.from_ipc_stream!(binary)
-      materialized = Adbc.Result.materialize(result)
-      columns = flatten_batches(materialized.data)
+      columns = flatten_batches(result.data)
 
       if columns in [[], :multi_batch] do
         name = "__dux_#{:erlang.unique_integer([:positive])}"

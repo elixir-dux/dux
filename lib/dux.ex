@@ -578,8 +578,7 @@ defmodule Dux do
 
     case Adbc.Connection.query(conn, sql) do
       {:ok, result} ->
-        materialized = Adbc.Result.materialize(result)
-        columns = List.flatten(materialized.data)
+        columns = List.flatten(result.data)
         attach_setup_from_columns(columns, db_name)
 
       {:error, _} ->
@@ -1818,15 +1817,14 @@ defmodule Dux do
                 "column #{inspect(col.field.name)} has non-numeric type: #{inspect(col.field.type)}#{hint}"
 
         nx_type ->
-          if has_actual_nulls?(col) do
+          tensor = Nx.from_binary(Adbc.Column.to_binary(col), nx_type, backend: Nx.BinaryBackend)
+
+          if has_actual_nulls?(%{col | size: Nx.size(tensor)}) do
             raise ArgumentError,
                   "column #{inspect(col.field.name)} contains nulls; filter them before converting to tensor"
           end
 
-          binary = Adbc.Column.to_binary(col)
-
-          Nx.from_binary(binary, nx_type, backend: Nx.BinaryBackend)
-          |> Nx.reshape({col.size})
+          tensor
       end
     end
 
@@ -1840,14 +1838,43 @@ defmodule Dux do
          when size > 0,
          do: false
 
-    defp has_actual_nulls?(%Adbc.Column{size: size, data: %Adbc.BufferData{validity: validity}}) do
+    defp has_actual_nulls?(%Adbc.Column{
+           size: size,
+           data: %Adbc.BufferData{validity: validity, bit_offset: offset}
+         }) do
+      bitmap_has_nulls?(validity, offset, size)
+    end
+
+    defp has_actual_nulls?(%Adbc.Column{
+           size: size,
+           data: %Adbc.DictionaryData{key: key_data},
+           field: %{type: {:dictionary, key_field, _}}
+         }) do
+      has_actual_nulls?(%Adbc.Column{field: key_field, data: key_data, size: size})
+    end
+
+    defp has_actual_nulls?(%Adbc.Column{} = col) do
+      Adbc.Column.has_validity?(col)
+    end
+
+    defp bitmap_has_nulls?(_validity, _offset, 0), do: false
+
+    defp bitmap_has_nulls?(validity, offset, size) when rem(offset, 8) != 0 do
+      leading = min(size, 8 - rem(offset, 8))
+      mask = Bitwise.bsl(Bitwise.bsl(1, leading) - 1, rem(offset, 8))
+
+      Bitwise.band(:binary.at(validity, div(offset, 8)), mask) != mask or
+        bitmap_has_nulls?(validity, offset + leading, size - leading)
+    end
+
+    defp bitmap_has_nulls?(validity, offset, size) do
       # All-ones bitmap means no nulls. Check full bytes then remainder bits.
       full_bytes = div(size, 8)
       remainder = rem(size, 8)
 
       has_null_in_full =
         if full_bytes > 0 do
-          :binary.part(validity, 0, full_bytes) != :binary.copy(<<255>>, full_bytes)
+          :binary.part(validity, div(offset, 8), full_bytes) != :binary.copy(<<255>>, full_bytes)
         else
           false
         end
@@ -1855,23 +1882,12 @@ defmodule Dux do
       has_null_in_tail =
         if remainder > 0 do
           mask = Bitwise.bsl(1, remainder) - 1
-          Bitwise.band(:binary.at(validity, full_bytes), mask) != mask
+          Bitwise.band(:binary.at(validity, div(offset, 8) + full_bytes), mask) != mask
         else
           false
         end
 
       has_null_in_full or has_null_in_tail
-    end
-
-    defp has_actual_nulls?(%Adbc.Column{
-           data: %Adbc.DictionaryData{key: key_data},
-           field: %{type: {:dictionary, key_field, _}}
-         }) do
-      has_actual_nulls?(%Adbc.Column{field: key_field, data: key_data, size: key_data.size})
-    end
-
-    defp has_actual_nulls?(%Adbc.Column{} = col) do
-      Adbc.Column.has_validity?(col)
     end
 
     defp nx_type_for(:s8), do: :s8

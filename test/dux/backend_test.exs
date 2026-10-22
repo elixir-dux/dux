@@ -9,6 +9,11 @@ defmodule Dux.BackendTest do
   # ---------- Happy path ----------
 
   describe "open/0 and open/1" do
+    test "uses the same pinned engine as local connections", %{conn: conn} do
+      assert Adbc.Connection.query!(conn, "SELECT version() AS version") |> Adbc.Result.to_map() ==
+               %{"version" => ["v2.0.0"]}
+    end
+
     test "opens in-memory database" do
       {db, conn} = Dux.Backend.open()
       assert is_pid(db)
