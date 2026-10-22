@@ -67,8 +67,7 @@ defmodule Dux.Connection do
 
   @impl true
   def init(opts) do
-    # Ensure DuckDB driver is available
-    Adbc.download_driver!(:duckdb)
+    driver_opts = Dux.DuckDB.database_options()
 
     db_opts =
       case Keyword.get(opts, :path) do
@@ -78,7 +77,7 @@ defmodule Dux.Connection do
 
     pool_size = Keyword.get(opts, :pool_size, 1)
 
-    {:ok, db} = Adbc.Database.start_link([driver: :duckdb] ++ db_opts)
+    {:ok, db} = Adbc.Database.start_link(driver_opts ++ db_opts)
 
     conns =
       for _ <- 1..pool_size do
@@ -138,9 +137,9 @@ defmodule Dux.Connection do
 
   @doc false
   def configure_duckdb(conn, opts \\ []) do
-    # Disable insertion order preservation — allows DuckDB to parallelize
-    # CREATE TABLE AS across threads. ~5x faster for large result sets.
-    Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+    # Keep sorted query results ordered when CREATE TABLE AS materializes them,
+    # including when DuckDB uses multiple threads.
+    Adbc.Connection.query!(conn, "SET preserve_insertion_order = true")
 
     # Memory limit — caps DuckDB's memory usage. Important when multiple
     # workers share a machine. Only set when explicitly configured.

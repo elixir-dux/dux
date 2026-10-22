@@ -649,9 +649,8 @@ defmodule Dux.Remote.Coordinator do
 
     case Adbc.Connection.query(conn, sql) do
       {:ok, result} ->
-        materialized = Adbc.Result.materialize(result)
-        type = extract_column_first(materialized, "type")
-        path = extract_column_first(materialized, "path")
+        type = extract_column_first(result, "type")
+        path = extract_column_first(result, "path")
         if type, do: {type, path}, else: nil
 
       {:error, _} ->
@@ -677,7 +676,7 @@ defmodule Dux.Remote.Coordinator do
     sql = "SELECT data_file FROM ducklake_list_files('#{catalog}', '#{table_name}')"
 
     case Adbc.Connection.query(conn, sql) do
-      {:ok, result} -> extract_column(Adbc.Result.materialize(result), "data_file")
+      {:ok, result} -> extract_column(result, "data_file")
       {:error, _} -> []
     end
   end

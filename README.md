@@ -56,7 +56,22 @@ def deps do
 end
 ```
 
-Dux is a pure Elixir project. The DuckDB engine is provided via [ADBC](https://github.com/elixir-explorer/adbc) — a precompiled driver downloaded automatically at compile time. No Rust or C++ compilation needed.
+Dux is a pure Elixir project. DuckDB 2.0.0 is provided via [ADBC](https://github.com/elixir-explorer/adbc), using an official precompiled driver downloaded when a connection or worker starts. No Rust or C++ compilation needed.
+
+**Draft upgrade — blocked on an ADBC release.** Released ADBC 0.12.1 cannot decode DuckDB 2.0's untyped NULL results. This candidate has been tested with the fix in [ADBC #161](https://github.com/livebook-dev/adbc/pull/161). Before merging, require a published package containing that fix and raise the minimum dependency version. The current released dependency is not ready for this upgrade.
+
+New database files use DuckDB 2.0's storage format and cannot be opened by earlier DuckDB versions. Existing files retain their storage version. Test upgrades on disposable copies before opening important databases. Local connections and remote workers use the same pinned engine version.
+
+Raw SQL follows DuckDB 2.0 semantics: use `lambda x: x + 1` for lambdas; integer division or modulo by zero now raises an error. Extensions must also be available for the engine version and platform. See the [DuckDB 2.0 migration guide](https://duckdb.org/docs/2.0/operations_manual/migration.html) for the full changes and storage compatibility options.
+
+To inspect the actual DuckDB version and check primitive values, NULLs, lambda SQL and Arrow IPC compatibility, run:
+
+```bash
+mix dux.check_engine
+mix dux.check_engine --driver /path/to/libduckdb.so --expect-version v2.0.0
+```
+
+The second command tests an explicitly supplied local library against a fresh in-memory database. It fails on version or result mismatches and never falls back to another driver. It does not change Dux's configured engine or open existing database files. Passing these smoke checks supplements the full test suite; it does not establish compatibility for every operation.
 
 ## Getting Started
 

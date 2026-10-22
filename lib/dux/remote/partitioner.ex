@@ -182,8 +182,7 @@ defmodule Dux.Remote.Partitioner do
 
     case Adbc.Connection.query(conn, sql) do
       {:ok, result} ->
-        materialized = Adbc.Result.materialize(result)
-        build_size_map(materialized, files)
+        build_size_map(result, files)
 
       {:error, _} ->
         nil
@@ -275,9 +274,7 @@ defmodule Dux.Remote.Partitioner do
 
     case Adbc.Connection.query(conn, "SELECT file FROM glob('#{escaped}')") do
       {:ok, result} ->
-        materialized = Adbc.Result.materialize(result)
-
-        case find_column(materialized.data, "file") do
+        case find_column(result.data, "file") do
           nil -> {:ok, [path]}
           col -> {:ok, Adbc.Column.to_list(col)}
         end

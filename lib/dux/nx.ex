@@ -22,13 +22,21 @@ if Code.ensure_loaded?(Nx) do
       {Map.new(pairs), acc}
     end
 
-    defp traverse_column({name, %Adbc.Column{size: size} = col}, acc, fun) do
+    defp traverse_column({name, %Adbc.Column{} = col}, acc, fun) do
       case nx_type_for_adbc(col.field.type) do
         nil ->
           {[], acc}
 
         nx_type ->
-          template = Nx.template({size}, nx_type)
+          # Native columns may omit size. The fixed-width binary describes
+          # this exact result, including when the source is a volatile view.
+          shape =
+            col
+            |> Adbc.Column.to_binary()
+            |> Nx.from_binary(nx_type, backend: Nx.BinaryBackend)
+            |> Nx.shape()
+
+          template = Nx.template(shape, nx_type)
           {result, acc} = fun.(template, fn -> Dux.column_to_tensor(col) end, acc)
           {[{name, result}], acc}
       end
