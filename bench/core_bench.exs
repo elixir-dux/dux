@@ -1,7 +1,42 @@
 # Core Dux benchmarks
 # Run with: mix run bench/core_bench.exs
+# Bounded sorting/materialization run: mix run bench/core_bench.exs --sorting
 
 alias Dux.Remote.Worker
+
+if "--sorting" in System.argv() do
+  boundary_sql = "SELECT x::DOUBLE / 8 AS a FROM range(122881) t(x)"
+  computed = Dux.from_query(boundary_sql) |> Dux.compute()
+
+  Benchee.run(
+    %{
+      "compute range (1M rows)" => fn ->
+        Dux.from_query("SELECT x FROM range(1000000) t(x)") |> Dux.compute()
+      end,
+      "sort_by → compute (122881 rows)" => fn ->
+        Dux.from_query(boundary_sql) |> Dux.sort_by(desc: :a) |> Dux.compute()
+      end,
+      "sort_by → to_columns (122881 rows)" => fn ->
+        Dux.from_query(boundary_sql) |> Dux.sort_by(desc: :a) |> Dux.to_columns()
+      end,
+      "head → sort_by → to_rows (122881 rows)" => fn ->
+        Dux.from_query(boundary_sql)
+        |> Dux.head(122_881)
+        |> Dux.sort_by(desc: :a)
+        |> Dux.to_rows()
+      end,
+      "sort_by view → to_columns (122881 rows)" => fn ->
+        computed |> Dux.sort_by(desc: :a) |> Dux.to_columns()
+      end
+    },
+    warmup: 1,
+    time: 3,
+    memory_time: 1,
+    print: [configuration: false]
+  )
+
+  System.halt(0)
+end
 
 # ---------------------------------------------------------------------------
 # Setup: generate test data

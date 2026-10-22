@@ -138,9 +138,9 @@ defmodule Dux.Connection do
 
   @doc false
   def configure_duckdb(conn, opts \\ []) do
-    # Disable insertion order preservation — allows DuckDB to parallelize
-    # CREATE TABLE AS across threads. ~5x faster for large result sets.
-    Adbc.Connection.query!(conn, "SET preserve_insertion_order = false")
+    # Keep sorted query results ordered when CREATE TABLE AS materializes them,
+    # including when DuckDB uses multiple threads.
+    Adbc.Connection.query!(conn, "SET preserve_insertion_order = true")
 
     # Memory limit — caps DuckDB's memory usage. Important when multiple
     # workers share a machine. Only set when explicitly configured.
