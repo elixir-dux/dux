@@ -38,6 +38,18 @@ defmodule Mix.Tasks.Dux.CheckEngineTest do
     assert message =~ "expected v0.0.0, got v"
   end
 
+  test "accepts an explicit library and matching actual version" do
+    {:ok, path} = Adbc.Driver.so_path(:duckdb)
+
+    %{"version" => [version]} =
+      Adbc.Connection.query!(Dux.Connection.get_conn(), "SELECT version() AS version")
+      |> Adbc.Result.to_map()
+
+    assert :ok = CheckEngine.run(["--driver", path, "--expect-version", version])
+    assert_received {:mix_shell, :info, ["DuckDB compatibility checks passed."]}
+    refute_received {:mix_shell, :error, _}
+  end
+
   test "rejects unknown, missing, empty and positional arguments" do
     for args <- [
           ["--unknown"],

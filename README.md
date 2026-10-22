@@ -67,7 +67,7 @@ mix dux.check_engine --driver /path/to/libduckdb.so --expect-version v2.0.0
 
 The second command tests an explicitly supplied local library against a fresh in-memory database. It fails on version or result mismatches and never falls back to another driver. It does not change Dux's configured engine or open existing database files. Passing these smoke checks supplements the full test suite; it does not establish compatibility for every operation.
 
-DuckDB 2.0 is currently blocked by the released Elixir ADBC wrappers' handling of Arrow's null type: for example, `SELECT NULL AS value FROM range(3)` cannot be materialized. Keep using the default driver until the wrapper supports these results. Before testing a newer engine with real data, read the [DuckDB 2.0 migration guide](https://duckdb.org/docs/2.0/operations_manual/migration.html), especially the storage format, lambda syntax and extension compatibility changes.
+DuckDB 2.0's untyped NULL results cannot be materialized by ADBC 0.11.0 or 0.12.1: for example, `SELECT NULL AS value FROM range(3)` fails. ADBC 0.11.0 reports an unsupported Arrow null format; [0.12.1 also discards the null column's length](https://github.com/livebook-dev/adbc/blob/v0.12.1/c_src/from_arrow.hpp). Keep using the default driver until the wrapper supports these results. Before testing a newer engine with real data, read the [DuckDB 2.0 migration guide](https://duckdb.org/docs/2.0/operations_manual/migration.html), especially the storage format, lambda syntax and extension compatibility changes.
 
 ## Getting Started
 
